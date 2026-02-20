@@ -1,8 +1,7 @@
 [build]
-builder = "nixpacks"
-
-[build.nixpacks]
-pkgs = ["nodejs_20", "pnpm"]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "pnpm start"
+healthcheckPath = "/"
+healthcheckTimeout = 100
