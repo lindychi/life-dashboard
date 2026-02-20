@@ -30,10 +30,12 @@ const projects = [
   },
   {
     name: "안부",
-    description: "앱 예정",
+    description: "독거인을 위한 안부 알림 앱",
     status: "💡 아이디어",
     progress: 0,
-    kpis: [],
+    kpis: [
+      { label: "타겟", value: "독거 노인/1인 가구" },
+    ],
   },
   {
     name: "크레딧컨설팅",
