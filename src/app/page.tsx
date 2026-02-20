@@ -1,65 +1,171 @@
-import Image from "next/image";
+const projects = [
+  {
+    name: "MumMum",
+    description: "영어 학습 앱",
+    status: "🟢 배포됨",
+    progress: 80,
+    url: "https://mummum.up.railway.app",
+    kpis: [
+      { label: "목표", value: "$10K MRR" },
+      { label: "현재", value: "성장 단계" },
+    ],
+  },
+  {
+    name: "Rezoom",
+    description: "이력서 서비스",
+    status: "🟡 진행중",
+    progress: 20,
+    kpis: [
+      { label: "현재 작업", value: "Import 페이지" },
+    ],
+  },
+  {
+    name: "정화의 영역",
+    description: "던전 빌딩 로그라이트",
+    status: "📝 기획중",
+    progress: 15,
+    kpis: [
+      { label: "엔진", value: "Godot 4" },
+    ],
+  },
+  {
+    name: "안부",
+    description: "앱 예정",
+    status: "💡 아이디어",
+    progress: 0,
+    kpis: [],
+  },
+  {
+    name: "크레딧컨설팅",
+    description: "재정/FIRE 트래킹",
+    status: "❓ 확인 필요",
+    progress: 0,
+    kpis: [],
+  },
+  {
+    name: "LifeDashboard",
+    description: "이 대시보드",
+    status: "🆕 시작",
+    progress: 5,
+    kpis: [],
+  },
+];
+
+function ProgressBar({ progress }: { progress: number }) {
+  return (
+    <div className="w-full bg-gray-700 rounded-full h-2">
+      <div
+        className="bg-green-500 h-2 rounded-full transition-all"
+        style={{ width: `${progress}%` }}
+      />
+    </div>
+  );
+}
+
+function ProjectCard({ project }: { project: (typeof projects)[0] }) {
+  return (
+    <div className="bg-gray-800 rounded-xl p-6 hover:bg-gray-750 transition-colors">
+      <div className="flex justify-between items-start mb-3">
+        <div>
+          <h2 className="text-xl font-bold text-white">{project.name}</h2>
+          <p className="text-gray-400 text-sm">{project.description}</p>
+        </div>
+        <span className="text-sm">{project.status}</span>
+      </div>
+      
+      <div className="mb-4">
+        <div className="flex justify-between text-xs text-gray-400 mb-1">
+          <span>진행률</span>
+          <span>{project.progress}%</span>
+        </div>
+        <ProgressBar progress={project.progress} />
+      </div>
+
+      {project.kpis.length > 0 && (
+        <div className="space-y-1">
+          {project.kpis.map((kpi, i) => (
+            <div key={i} className="flex justify-between text-sm">
+              <span className="text-gray-400">{kpi.label}</span>
+              <span className="text-white">{kpi.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {project.url && (
+        <a
+          href={project.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-4 block text-center text-sm text-blue-400 hover:text-blue-300"
+        >
+          방문하기 →
+        </a>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
+  const today = new Date().toLocaleDateString("ko-KR", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  });
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+    <div className="min-h-screen bg-gray-900 text-white p-8">
+      <header className="max-w-6xl mx-auto mb-8">
+        <h1 className="text-3xl font-bold mb-2">📊 LifeDashboard</h1>
+        <p className="text-gray-400">{today}</p>
+      </header>
+
+      <main className="max-w-6xl mx-auto">
+        <section className="mb-8">
+          <h2 className="text-xl font-semibold mb-4 text-gray-300">
+            🚀 프로젝트 현황
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {projects.map((project) => (
+              <ProjectCard key={project.name} project={project} />
+            ))}
+          </div>
+        </section>
+
+        <section className="mb-8">
+          <h2 className="text-xl font-semibold mb-4 text-gray-300">
+            🎯 이번 주 포커스
+          </h2>
+          <div className="bg-gray-800 rounded-xl p-6">
+            <ul className="space-y-2 text-gray-300">
+              <li>• MumMum: 공유 카드 기능 (#63)</li>
+              <li>• Rezoom: Import 페이지 완성</li>
+              <li>• LifeDashboard: MVP 완성</li>
+            </ul>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="text-xl font-semibold mb-4 text-gray-300">
+            💰 재정 목표
+          </h2>
+          <div className="bg-gray-800 rounded-xl p-6">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-gray-400">MumMum $10K MRR</span>
+              <span className="text-white">0%</span>
+            </div>
+            <ProgressBar progress={0} />
+            <p className="text-gray-500 text-sm mt-2">
+              크레딧컨설팅 연동 예정
+            </p>
+          </div>
+        </section>
       </main>
+
+      <footer className="max-w-6xl mx-auto mt-12 text-center text-gray-500 text-sm">
+        Built with Next.js • Deployed on Railway
+      </footer>
     </div>
   );
 }
