@@ -23,7 +23,7 @@ export async function sendMagicLink(
 
   try {
     await resend.emails.send({
-      from: "LifeDashboard <noreply@updates.chozang.com>",
+      from: "LifeDashboard <onboarding@resend.dev>",
       to: email,
       subject: "🔐 LifeDashboard 로그인 링크",
       html: `
