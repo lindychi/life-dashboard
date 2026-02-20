@@ -32,13 +32,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Dev mode: return token in response
-    if (!process.env.RESEND_API_KEY) {
+    // Dev mode: return token in response (only in development)
+    if (!process.env.RESEND_API_KEY && process.env.NODE_ENV !== "production") {
       return NextResponse.json({
         success: true,
         message: "로그인 링크가 전송되었습니다 (개발 모드: 콘솔 확인)",
         devToken: token,
       });
+    }
+
+    // Production without Resend key: show error
+    if (!process.env.RESEND_API_KEY) {
+      return NextResponse.json(
+        { error: "이메일 서비스가 설정되지 않았습니다" },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
