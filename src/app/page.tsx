@@ -350,7 +350,7 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+      className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-sm sm:text-base font-medium transition-colors whitespace-nowrap ${
         active
           ? "bg-blue-600 text-white"
           : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
@@ -467,15 +467,30 @@ export default function Home() {
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
       <header className="border-b border-gray-800 bg-gray-900/80 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-bold">🎛️ LifeDashboard</h1>
-              <p className="text-gray-500 text-sm">{today}</p>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          {/* Mobile: 세로 배치 / Desktop: 가로 배치 */}
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+            {/* 제목 + 날짜 */}
+            <div className="flex items-center justify-between sm:block">
+              <div>
+                <h1 className="text-xl sm:text-2xl font-bold">🎛️ LifeDashboard</h1>
+                <p className="text-gray-500 text-xs sm:text-sm">{today}</p>
+              </div>
+              {/* Mobile only: 로그아웃 */}
+              {user && (
+                <button
+                  onClick={handleLogout}
+                  className="sm:hidden text-xs text-gray-500 hover:text-white"
+                >
+                  로그아웃
+                </button>
+              )}
             </div>
-            <div className="flex items-center gap-6">
+
+            {/* 상태 바 */}
+            <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-6 text-xs sm:text-sm">
               {/* Gateway Status */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <span
                   className={`w-2 h-2 rounded-full ${
                     connectedGateways.length > 0
@@ -483,28 +498,26 @@ export default function Home() {
                       : "bg-gray-500"
                   }`}
                 />
-                <span className="text-sm text-gray-400">
+                <span className="text-gray-400">
                   {connectedGateways.length > 0
-                    ? `Gateway 연결됨 (${connectedGateways.length})`
-                    : "Gateway 미연결"}
+                    ? `연결됨`
+                    : "미연결"}
                 </span>
               </div>
 
               {/* Stats */}
-              <div className="text-right text-sm">
-                <p className="text-gray-400">
-                  <span className="text-green-400">{runningCount}</span> 실행중
-                  · <span className="text-blue-400">{totalStacked}</span> 대기
-                </p>
+              <div className="text-gray-400">
+                <span className="text-green-400">{runningCount}</span> 실행
+                · <span className="text-blue-400">{totalStacked}</span> 대기
               </div>
 
-              {/* User */}
+              {/* User - Desktop only */}
               {user && (
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-400">{user.email}</span>
+                <div className="hidden sm:flex items-center gap-3">
+                  <span className="text-gray-400">{user.email}</span>
                   <button
                     onClick={handleLogout}
-                    className="text-sm text-gray-500 hover:text-white transition-colors"
+                    className="text-gray-500 hover:text-white transition-colors"
                   >
                     로그아웃
                   </button>
@@ -514,43 +527,43 @@ export default function Home() {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-2 mt-4">
+          <div className="flex gap-1.5 sm:gap-2 mt-3 sm:mt-4 overflow-x-auto">
             <TabButton
               active={activeTab === "agents"}
               onClick={() => setActiveTab("agents")}
             >
-              🤖 Agents
+              🤖 <span className="hidden sm:inline">Agents</span>
             </TabButton>
             <TabButton
               active={activeTab === "projects"}
               onClick={() => setActiveTab("projects")}
             >
-              🚀 Projects
+              🚀 <span className="hidden sm:inline">Projects</span>
             </TabButton>
             <TabButton
               active={activeTab === "finance"}
               onClick={() => setActiveTab("finance")}
             >
-              💰 Finance
+              💰 <span className="hidden sm:inline">Finance</span>
             </TabButton>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-6 py-6">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {activeTab === "agents" && (
           <div>
             {/* Quick Actions */}
-            <div className="flex gap-3 mb-6">
-              <button className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            <div className="flex flex-wrap gap-2 sm:gap-3 mb-4 sm:mb-6">
+              <button className="bg-blue-600 hover:bg-blue-500 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
                 + 새 작업 분배
               </button>
-              <button className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                🔄 상태 새로고침
+              <button className="bg-gray-800 hover:bg-gray-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
+                🔄 새로고침
               </button>
-              <button className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                📊 오늘 리포트
+              <button className="bg-gray-800 hover:bg-gray-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
+                📊 리포트
               </button>
             </div>
 
