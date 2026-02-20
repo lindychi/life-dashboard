@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 // ===== Types =====
 interface TaskStack {
@@ -360,12 +361,26 @@ function TabButton({
   );
 }
 
+// ===== Types for API =====
+interface GatewayConnection {
+  id: string;
+  status: "connected" | "disconnected";
+  lastHeartbeat: string;
+}
+
+interface User {
+  email: string;
+}
+
 // ===== Main =====
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"agents" | "projects" | "finance">(
     "agents"
   );
   const [agents, setAgents] = useState<Agent[]>(initialAgents);
+  const [user, setUser] = useState<User | null>(null);
+  const [gateways, setGateways] = useState<GatewayConnection[]>([]);
+  const router = useRouter();
 
   const today = new Date().toLocaleDateString("ko-KR", {
     year: "numeric",
@@ -373,6 +388,39 @@ export default function Home() {
     day: "numeric",
     weekday: "long",
   });
+
+  // Fetch user info
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.user) setUser(data.user);
+      })
+      .catch(console.error);
+  }, []);
+
+  // Fetch gateway status (polling every 5s)
+  useEffect(() => {
+    const fetchStatus = () => {
+      fetch("/api/relay/status")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.gateways) setGateways(data.gateways);
+        })
+        .catch(console.error);
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.push("/login");
+  };
+
+  const connectedGateways = gateways.filter((g) => g.status === "connected");
 
   const handleAddTask = (agentId: string, description: string) => {
     setAgents((prev) =>
@@ -425,13 +473,43 @@ export default function Home() {
               <h1 className="text-2xl font-bold">🎛️ LifeDashboard</h1>
               <p className="text-gray-500 text-sm">{today}</p>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-6">
+              {/* Gateway Status */}
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    connectedGateways.length > 0
+                      ? "bg-green-500 animate-pulse"
+                      : "bg-gray-500"
+                  }`}
+                />
+                <span className="text-sm text-gray-400">
+                  {connectedGateways.length > 0
+                    ? `Gateway 연결됨 (${connectedGateways.length})`
+                    : "Gateway 미연결"}
+                </span>
+              </div>
+
+              {/* Stats */}
               <div className="text-right text-sm">
                 <p className="text-gray-400">
                   <span className="text-green-400">{runningCount}</span> 실행중
                   · <span className="text-blue-400">{totalStacked}</span> 대기
                 </p>
               </div>
+
+              {/* User */}
+              {user && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">{user.email}</span>
+                  <button
+                    onClick={handleLogout}
+                    className="text-sm text-gray-500 hover:text-white transition-colors"
+                  >
+                    로그아웃
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
