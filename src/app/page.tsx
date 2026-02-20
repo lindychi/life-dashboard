@@ -39,10 +39,12 @@ const projects = [
   },
   {
     name: "크레딧컨설팅",
-    description: "재정/FIRE 트래킹",
-    status: "❓ 확인 필요",
-    progress: 0,
-    kpis: [],
+    description: "빚쟁이를 위한 빚 관리 웹사이트",
+    status: "🟡 진행중",
+    progress: 10,
+    kpis: [
+      { label: "타겟", value: "대출/빚 있는 사람" },
+    ],
   },
   {
     name: "LifeDashboard",
