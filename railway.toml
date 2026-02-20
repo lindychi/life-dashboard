@@ -1,0 +1,8 @@
+[build]
+builder = "nixpacks"
+
+[build.nixpacks]
+pkgs = ["nodejs_20", "pnpm"]
+
+[deploy]
+startCommand = "pnpm start"
