@@ -12,6 +12,7 @@ export interface ExecutionResult {
   output?: string;
   error?: string;
   exitCode?: number;
+  elapsedMs?: number;
 }
 
 export interface ClaudeExecutorOptions {
@@ -19,7 +20,7 @@ export interface ClaudeExecutorOptions {
   task: string;
   systemPrompt: string;
   workDir?: string;
-  timeout?: number; // ms, default 300000 (5 min)
+  timeout?: number; // ms, 0 = no timeout (default)
 }
 
 /**
@@ -35,6 +36,25 @@ export function isClaudeAvailable(): boolean {
 }
 
 /**
+ * Format milliseconds into human-readable duration
+ * e.g. 5000 → "5초", 65000 → "1분 5초", 3600000 → "1시간 0분"
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}초`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds > 0 ? `${minutes}분 ${seconds}초` : `${minutes}분`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}시간 ${remainingMinutes}분` : `${hours}시간`;
+}
+
+/**
  * Execute a task using Claude CLI
  *
  * Spawns `claude` with --print flag for non-interactive output.
@@ -43,9 +63,11 @@ export function isClaudeAvailable(): boolean {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { task, systemPrompt, workDir, timeout = 300_000 } = options;
+  const { task, systemPrompt, workDir, timeout = 0 } = options;
 
   return new Promise((resolve) => {
+    const startTime = Date.now();
+
     const args = [
       "--print",
       "--permission-mode",
@@ -72,31 +94,37 @@ export function executeClaudeTask(
       stderr += data.toString();
     });
 
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      resolve({
-        success: false,
-        error: `Timeout after ${timeout}ms`,
-        exitCode: -1,
-      });
-    }, timeout);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        resolve({
+          success: false,
+          error: `Timeout after ${formatDuration(timeout)}`,
+          exitCode: -1,
+          elapsedMs: Date.now() - startTime,
+        });
+      }, timeout);
+    }
 
     child.on("error", (err) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve({
         success: false,
         error: err.message,
         exitCode: -1,
+        elapsedMs: Date.now() - startTime,
       });
     });
 
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (code === 0) {
         resolve({
           success: true,
           output: stdout.trim(),
           exitCode: 0,
+          elapsedMs: Date.now() - startTime,
         });
       } else {
         resolve({
@@ -104,6 +132,7 @@ export function executeClaudeTask(
           output: stdout.trim(),
           error: stderr.trim() || `Process exited with code ${code}`,
           exitCode: code ?? -1,
+          elapsedMs: Date.now() - startTime,
         });
       }
     });

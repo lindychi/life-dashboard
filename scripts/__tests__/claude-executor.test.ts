@@ -158,7 +158,7 @@ describe("claude-executor", () => {
       vi.useRealTimers();
     });
 
-    it("should use default timeout of 300000ms", async () => {
+    it("should use default timeout of 0 (no timeout)", async () => {
       vi.useFakeTimers();
       const mockProc = createMockProcess();
       vi.mocked(spawn).mockReturnValue(mockProc);
@@ -169,16 +169,15 @@ describe("claude-executor", () => {
         systemPrompt: "Prompt",
       });
 
-      // Should not timeout at 299s
-      vi.advanceTimersByTime(299_000);
-      // Process hasn't resolved yet
+      // Should not timeout even after a very long time
+      vi.advanceTimersByTime(999_999_999);
 
-      // Timeout at 300s
-      vi.advanceTimersByTime(1_001);
+      // Manually close the process to resolve the promise
+      mockProc.emit("close", 0);
 
       const result = await promise;
-      expect(result.success).toBe(false);
-      expect(result.error).toContain("Timeout after 300000ms");
+      expect(result.success).toBe(true);
+      expect(mockProc.kill).not.toHaveBeenCalled();
 
       vi.useRealTimers();
     });

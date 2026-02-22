@@ -11,7 +11,7 @@ export interface GatewayConnection {
 
 export interface RelayCommand {
   id: string;
-  type: "spawn" | "send" | "status" | "message";
+  type: "spawn" | "send" | "status" | "message" | "orchestrate";
   payload: Record<string, unknown>;
   createdAt: string;
   status: "pending" | "processing" | "completed" | "failed";

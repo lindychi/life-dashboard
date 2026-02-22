@@ -17,7 +17,7 @@
  */
 
 import * as os from "os";
-import { executeClaudeTask, isClaudeAvailable } from "./claude-executor";
+import { executeClaudeTask, isClaudeAvailable, formatDuration } from "./claude-executor";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -27,7 +27,7 @@ const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
 
 interface RelayCommand {
   id: string;
-  type: "spawn" | "send" | "status" | "message";
+  type: "spawn" | "send" | "status" | "message" | "orchestrate";
   payload: Record<string, unknown>;
 }
 
@@ -206,6 +206,95 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         addHistory(to, "message_received", `[${from}] ${content}`);
 
         return { success: true, delivered: true };
+      }
+
+      case "orchestrate": {
+        const { task } = command.payload as { task: string };
+
+        // Import orchestrate function and ProgressEvent type
+        const { orchestrate } = await import("./orchestrator");
+        type ProgressEvent = import("./orchestrator").ProgressEvent;
+
+        // Read agents directly from agents.json (avoids auth requirement of API)
+        const fs = await import("fs");
+        const path = await import("path");
+        const agentsJsonPath = path.join(__dirname, "..", "agents.json");
+        const agentsData = JSON.parse(fs.readFileSync(agentsJsonPath, "utf-8"));
+        const agents = agentsData
+          .filter((a: any) => a.enabled)
+          .map((a: any) => ({
+            id: a.id,
+            name: a.name,
+            role: a.role,
+            systemPrompt: a.systemPrompt,
+          }));
+
+        // Progress callback for real-time visibility
+        const onProgress = (event: ProgressEvent) => {
+          switch (event.phase) {
+            case "plan_creating":
+              addHistory("orchestrator", "task_started", `🧠 작업 분석 중: ${task}`);
+              break;
+            case "plan_created":
+              addHistory("orchestrator", "output", `📋 계획 수립 완료: ${event.totalSubtasks}개 서브태스크 생성\n${event.detail || ""}`);
+              break;
+            case "subtask_starting":
+              addHistory(event.agentId || "unknown", "task_started", `🔄 [${(event.subtaskIndex || 0) + 1}/${event.totalSubtasks}] ${event.task}`);
+              break;
+            case "subtask_completed":
+              addHistory(event.agentId || "unknown", "task_completed", event.detail || "완료");
+              break;
+            case "subtask_failed":
+              addHistory(event.agentId || "unknown", "task_failed", event.detail || "실패");
+              break;
+            case "summarizing":
+              addHistory("orchestrator", "output", "📊 결과 종합 중...");
+              break;
+            case "completed":
+              // Final summary logged in .then() handler below
+              break;
+          }
+        };
+
+        // Create an executor function that uses executeClaudeTask
+        const executor = async (agentId: string, taskStr: string, systemPrompt?: string) => {
+          agentStatusMap.set(agentId, {
+            id: agentId,
+            name: agentId,
+            status: "running",
+            currentTask: taskStr,
+          });
+
+          const result = await executeClaudeTask({
+            agentId,
+            task: taskStr,
+            systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
+          });
+
+          const elapsed = result.elapsedMs ? ` (${formatDuration(result.elapsedMs)})` : "";
+
+          if (result.success) {
+            addHistory(agentId, "output", `${result.output || "Completed"}${elapsed}`);
+            agentStatusMap.set(agentId, { id: agentId, name: agentId, status: "idle" });
+          } else {
+            addHistory(agentId, "output", `${result.error || "Failed"}${elapsed}`);
+            agentStatusMap.set(agentId, { id: agentId, name: agentId, status: "error" });
+          }
+
+          return result;
+        };
+
+        // Execute orchestration (don't block poll loop)
+        orchestrate(task, agents, executor, onProgress).then((result) => {
+          const elapsed = formatDuration(result.totalTime);
+          console.log(`   ✅ Orchestration completed: ${result.results.length} subtasks (${elapsed})`);
+          addHistory("orchestrator", "task_completed", `⏱️ 총 ${elapsed} 소요\n\n${result.summary}`);
+        }).catch((error) => {
+          console.log(`   ❌ Orchestration failed: ${error.message}`);
+          addHistory("orchestrator", "task_failed", error.message);
+        });
+
+        return { success: true, message: "Orchestration started" };
       }
 
       default:

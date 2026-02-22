@@ -396,7 +396,7 @@ const HISTORY_TYPE_LABELS: Record<HistoryEntry["type"], { label: string; color: 
   message_received: { label: "수신", color: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" },
   status_change: { label: "상태", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
   command_received: { label: "명령", color: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
-  output: { label: "출력", color: "bg-gray-500/20 text-gray-400 border-gray-500/30" },
+  output: { label: "Output", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
 };
 
 const MSG_TYPE_STYLES: Record<Message["type"], string> = {
@@ -515,7 +515,11 @@ function HistoryPanel({
             return (
               <div
                 key={entry.id}
-                className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-gray-600 transition-colors"
+                className={`bg-gray-800 rounded-xl p-4 border hover:border-gray-600 transition-colors ${
+                  entry.agentId === "orchestrator" && entry.type === "output"
+                    ? "border-l-4 border-l-blue-500 border-gray-700"
+                    : "border-gray-700"
+                }`}
               >
                 <div className="flex items-start gap-3">
                   <span className="text-2xl flex-shrink-0">{display.emoji}</span>
@@ -831,6 +835,8 @@ export default function Home() {
   const [historyData, setHistoryData] = useState<Record<string, HistoryEntry[]>>({});
   const [agentOverview, setAgentOverview] = useState<Record<string, AgentMessageOverview>>({});
   const [totalUnread, setTotalUnread] = useState(0);
+  const [orchestrateInput, setOrchestrateInput] = useState("");
+  const [isOrchestrating, setIsOrchestrating] = useState(false);
   const router = useRouter();
 
   const today = new Date().toLocaleDateString("ko-KR", {
@@ -896,7 +902,7 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch history (polling every 5s when on history tab)
+  // Fetch history (polling every 2s when orchestrating, else 5s)
   useEffect(() => {
     const fetchHistory = () => {
       fetch("/api/history")
@@ -908,9 +914,10 @@ export default function Home() {
     };
 
     fetchHistory();
-    const interval = setInterval(fetchHistory, 5000);
+    const pollInterval = isOrchestrating ? 2000 : 5000;
+    const interval = setInterval(fetchHistory, pollInterval);
     return () => clearInterval(interval);
-  }, []);
+  }, [isOrchestrating]);
 
   // Fetch message overview (polling every 3s)
   const fetchMessageOverview = useCallback(() => {
@@ -1050,6 +1057,37 @@ export default function Home() {
     }
   };
 
+  const handleOrchestrate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orchestrateInput.trim() || isOrchestrating) return;
+
+    setIsOrchestrating(true);
+
+    try {
+      const response = await fetch("/api/relay/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "orchestrate",
+          payload: { task: orchestrateInput.trim() },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed: ${response.statusText}`);
+      }
+
+      setOrchestrateInput("");
+      // Switch to history tab to see progress
+      setActiveTab("history");
+    } catch (error) {
+      console.error("Orchestrate failed:", error);
+      alert(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+    } finally {
+      setIsOrchestrating(false);
+    }
+  };
+
   const runningCount = agents.filter((a) => a.status === "running").length;
   const totalStacked = agents.reduce((sum, a) => sum + a.stack.length, 0);
 
@@ -1163,17 +1201,42 @@ export default function Home() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {activeTab === "agents" && (
           <div>
-            {/* Quick Actions */}
-            <div className="flex flex-wrap gap-2 sm:gap-3 mb-4 sm:mb-6">
-              <button className="bg-blue-600 hover:bg-blue-500 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
-                + 새 작업 분배
-              </button>
-              <button className="bg-gray-800 hover:bg-gray-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
-                새로고침
-              </button>
-              <button className="bg-gray-800 hover:bg-gray-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
-                리포트
-              </button>
+            {/* Orchestrate Command Bar */}
+            <div className="mb-4 sm:mb-6">
+              <form onSubmit={handleOrchestrate} className="flex gap-2">
+                <div className="flex-1 relative">
+                  <input
+                    type="text"
+                    value={orchestrateInput}
+                    onChange={(e) => setOrchestrateInput(e.target.value)}
+                    placeholder="전체 지시를 입력하세요... (예: 이번 주 블로그 쓰고, 매출 정리하고, 코드 리뷰해줘)"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30"
+                    disabled={isOrchestrating}
+                  />
+                  {isOrchestrating && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="submit"
+                  disabled={isOrchestrating || !orchestrateInput.trim()}
+                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 sm:px-6 py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap"
+                >
+                  {isOrchestrating ? "분배 중..." : "🎯 전체 지시"}
+                </button>
+              </form>
+              {isOrchestrating && (
+                <div className="mt-3 flex items-center gap-2 text-sm text-blue-400">
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                  </div>
+                  <span>에이전트 팀이 작업 중입니다... History 탭에서 진행상황을 확인하세요</span>
+                </div>
+              )}
             </div>
 
             {/* Category Filter */}
