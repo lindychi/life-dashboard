@@ -322,6 +322,98 @@ describe("orchestrator", () => {
         expect(result.error).toContain("Executor crashed");
       });
     });
+
+    it("should execute same-priority subtasks in parallel", async () => {
+      const parallelPlan: OrchestrationPlan = {
+        subtasks: [
+          { agentId: "architect", task: "Design A", priority: 1 },
+          { agentId: "executor", task: "Design B", priority: 1 },
+          { agentId: "tester", task: "Design C", priority: 1 },
+        ],
+        reasoning: "All same priority - should run in parallel",
+      };
+
+      const startTimes: Record<string, number> = {};
+      const endTimes: Record<string, number> = {};
+
+      const mockExecutor = vi.fn().mockImplementation((agentId: string) => {
+        startTimes[agentId] = Date.now();
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            endTimes[agentId] = Date.now();
+            resolve({ success: true, output: `${agentId} done` });
+          }, 100)
+        );
+      });
+
+      const start = Date.now();
+      const results = await executePlan(parallelPlan, mockExecutor);
+      const totalElapsed = Date.now() - start;
+
+      expect(results).toHaveLength(3);
+      results.forEach((r) => expect(r.success).toBe(true));
+
+      // If sequential: ~300ms. If parallel: ~100ms.
+      // Allow generous margin but should be significantly less than sequential.
+      expect(totalElapsed).toBeLessThan(250);
+    });
+
+    it("should execute different-priority groups sequentially", async () => {
+      const mixedPlan: OrchestrationPlan = {
+        subtasks: [
+          { agentId: "architect", task: "Phase 1", priority: 1 },
+          { agentId: "executor", task: "Phase 2", priority: 2 },
+        ],
+        reasoning: "Different priorities - sequential groups",
+      };
+
+      const executionOrder: string[] = [];
+      const mockExecutor = vi.fn().mockImplementation((agentId: string) => {
+        executionOrder.push(`start:${agentId}`);
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            executionOrder.push(`end:${agentId}`);
+            resolve({ success: true });
+          }, 50)
+        );
+      });
+
+      await executePlan(mixedPlan, mockExecutor);
+
+      // Priority 1 should complete before priority 2 starts
+      expect(executionOrder.indexOf("end:architect")).toBeLessThan(
+        executionOrder.indexOf("start:executor")
+      );
+    });
+
+    it("should fire all subtask_starting events for a parallel batch before any completion", async () => {
+      const parallelPlan: OrchestrationPlan = {
+        subtasks: [
+          { agentId: "architect", task: "Task A", priority: 1 },
+          { agentId: "executor", task: "Task B", priority: 1 },
+        ],
+        reasoning: "Parallel batch",
+      };
+
+      const mockExecutor = vi.fn().mockImplementation(() =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ success: true, output: "done" }), 50)
+        )
+      );
+
+      const onProgress = vi.fn();
+      await executePlan(parallelPlan, mockExecutor, onProgress);
+
+      const phases = onProgress.mock.calls.map((call) => call[0].phase);
+
+      // Both starting events should come before any completed events
+      const firstCompleted = phases.indexOf("subtask_completed");
+      const startingEvents = phases.filter((p: string) => p === "subtask_starting");
+      expect(startingEvents).toHaveLength(2);
+      expect(phases[0]).toBe("subtask_starting");
+      expect(phases[1]).toBe("subtask_starting");
+      expect(firstCompleted).toBeGreaterThanOrEqual(2);
+    });
   });
 
   describe("summarizeResults", () => {

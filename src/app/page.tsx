@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyToClipboard } from "@/lib/clipboard";
+import LiveMonitor from "@/components/LiveMonitor";
 
 // ===== Types =====
 interface TaskStack {
@@ -431,6 +432,9 @@ function HistoryPanel({
   const [filterAgent, setFilterAgent] = useState<string>("all");
   const [filterType, setFilterType] = useState<string>("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [replySending, setReplySending] = useState(false);
 
   const getDisplay = (agentId: string) =>
     agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
@@ -451,6 +455,49 @@ function HistoryPanel({
     if (success) {
       setCopiedId(entryId);
       setTimeout(() => setCopiedId(null), 2000);
+    }
+  };
+
+  const handleReply = async (entry: HistoryEntry) => {
+    if (!replyText.trim() || replySending) return;
+
+    setReplySending(true);
+    try {
+      // Send reply as a new spawn command to the agent with user's feedback
+      const response = await fetch("/api/relay/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "spawn",
+          payload: {
+            agentId: entry.agentId,
+            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText.trim()}`,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed: ${response.statusText}`);
+      }
+
+      // Also add a local history entry for the user's reply
+      await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: entry.agentId,
+          type: "message_sent",
+          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText.trim()}`,
+        }),
+      });
+
+      setReplyText("");
+      setReplyingTo(null);
+    } catch (error) {
+      console.error("Reply failed:", error);
+      alert(`답신 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+    } finally {
+      setReplySending(false);
     }
   };
 
@@ -525,6 +572,7 @@ function HistoryPanel({
             return (
               <div
                 key={entry.id}
+                id={`history-entry-${entry.id}`}
                 className={`bg-gray-800 rounded-xl p-4 border hover:border-gray-600 transition-colors ${
                   entry.agentId === "orchestrator" && entry.type === "output"
                     ? "border-l-4 border-l-blue-500 border-gray-700"
@@ -546,6 +594,24 @@ function HistoryPanel({
                       <span className="text-xs text-gray-500 ml-auto flex-shrink-0">
                         {relativeTime(entry.timestamp)}
                       </span>
+                      {(entry.type === "output" || entry.type === "task_completed") && (
+                        <button
+                          onClick={() => {
+                            setReplyingTo(replyingTo === entry.id ? null : entry.id);
+                            setReplyText("");
+                          }}
+                          className={`ml-1 transition-colors flex-shrink-0 ${
+                            replyingTo === entry.id
+                              ? "text-blue-400"
+                              : "text-gray-500 hover:text-white"
+                          }`}
+                          title="답신"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                          </svg>
+                        </button>
+                      )}
                       {(entry.type === "output" || entry.type === "task_completed" || entry.type === "task_failed") && (
                         <button
                           onClick={() => handleCopy(entry.id, entry.content)}
@@ -590,6 +656,42 @@ function HistoryPanel({
                           {entry.content}
                         </ReactMarkdown>
                       </div>
+                    )}
+                    {replyingTo === entry.id && (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleReply(entry);
+                        }}
+                        className="mt-3 flex gap-2"
+                      >
+                        <input
+                          type="text"
+                          value={replyText}
+                          onChange={(e) => setReplyText(e.target.value)}
+                          placeholder={`${agentMap[entry.agentId]?.name || entry.agentId}에게 답신...`}
+                          className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                          autoFocus
+                          disabled={replySending}
+                        />
+                        <button
+                          type="submit"
+                          disabled={replySending || !replyText.trim()}
+                          className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+                        >
+                          {replySending ? "..." : "답신"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReplyingTo(null);
+                            setReplyText("");
+                          }}
+                          className="text-gray-500 hover:text-white px-2 py-2 rounded-lg text-sm transition-colors"
+                        >
+                          취소
+                        </button>
+                      </form>
                     )}
                   </div>
                 </div>
@@ -864,6 +966,15 @@ export default function Home() {
   const [totalUnread, setTotalUnread] = useState(0);
   const [orchestrateInput, setOrchestrateInput] = useState("");
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [liveAgentStatuses, setLiveAgentStatuses] = useState<
+    Array<{
+      id: string;
+      name: string;
+      status: "running" | "idle" | "waiting" | "error";
+      currentTask?: string;
+      updatedAt: string;
+    }>
+  >([]);
   const router = useRouter();
 
   const today = new Date().toLocaleDateString("ko-KR", {
@@ -928,6 +1039,41 @@ export default function Home() {
     const interval = setInterval(fetchStatus, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Fetch live agent statuses from relay (polling every 2s when orchestrating, else 5s)
+  useEffect(() => {
+    const fetchStatuses = () => {
+      fetch("/api/relay/status")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.agents) {
+            // Flatten all gateway agent statuses
+            const all = Object.values(data.agents as Record<string, Array<{
+              id: string;
+              name: string;
+              status: "running" | "idle" | "waiting" | "error";
+              currentTask?: string;
+              updatedAt: string;
+            }>>).flat();
+            setLiveAgentStatuses(all);
+
+            // Auto-detect orchestration: if any agent is running, keep fast polling
+            const hasRunning = all.some((a) => a.status === "running");
+            if (hasRunning && !isOrchestrating) {
+              setIsOrchestrating(true);
+            } else if (!hasRunning && isOrchestrating) {
+              setIsOrchestrating(false);
+            }
+          }
+        })
+        .catch(console.error);
+    };
+
+    fetchStatuses();
+    const pollInterval = isOrchestrating ? 2000 : 5000;
+    const interval = setInterval(fetchStatuses, pollInterval);
+    return () => clearInterval(interval);
+  }, [isOrchestrating]);
 
   // Fetch history (polling every 2s when orchestrating, else 5s)
   useEffect(() => {
@@ -1118,6 +1264,110 @@ export default function Home() {
   const runningCount = agents.filter((a) => a.status === "running").length;
   const totalStacked = agents.reduce((sum, a) => sum + a.stack.length, 0);
 
+  // Pending reply banner state
+  const [bannerExpandedId, setBannerExpandedId] = useState<string | null>(null);
+  const [bannerReplyText, setBannerReplyText] = useState("");
+  const [bannerReplySending, setBannerReplySending] = useState(false);
+
+  const handleBannerReply = async (entry: HistoryEntry) => {
+    if (!bannerReplyText.trim() || bannerReplySending) return;
+
+    setBannerReplySending(true);
+    try {
+      const response = await fetch("/api/relay/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "spawn",
+          payload: {
+            agentId: entry.agentId,
+            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${bannerReplyText.trim()}`,
+          },
+        }),
+      });
+
+      if (!response.ok) throw new Error(`Failed: ${response.statusText}`);
+
+      await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: entry.agentId,
+          type: "message_sent",
+          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${bannerReplyText.trim()}`,
+        }),
+      });
+
+      setBannerReplyText("");
+      setBannerExpandedId(null);
+    } catch (error) {
+      console.error("Reply failed:", error);
+      alert(`답신 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+    } finally {
+      setBannerReplySending(false);
+    }
+  };
+
+  // Compute entries awaiting user reply
+  // An entry "awaits reply" if it's output/task_completed and there's no subsequent message_sent to that agent
+  // Detect if content contains a question or request for user input
+  const looksLikeQuestion = useCallback((content: string): boolean => {
+    // Skip short completion messages
+    if (content.length < 30) return false;
+
+    // Exclude simple completion patterns
+    const completionPatterns = /^(completed|task completed|done|완료|성공|실패|error|timeout)/i;
+    if (completionPatterns.test(content.trim())) return false;
+
+    // Exclude orchestrator summary/status entries
+    if (/^[🏁📊📋📨⏳]/.test(content.trim())) return false;
+
+    // Check for question/request patterns (Korean + English)
+    const questionPatterns = [
+      /\?/,                          // Question mark
+      /기다리/,                       // "기다리고 있습니다" (waiting)
+      /확인.*(?:필요|싶|주세요|할까)/,  // "확인이 필요합니다" / "확인하고 싶습니다"
+      /알려.*주/,                     // "알려주세요"
+      /어떤.*(?:할까|좋을까|원하)/,     // "어떤 걸 할까요?"
+      /선택.*(?:해주|필요)/,           // "선택해주세요"
+      /의견/,                         // "의견"
+      /피드백/,                       // "피드백"
+      /결정.*(?:필요|해주)/,           // "결정이 필요합니다"
+      /(?:which|what|how|should|would you|please|let me know)/i,
+    ];
+
+    return questionPatterns.some((pattern) => pattern.test(content));
+  }, []);
+
+  const pendingReplies = useMemo(() => {
+    const allEntries = Object.values(historyData).flat();
+    const sorted = [...allEntries].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    // For each agent, find the last output/task_completed that looks like a question
+    const agentLastQuestion: Record<string, HistoryEntry> = {};
+    const agentReplied: Set<string> = new Set();
+
+    for (const entry of sorted) {
+      if (
+        (entry.type === "output" || entry.type === "task_completed") &&
+        looksLikeQuestion(entry.content)
+      ) {
+        agentLastQuestion[entry.agentId] = entry;
+        agentReplied.delete(entry.agentId);
+      }
+      if (entry.type === "message_sent" && entry.agentId) {
+        agentReplied.add(entry.agentId);
+      }
+    }
+
+    // Return entries that have not been replied to
+    return Object.entries(agentLastQuestion)
+      .filter(([agentId]) => !agentReplied.has(agentId))
+      .map(([, entry]) => entry);
+  }, [historyData, looksLikeQuestion]);
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
@@ -1164,6 +1414,17 @@ export default function Home() {
               <div className="text-gray-400">
                 <span className="text-green-400">{runningCount}</span> 실행
                 · <span className="text-blue-400">{totalStacked}</span> 대기
+                {pendingReplies.length > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      onClick={() => setActiveTab("history")}
+                      className="text-yellow-400 hover:text-yellow-300 transition-colors"
+                    >
+                      {pendingReplies.length} 응답 대기
+                    </button>
+                  </>
+                )}
               </div>
 
               {/* User - Desktop only */}
@@ -1265,6 +1526,15 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+            {/* Live Monitor */}
+            {liveAgentStatuses.length > 0 && (
+              <LiveMonitor
+                agentStatuses={liveAgentStatuses}
+                historyData={historyData}
+                agentMap={agentMap}
+              />
+            )}
 
             {/* Category Filter */}
             <div className="flex gap-2 mb-4">
@@ -1368,7 +1638,98 @@ export default function Home() {
         )}
 
         {activeTab === "history" && (
-          <HistoryPanel historyData={historyData} agents={agents} agentMap={agentMap} />
+          <div>
+            {/* Pending replies banner */}
+            {pendingReplies.length > 0 && (
+              <div className="mb-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-yellow-400 text-sm font-bold">
+                    ⏳ 응답 대기 ({pendingReplies.length})
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    에이전트가 답신을 기다리고 있습니다
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {pendingReplies.map((entry) => {
+                    const display = agentMap[entry.agentId] || { emoji: "\u{1F916}", name: entry.agentId };
+                    const isExpanded = bannerExpandedId === entry.id;
+                    return (
+                      <div
+                        key={entry.id}
+                        className={`bg-gray-800/80 rounded-lg border transition-colors ${
+                          isExpanded
+                            ? "border-yellow-500/40"
+                            : "border-gray-700 hover:border-yellow-500/30"
+                        }`}
+                      >
+                        {/* Header - always visible */}
+                        <div
+                          className="flex items-start gap-3 p-3 cursor-pointer"
+                          onClick={() => {
+                            setBannerExpandedId(isExpanded ? null : entry.id);
+                            setBannerReplyText("");
+                          }}
+                        >
+                          <span className="text-xl flex-shrink-0">{display.emoji}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-white">{display.name}</span>
+                              <span className="text-xs text-gray-500">{relativeTime(entry.timestamp)}</span>
+                            </div>
+                            <p className={`text-xs text-gray-400 mt-1 ${isExpanded ? "" : "line-clamp-2"}`}>
+                              {entry.content}
+                            </p>
+                          </div>
+                          <span className="text-yellow-400 text-xs whitespace-nowrap flex-shrink-0">
+                            {isExpanded ? "접기 ▲" : "펼치기 ▼"}
+                          </span>
+                        </div>
+
+                        {/* Expanded: full content + reply form */}
+                        {isExpanded && (
+                          <div className="px-3 pb-3 border-t border-gray-700/50">
+                            {/* Full content with markdown */}
+                            <div className="prose prose-sm prose-invert max-w-none mt-3 mb-3 break-words text-gray-300 max-h-64 overflow-y-auto">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {entry.content}
+                              </ReactMarkdown>
+                            </div>
+                            {/* Reply form */}
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                handleBannerReply(entry);
+                              }}
+                              className="flex gap-2"
+                            >
+                              <input
+                                type="text"
+                                value={bannerReplyText}
+                                onChange={(e) => setBannerReplyText(e.target.value)}
+                                placeholder={`${display.name}에게 답신...`}
+                                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
+                                autoFocus
+                                disabled={bannerReplySending}
+                              />
+                              <button
+                                type="submit"
+                                disabled={bannerReplySending || !bannerReplyText.trim()}
+                                className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+                              >
+                                {bannerReplySending ? "..." : "답신"}
+                              </button>
+                            </form>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <HistoryPanel historyData={historyData} agents={agents} agentMap={agentMap} />
+          </div>
         )}
 
         {activeTab === "messages" && (

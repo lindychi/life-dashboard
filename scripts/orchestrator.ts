@@ -116,69 +116,95 @@ export async function executePlan(
   ) => Promise<{ success: boolean; output?: string; error?: string }>,
   onProgress?: (event: ProgressEvent) => void
 ): Promise<SubTaskResult[]> {
-  // Sort subtasks by priority (1 = highest, execute first)
   const sortedSubtasks = [...plan.subtasks].sort((a, b) => a.priority - b.priority);
-
-  const results: SubTaskResult[] = [];
   const totalSubtasks = sortedSubtasks.length;
+  const results: SubTaskResult[] = [];
 
-  for (let i = 0; i < sortedSubtasks.length; i++) {
-    const subtask = sortedSubtasks[i];
+  // Group subtasks by priority for parallel execution within same priority
+  const priorityGroups = new Map<number, Array<{ subtask: SubTask; index: number }>>();
+  sortedSubtasks.forEach((subtask, index) => {
+    const group = priorityGroups.get(subtask.priority) || [];
+    group.push({ subtask, index });
+    priorityGroups.set(subtask.priority, group);
+  });
 
-    onProgress?.({
-      phase: "subtask_starting",
-      agentId: subtask.agentId,
-      task: subtask.task,
-      subtaskIndex: i,
-      totalSubtasks,
-    });
+  // Execute each priority group: within a group, run in parallel
+  const sortedPriorities = [...priorityGroups.keys()].sort((a, b) => a - b);
 
-    try {
-      const result = await executor(subtask.agentId, subtask.task, undefined);
-      results.push({
+  for (const priority of sortedPriorities) {
+    const group = priorityGroups.get(priority)!;
+
+    // Fire all subtask_starting events for this batch
+    for (const { subtask, index } of group) {
+      onProgress?.({
+        phase: "subtask_starting",
         agentId: subtask.agentId,
         task: subtask.task,
-        success: result.success,
-        output: result.output,
-        error: result.error,
+        subtaskIndex: index,
+        totalSubtasks,
       });
+    }
 
-      if (result.success) {
-        onProgress?.({
-          phase: "subtask_completed",
+    // Execute all subtasks in this priority group in parallel
+    const promises = group.map(async ({ subtask, index }) => {
+      try {
+        const result = await executor(subtask.agentId, subtask.task, undefined);
+        const subResult: SubTaskResult = {
           agentId: subtask.agentId,
           task: subtask.task,
-          subtaskIndex: i,
-          totalSubtasks,
-          detail: result.output,
-        });
-      } else {
+          success: result.success,
+          output: result.output,
+          error: result.error,
+        };
+
+        if (result.success) {
+          onProgress?.({
+            phase: "subtask_completed",
+            agentId: subtask.agentId,
+            task: subtask.task,
+            subtaskIndex: index,
+            totalSubtasks,
+            detail: result.output,
+          });
+        } else {
+          onProgress?.({
+            phase: "subtask_failed",
+            agentId: subtask.agentId,
+            task: subtask.task,
+            subtaskIndex: index,
+            totalSubtasks,
+            detail: result.error,
+          });
+        }
+
+        return subResult;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const subResult: SubTaskResult = {
+          agentId: subtask.agentId,
+          task: subtask.task,
+          success: false,
+          error: errorMessage,
+        };
+
         onProgress?.({
           phase: "subtask_failed",
           agentId: subtask.agentId,
           task: subtask.task,
-          subtaskIndex: i,
+          subtaskIndex: index,
           totalSubtasks,
-          detail: result.error,
+          detail: errorMessage,
         });
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      results.push({
-        agentId: subtask.agentId,
-        task: subtask.task,
-        success: false,
-        error: errorMessage,
-      });
 
-      onProgress?.({
-        phase: "subtask_failed",
-        agentId: subtask.agentId,
-        task: subtask.task,
-        subtaskIndex: i,
-        totalSubtasks,
-        detail: errorMessage,
-      });
+        return subResult;
+      }
+    });
+
+    const batchResults = await Promise.allSettled(promises);
+    for (const settled of batchResults) {
+      if (settled.status === "fulfilled") {
+        results.push(settled.value);
+      }
     }
   }
 

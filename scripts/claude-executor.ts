@@ -21,6 +21,7 @@ export interface ClaudeExecutorOptions {
   systemPrompt: string;
   workDir?: string;
   timeout?: number; // ms, 0 = no timeout (default)
+  onOutput?: (chunk: string) => void;
 }
 
 /**
@@ -63,7 +64,7 @@ export function formatDuration(ms: number): string {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { task, systemPrompt, workDir, timeout = 0 } = options;
+  const { task, systemPrompt, workDir, timeout = 0, onOutput } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
@@ -88,6 +89,7 @@ export function executeClaudeTask(
 
     child.stdout?.on("data", (data: Buffer) => {
       stdout += data.toString();
+      onOutput?.(data.toString());
     });
 
     child.stderr?.on("data", (data: Buffer) => {

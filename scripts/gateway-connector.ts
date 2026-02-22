@@ -278,10 +278,26 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             currentTask: taskStr,
           });
 
+          let lastStreamUpdate = 0;
+          const STREAM_INTERVAL = 3000; // Send streaming updates every 3 seconds
+          let streamBuffer = "";
+
           const result = await executeClaudeTask({
             agentId,
             task: taskStr,
             systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
+            onOutput: (chunk: string) => {
+              streamBuffer += chunk;
+              const now = Date.now();
+              if (now - lastStreamUpdate >= STREAM_INTERVAL) {
+                lastStreamUpdate = now;
+                // Show last 200 chars of accumulated output as progress
+                const preview = streamBuffer.length > 200
+                  ? "..." + streamBuffer.slice(-200)
+                  : streamBuffer;
+                addHistory(agentId, "output", `⏳ ${agentName} 진행 중...\n${preview}`);
+              }
+            },
           });
 
           const elapsed = result.elapsedMs ? ` (${formatDuration(result.elapsedMs)})` : "";

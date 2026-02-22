@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { getAllHistory } from "@/lib/history";
+import { getAllHistory, addHistoryEntry } from "@/lib/history";
 
 /**
  * GET /api/history
@@ -18,4 +18,38 @@ export async function GET(request: NextRequest) {
   const history = await getAllHistory(limit);
 
   return NextResponse.json({ history });
+}
+
+/**
+ * POST /api/history
+ * 히스토리 엔트리 추가
+ */
+export async function POST(request: NextRequest) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { agentId, type, content, metadata } = await request.json();
+
+    if (!agentId || !type || !content) {
+      return NextResponse.json(
+        { error: "agentId, type, and content are required" },
+        { status: 400 }
+      );
+    }
+
+    const entry = await addHistoryEntry(agentId, {
+      agentId,
+      type,
+      content,
+      metadata,
+    });
+
+    return NextResponse.json({ success: true, entry });
+  } catch (error) {
+    console.error("History POST error:", error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
 }
