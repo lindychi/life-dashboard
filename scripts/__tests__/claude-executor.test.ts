@@ -62,7 +62,7 @@ describe("claude-executor", () => {
       // Verify spawn was called with correct args
       expect(spawn).toHaveBeenCalledWith(
         "claude",
-        ["--print", "--dangerously-skip-permissions", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
+        ["--print", "--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
         expect.objectContaining({
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -279,7 +279,7 @@ describe("claude-executor", () => {
       await promise;
     });
 
-    it("should include both --dangerously-skip-permissions and --mcp-config in correct order", async () => {
+    it("should include both --allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard and --mcp-config in correct order", async () => {
       const mockProc = createMockProcess();
       vi.mocked(spawn).mockReturnValue(mockProc);
 
@@ -294,12 +294,12 @@ describe("claude-executor", () => {
       const args = spawnCall[1] as string[];
 
       // Should have both flags
-      expect(args).toContain("--dangerously-skip-permissions");
+      expect(args).toContain("--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
       expect(args).toContain("--mcp-config");
       expect(args).toContain("/project/.mcp.json");
 
-      // --mcp-config should come after --dangerously-skip-permissions
-      const skipIndex = args.indexOf("--dangerously-skip-permissions");
+      // --mcp-config should come after --allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard
+      const skipIndex = args.indexOf("--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
       const mcpIndex = args.indexOf("--mcp-config");
       expect(mcpIndex).toBeGreaterThan(skipIndex);
 

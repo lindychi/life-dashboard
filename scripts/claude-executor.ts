@@ -15,6 +15,16 @@ export interface ExecutionResult {
   elapsedMs?: number;
 }
 
+// Safe tools whitelist: file operations + MCP tools, NO Bash execution
+const ALLOWED_TOOLS = [
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "mcp__life-dashboard",
+].join(",");
+
 export interface ClaudeExecutorOptions {
   agentId: string;
   task: string;
@@ -24,6 +34,7 @@ export interface ClaudeExecutorOptions {
   onOutput?: (chunk: string) => void;
   disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
   mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
+  allowBash?: boolean; // If true, include Bash in allowed tools (use with caution)
 }
 
 /**
@@ -66,20 +77,20 @@ export function formatDuration(ms: number): string {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { task, systemPrompt, workDir, timeout = 0, onOutput, disableTools, mcpConfig } = options;
+  const { task, systemPrompt, workDir, timeout = 0, onOutput, disableTools, mcpConfig, allowBash } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
 
     const args = ["--print"];
 
-    // If disableTools is true, add --tools "" to disable all tools
-    // Otherwise, skip permissions since subprocess agents run non-interactively
-    // (stdin is "ignore" so interactive permission prompts would hang forever)
+    // Security: use --allowedTools whitelist instead of --dangerously-skip-permissions
+    // This prevents arbitrary Bash execution if the relay server is compromised
     if (disableTools) {
       args.push("--tools", "");
     } else {
-      args.push("--dangerously-skip-permissions");
+      const tools = allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS;
+      args.push("--allowedTools", tools);
 
       // Add MCP config if provided
       if (mcpConfig) {
