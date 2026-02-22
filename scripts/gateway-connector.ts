@@ -229,6 +229,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             systemPrompt: a.systemPrompt,
           }));
 
+        // Build an agent name map
+        const agentNameMap: Record<string, string> = {};
+        agents.forEach((a: any) => { agentNameMap[a.id] = a.name; });
+        const getAgentName = (id: string) => agentNameMap[id] || id;
+
         // Progress callback for real-time visibility
         const onProgress = (event: ProgressEvent) => {
           switch (event.phase) {
@@ -238,15 +243,22 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             case "plan_created":
               addHistory("orchestrator", "output", `📋 계획 수립 완료: ${event.totalSubtasks}개 서브태스크 생성\n${event.detail || ""}`);
               break;
-            case "subtask_starting":
-              addHistory(event.agentId || "unknown", "task_started", `🔄 [${(event.subtaskIndex || 0) + 1}/${event.totalSubtasks}] ${event.task}`);
+            case "subtask_starting": {
+              const agentName = getAgentName(event.agentId || "unknown");
+              addHistory("orchestrator", "output", `📨 Orchestrator → ${agentName}: "${event.task}"`);
+              addHistory(event.agentId || "unknown", "task_started", `🔄 [${(event.subtaskIndex || 0) + 1}/${event.totalSubtasks}] 작업 수신`);
               break;
-            case "subtask_completed":
-              addHistory(event.agentId || "unknown", "task_completed", event.detail || "완료");
+            }
+            case "subtask_completed": {
+              const agentName = getAgentName(event.agentId || "unknown");
+              addHistory(event.agentId || "unknown", "task_completed", `✅ ${agentName} → Orchestrator: 완료`);
               break;
-            case "subtask_failed":
-              addHistory(event.agentId || "unknown", "task_failed", event.detail || "실패");
+            }
+            case "subtask_failed": {
+              const agentName = getAgentName(event.agentId || "unknown");
+              addHistory(event.agentId || "unknown", "task_failed", `❌ ${agentName} → Orchestrator: 실패 — ${event.detail || "알 수 없는 오류"}`);
               break;
+            }
             case "summarizing":
               addHistory("orchestrator", "output", "📊 결과 종합 중...");
               break;
@@ -258,9 +270,10 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
         // Create an executor function that uses executeClaudeTask
         const executor = async (agentId: string, taskStr: string, systemPrompt?: string) => {
+          const agentName = getAgentName(agentId);
           agentStatusMap.set(agentId, {
             id: agentId,
-            name: agentId,
+            name: agentName,
             status: "running",
             currentTask: taskStr,
           });
@@ -274,11 +287,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           const elapsed = result.elapsedMs ? ` (${formatDuration(result.elapsedMs)})` : "";
 
           if (result.success) {
-            addHistory(agentId, "output", `${result.output || "Completed"}${elapsed}`);
-            agentStatusMap.set(agentId, { id: agentId, name: agentId, status: "idle" });
+            addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${result.output || "완료"}`);
+            agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "idle" });
           } else {
-            addHistory(agentId, "output", `${result.error || "Failed"}${elapsed}`);
-            agentStatusMap.set(agentId, { id: agentId, name: agentId, status: "error" });
+            addHistory(agentId, "output", `⚠️ ${agentName} 오류${elapsed}:\n${result.error || "실패"}`);
+            agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "error" });
           }
 
           return result;
@@ -288,7 +301,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         orchestrate(task, agents, executor, onProgress).then((result) => {
           const elapsed = formatDuration(result.totalTime);
           console.log(`   ✅ Orchestration completed: ${result.results.length} subtasks (${elapsed})`);
-          addHistory("orchestrator", "task_completed", `⏱️ 총 ${elapsed} 소요\n\n${result.summary}`);
+          addHistory("orchestrator", "task_completed", `🏁 오케스트레이션 완료 — ⏱️ 총 ${elapsed} 소요\n\n${result.summary}`);
         }).catch((error) => {
           console.log(`   ❌ Orchestration failed: ${error.message}`);
           addHistory("orchestrator", "task_failed", error.message);

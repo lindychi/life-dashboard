@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { copyToClipboard } from "@/lib/clipboard";
 
 // ===== Types =====
 interface TaskStack {
@@ -429,6 +430,7 @@ function HistoryPanel({
 }) {
   const [filterAgent, setFilterAgent] = useState<string>("all");
   const [filterType, setFilterType] = useState<string>("all");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const getDisplay = (agentId: string) =>
     agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
@@ -442,6 +444,14 @@ function HistoryPanel({
       else next.add(id);
       return next;
     });
+  };
+
+  const handleCopy = async (entryId: string, content: string) => {
+    const success = await copyToClipboard(content);
+    if (success) {
+      setCopiedId(entryId);
+      setTimeout(() => setCopiedId(null), 2000);
+    }
   };
 
   const COLLAPSE_THRESHOLD = 200; // chars
@@ -536,6 +546,23 @@ function HistoryPanel({
                       <span className="text-xs text-gray-500 ml-auto flex-shrink-0">
                         {relativeTime(entry.timestamp)}
                       </span>
+                      {(entry.type === "output" || entry.type === "task_completed" || entry.type === "task_failed") && (
+                        <button
+                          onClick={() => handleCopy(entry.id, entry.content)}
+                          className="ml-2 text-gray-500 hover:text-white transition-colors flex-shrink-0"
+                          title="복사"
+                        >
+                          {copiedId === entry.id ? (
+                            <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          )}
+                        </button>
+                      )}
                     </div>
                     {entry.content.length > COLLAPSE_THRESHOLD ? (
                       <div className="mt-1">
