@@ -494,6 +494,7 @@ export default function Home() {
   const [historyData, setHistoryData] = useState<Record<string, HistoryEntry[]>>({});
   const [agentOverview, setAgentOverview] = useState<Record<string, AgentMessageOverview>>({});
   const [totalUnread, setTotalUnread] = useState(0);
+  const [dbConnected, setDbConnected] = useState(true);
   const [orchestrateInput, setOrchestrateInput] = useState("");
   const [isOrchestrating, setIsOrchestrating] = useState(false);
   const [liveAgentStatuses, setLiveAgentStatuses] = useState<
@@ -561,6 +562,7 @@ export default function Home() {
         .then((res) => res.json())
         .then((data) => {
           if (data.gateways) setGateways(data.gateways);
+          if (data.dbConnected !== undefined) setDbConnected(data.dbConnected);
         })
         .catch(console.error);
     };
@@ -595,6 +597,7 @@ export default function Home() {
               setIsOrchestrating(false);
             }
           }
+          if (data.dbConnected !== undefined) setDbConnected(data.dbConnected);
         })
         .catch(console.error);
     };
@@ -711,7 +714,8 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to spawn task: ${response.statusText}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
       const result = await response.json();
@@ -777,7 +781,8 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed: ${response.statusText}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
       setOrchestrateInput("");
@@ -864,6 +869,14 @@ export default function Home() {
                 </span>
               </div>
 
+              {/* DB Status */}
+              {!dbConnected && (
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  <span className="text-red-400">DB 연결 끊김</span>
+                </div>
+              )}
+
               {/* Stats */}
               <div className="text-gray-400">
                 <span className="text-green-400">{runningCount}</span> 실행
@@ -949,26 +962,35 @@ export default function Home() {
             onAddTask={handleAddTask}
             onStartTask={handleStartTask}
             onPendingReply={async (entry, replyText) => {
-              await fetch("/api/relay/command", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  type: "spawn",
-                  payload: {
+              try {
+                const response = await fetch("/api/relay/command", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    type: "spawn",
+                    payload: {
+                      agentId: entry.agentId,
+                      task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
+                    },
+                  }),
+                });
+                if (!response.ok) {
+                  const errorData = await response.json().catch(() => ({}));
+                  throw new Error(errorData.error || `HTTP ${response.status}`);
+                }
+                await fetch("/api/history", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
                     agentId: entry.agentId,
-                    task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
-                  },
-                }),
-              });
-              await fetch("/api/history", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  agentId: entry.agentId,
-                  type: "message_sent",
-                  content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
-                }),
-              });
+                    type: "message_sent",
+                    content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
+                  }),
+                });
+              } catch (error) {
+                console.error("Failed to send reply:", error);
+                alert(`Failed to send reply: ${error instanceof Error ? error.message : "Unknown error"}`);
+              }
             }}
           />
         )}

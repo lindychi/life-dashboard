@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateRelayKey } from "@/lib/relay";
 import { sendMessage, getMessages } from "@/lib/messages";
+import { isDbConnectionError } from "@/lib/db";
 
 /**
  * GET /api/relay/messages
@@ -32,6 +33,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ messages });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json({ messages: [] });
+    }
     console.error("Relay messages GET error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
@@ -82,6 +86,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, message });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable" },
+        { status: 503 }
+      );
+    }
     console.error("Relay messages POST error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

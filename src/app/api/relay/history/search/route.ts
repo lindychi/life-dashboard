@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateRelayKey } from "@/lib/relay";
-import { query } from "@/lib/db";
+import { query, isDbConnectionError } from "@/lib/db";
 import type { HistoryEntry } from "@/lib/history";
 
 /**
@@ -50,6 +50,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ results });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json({ results: [] });
+    }
     console.error("Relay history search error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

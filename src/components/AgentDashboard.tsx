@@ -96,26 +96,35 @@ export default function AgentDashboard({
     entry: HistoryEntry,
     replyText: string
   ) => {
-    await fetch("/api/relay/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "spawn",
-        payload: {
+    try {
+      const response = await fetch("/api/relay/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "spawn",
+          payload: {
+            agentId: entry.agentId,
+            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
+      }
+      await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           agentId: entry.agentId,
-          task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
-        },
-      }),
-    });
-    await fetch("/api/history", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        agentId: entry.agentId,
-        type: "message_sent",
-        content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
-      }),
-    });
+          type: "message_sent",
+          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
+        }),
+      });
+    } catch (error) {
+      console.error("Failed to send reply:", error);
+      alert(`답신 전송 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+    }
   };
 
   // Sort and filter agents

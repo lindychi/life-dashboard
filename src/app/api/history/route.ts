@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { getAllHistory, addHistoryEntry } from "@/lib/history";
+import { isDbConnectionError } from "@/lib/db";
 
 /**
  * GET /api/history
@@ -12,12 +13,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { searchParams } = new URL(request.url);
-  const limit = parseInt(searchParams.get("limit") || "50", 10);
+  try {
+    const { searchParams } = new URL(request.url);
+    const limit = parseInt(searchParams.get("limit") || "50", 10);
 
-  const history = await getAllHistory(limit);
+    const history = await getAllHistory(limit);
 
-  return NextResponse.json({ history });
+    return NextResponse.json({ history });
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json({ history: {} });
+    }
+    console.error("History GET error:", error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
 }
 
 /**
@@ -49,6 +58,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, entry });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable" },
+        { status: 503 }
+      );
+    }
     console.error("History POST error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

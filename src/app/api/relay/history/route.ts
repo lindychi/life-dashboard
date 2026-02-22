@@ -5,6 +5,7 @@ import {
   getAgentHistory,
   addHistoryEntry,
 } from "@/lib/history";
+import { isDbConnectionError } from "@/lib/db";
 
 /**
  * GET /api/relay/history
@@ -35,6 +36,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ history });
     }
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json({ history: {} });
+    }
     console.error("Relay history GET error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
@@ -71,6 +75,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, entry });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable" },
+        { status: 503 }
+      );
+    }
     console.error("Relay history POST error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

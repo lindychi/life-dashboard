@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { getConnectedGateways, getAllAgentStatuses, validateRelayKey } from "@/lib/relay";
+import { isDbConnectionError } from "@/lib/db";
 
 // Dashboard에서 현재 상태 조회 (supports both user session and relay key auth)
 export async function GET(request: NextRequest) {
@@ -18,9 +19,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       gateways,
       agents,
+      dbConnected: true,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json({
+        gateways: [],
+        agents: {},
+        dbConnected: false,
+        timestamp: new Date().toISOString(),
+      });
+    }
     console.error("Status error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

@@ -5,6 +5,7 @@ import {
   getAllAgentsOverview,
   type Message,
 } from "@/lib/messages";
+import { isDbConnectionError } from "@/lib/db";
 
 /**
  * POST /api/messages - 메시지 전송
@@ -41,6 +42,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, message });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable" },
+        { status: 503 }
+      );
+    }
     console.error("Failed to send message:", error);
     return NextResponse.json(
       { error: "Failed to send message" },
@@ -63,6 +70,9 @@ export async function GET(req: NextRequest) {
     const agents = await getAllAgentsOverview();
     return NextResponse.json({ agents });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json({ agents: {} });
+    }
     console.error("Failed to get messages overview:", error);
     return NextResponse.json(
       { error: "Failed to get messages overview" },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { queueCommand, getConnectedGateways, validateRelayKey } from "@/lib/relay";
+import { isDbConnectionError } from "@/lib/db";
 
 // Dashboard에서 Gateway로 명령 전송 (supports both user session and relay key auth)
 export async function POST(request: NextRequest) {
@@ -43,6 +44,12 @@ export async function POST(request: NextRequest) {
       command,
     });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable" },
+        { status: 503 }
+      );
+    }
     console.error("Command error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

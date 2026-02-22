@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { getMessages, getConversation, markAsRead } from "@/lib/messages";
+import { isDbConnectionError } from "@/lib/db";
 
 interface RouteContext {
   params: Promise<{ agentId: string }>;
@@ -36,6 +37,10 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ agentId, messages });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      const { agentId } = await context.params;
+      return NextResponse.json({ agentId, messages: [] });
+    }
     console.error("Failed to get messages:", error);
     return NextResponse.json(
       { error: "Failed to get messages" },
@@ -77,6 +82,12 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable" },
+        { status: 503 }
+      );
+    }
     console.error("Failed to mark message as read:", error);
     return NextResponse.json(
       { error: "Failed to mark message as read" },

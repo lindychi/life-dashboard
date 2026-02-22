@@ -6,6 +6,7 @@ import {
   updateAgentStatuses,
 } from "@/lib/relay";
 import { addHistoryEntry } from "@/lib/history";
+import { isDbConnectionError } from "@/lib/db";
 
 // Gateway가 주기적으로 호출 (polling)
 export async function POST(request: NextRequest) {
@@ -55,6 +56,12 @@ export async function POST(request: NextRequest) {
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
+    if (isDbConnectionError(error)) {
+      return NextResponse.json(
+        { error: "Database unavailable", commands: [] },
+        { status: 503 }
+      );
+    }
     console.error("Poll error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
