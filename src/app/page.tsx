@@ -957,6 +957,7 @@ export default function Home() {
             pendingReplies={pendingReplies}
             orchestrateInput={orchestrateInput}
             isOrchestrating={isOrchestrating}
+            dbConnected={dbConnected}
             onOrchestrateInputChange={setOrchestrateInput}
             onOrchestrate={handleOrchestrate}
             onAddTask={handleAddTask}

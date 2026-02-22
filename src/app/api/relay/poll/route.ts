@@ -26,29 +26,47 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Update heartbeat
-    await updateHeartbeat(gatewayId);
-
-    // Update agent statuses if provided
-    if (agents && Array.isArray(agents)) {
-      await updateAgentStatuses(gatewayId, agents);
+    // Update heartbeat (fire-and-forget, ignore DB errors)
+    try {
+      await updateHeartbeat(gatewayId);
+    } catch (error) {
+      if (!isDbConnectionError(error)) {
+        throw error;
+      }
     }
 
-    // 히스토리 엔트리 저장
-    if (historyEntries && Array.isArray(historyEntries)) {
-      for (const entry of historyEntries) {
-        if (entry.agentId && entry.type && entry.content) {
-          await addHistoryEntry(entry.agentId, {
-            agentId: entry.agentId,
-            type: entry.type,
-            content: entry.content,
-            metadata: entry.metadata,
-          });
+    // Update agent statuses if provided (fire-and-forget, ignore DB errors)
+    if (agents && Array.isArray(agents)) {
+      try {
+        await updateAgentStatuses(gatewayId, agents);
+      } catch (error) {
+        if (!isDbConnectionError(error)) {
+          throw error;
         }
       }
     }
 
-    // Get pending commands
+    // 히스토리 엔트리 저장 (fire-and-forget, ignore DB errors)
+    if (historyEntries && Array.isArray(historyEntries)) {
+      for (const entry of historyEntries) {
+        if (entry.agentId && entry.type && entry.content) {
+          try {
+            await addHistoryEntry(entry.agentId, {
+              agentId: entry.agentId,
+              type: entry.type,
+              content: entry.content,
+              metadata: entry.metadata,
+            });
+          } catch (error) {
+            if (!isDbConnectionError(error)) {
+              throw error;
+            }
+          }
+        }
+      }
+    }
+
+    // Get pending commands (has fallback for DB down)
     const commands = await getAndClearCommands(gatewayId);
 
     return NextResponse.json({
@@ -56,12 +74,6 @@ export async function POST(request: NextRequest) {
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    if (isDbConnectionError(error)) {
-      return NextResponse.json(
-        { error: "Database unavailable", commands: [] },
-        { status: 503 }
-      );
-    }
     console.error("Poll error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

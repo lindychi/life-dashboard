@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { queueCommand, getConnectedGateways, validateRelayKey } from "@/lib/relay";
+import { queueCommand, getConnectedGateways, validateRelayKey, isDbAvailable } from "@/lib/relay";
 import { isDbConnectionError } from "@/lib/db";
 
 // Dashboard에서 Gateway로 명령 전송 (supports both user session and relay key auth)
@@ -21,13 +21,19 @@ export async function POST(request: NextRequest) {
       const gateways = (await getConnectedGateways()).filter(
         (g) => g.status === "connected"
       );
+      // If no connected gateways and DB is down, use default gateway
       if (gateways.length === 0) {
-        return NextResponse.json(
-          { error: "No connected gateway" },
-          { status: 400 }
-        );
+        if (!isDbAvailable()) {
+          targetGateway = "default";
+        } else {
+          return NextResponse.json(
+            { error: "No connected gateway" },
+            { status: 400 }
+          );
+        }
+      } else {
+        targetGateway = gateways[0].id;
       }
-      targetGateway = gateways[0].id;
     }
 
     if (!type || !payload) {
@@ -44,12 +50,6 @@ export async function POST(request: NextRequest) {
       command,
     });
   } catch (error) {
-    if (isDbConnectionError(error)) {
-      return NextResponse.json(
-        { error: "Database unavailable" },
-        { status: 503 }
-      );
-    }
     console.error("Command error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

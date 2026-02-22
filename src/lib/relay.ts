@@ -1,6 +1,7 @@
 // PostgreSQL-backed relay system
 
-import { query, queryOne } from "./db";
+import { query, queryOne, isDbConnectionError } from "./db";
+import { randomUUID } from "crypto";
 
 export interface GatewayConnection {
   id: string;
@@ -29,8 +30,16 @@ export interface AgentStatus {
 
 const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
 
+// In-memory fallback when DB is unavailable
+const inMemoryCommands = new Map<string, RelayCommand[]>();
+let dbAvailable = true;
+
 export function validateRelayKey(key: string): boolean {
   return key === RELAY_API_KEY;
+}
+
+export function isDbAvailable(): boolean {
+  return dbAvailable;
 }
 
 export async function registerGateway(
@@ -79,98 +88,148 @@ export async function updateHeartbeat(gatewayId: string): Promise<boolean> {
 }
 
 export async function getConnectedGateways(): Promise<GatewayConnection[]> {
-  const results = await query<{
-    id: string;
-    connected_at: string;
-    last_heartbeat: string;
-    status: string;
-  }>(
-    `
-    SELECT
-      id,
-      connected_at,
-      last_heartbeat,
-      CASE
-        WHEN last_heartbeat > NOW() - INTERVAL '30 seconds' THEN 'connected'
-        ELSE 'disconnected'
-      END as status
-    FROM gateway_connections
-    ORDER BY last_heartbeat DESC
-  `,
-    []
-  );
+  try {
+    const results = await query<{
+      id: string;
+      connected_at: string;
+      last_heartbeat: string;
+      status: string;
+    }>(
+      `
+      SELECT
+        id,
+        connected_at,
+        last_heartbeat,
+        CASE
+          WHEN last_heartbeat > NOW() - INTERVAL '30 seconds' THEN 'connected'
+          ELSE 'disconnected'
+        END as status
+      FROM gateway_connections
+      ORDER BY last_heartbeat DESC
+    `,
+      []
+    );
 
-  return results.map((r) => ({
-    id: r.id,
-    connectedAt: r.connected_at,
-    lastHeartbeat: r.last_heartbeat,
-    status: r.status as "connected" | "disconnected",
-  }));
+    dbAvailable = true;
+    return results.map((r) => ({
+      id: r.id,
+      connectedAt: r.connected_at,
+      lastHeartbeat: r.last_heartbeat,
+      status: r.status as "connected" | "disconnected",
+    }));
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function queueCommand(
   gatewayId: string,
   command: Omit<RelayCommand, "id" | "createdAt" | "status">
 ): Promise<RelayCommand> {
-  const result = await queryOne<{
-    id: string;
-    gateway_id: string;
-    type: string;
-    payload: Record<string, unknown>;
-    status: string;
-    result: unknown;
-    created_at: string;
-  }>(
-    `
-    INSERT INTO relay_commands (gateway_id, type, payload, status)
-    VALUES ($1, $2, $3, 'pending')
-    RETURNING id, gateway_id, type, payload, status, result, created_at
-  `,
-    [gatewayId, command.type, JSON.stringify(command.payload)]
-  );
+  // Try DB first
+  try {
+    const result = await queryOne<{
+      id: string;
+      gateway_id: string;
+      type: string;
+      payload: Record<string, unknown>;
+      status: string;
+      result: unknown;
+      created_at: string;
+    }>(
+      `
+      INSERT INTO relay_commands (gateway_id, type, payload, status)
+      VALUES ($1, $2, $3, 'pending')
+      RETURNING id, gateway_id, type, payload, status, result, created_at
+    `,
+      [gatewayId, command.type, JSON.stringify(command.payload)]
+    );
 
-  if (!result) {
-    throw new Error("Failed to queue command");
+    if (!result) {
+      throw new Error("Failed to queue command");
+    }
+
+    dbAvailable = true;
+    return {
+      id: result.id,
+      type: result.type as RelayCommand["type"],
+      payload: result.payload,
+      createdAt: result.created_at,
+      status: result.status as RelayCommand["status"],
+      result: result.result,
+    };
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      // Fallback: in-memory queue
+      dbAvailable = false;
+      const cmd: RelayCommand = {
+        id: randomUUID(),
+        type: command.type as RelayCommand["type"],
+        payload: command.payload,
+        createdAt: new Date().toISOString(),
+        status: "pending",
+      };
+      const queue = inMemoryCommands.get(gatewayId) || [];
+      queue.push(cmd);
+      inMemoryCommands.set(gatewayId, queue);
+      return cmd;
+    }
+    throw error;
   }
-
-  return {
-    id: result.id,
-    type: result.type as RelayCommand["type"],
-    payload: result.payload,
-    createdAt: result.created_at,
-    status: result.status as RelayCommand["status"],
-    result: result.result,
-  };
 }
 
 export async function getAndClearCommands(
   gatewayId: string
 ): Promise<RelayCommand[]> {
-  const results = await query<{
-    id: string;
-    type: string;
-    payload: Record<string, unknown>;
-    status: string;
-    result: unknown;
-    created_at: string;
-  }>(
-    `
-    UPDATE relay_commands
-    SET status = 'processing'
-    WHERE gateway_id = $1 AND status = 'pending'
-    RETURNING id, type, payload, status, result, created_at
-  `,
-    [gatewayId]
-  );
+  // Try DB first
+  try {
+    const results = await query<{
+      id: string;
+      type: string;
+      payload: Record<string, unknown>;
+      status: string;
+      result: unknown;
+      created_at: string;
+    }>(
+      `
+      UPDATE relay_commands
+      SET status = 'processing'
+      WHERE gateway_id = $1 AND status = 'pending'
+      RETURNING id, type, payload, status, result, created_at
+    `,
+      [gatewayId]
+    );
 
-  return results.map((r) => ({
-    id: r.id,
-    type: r.type as RelayCommand["type"],
-    payload: r.payload,
-    createdAt: r.created_at,
-    status: r.status as RelayCommand["status"],
-    result: r.result,
-  }));
+    dbAvailable = true;
+    // Also drain any in-memory commands that accumulated during outage
+    const inMemQueue = inMemoryCommands.get(gatewayId) || [];
+    inMemoryCommands.delete(gatewayId);
+
+    return [
+      ...results.map((r) => ({
+        id: r.id,
+        type: r.type as RelayCommand["type"],
+        payload: r.payload,
+        createdAt: r.created_at,
+        status: r.status as RelayCommand["status"],
+        result: r.result,
+      })),
+      ...inMemQueue,
+    ];
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      // Return in-memory commands only
+      const queue = inMemoryCommands.get(gatewayId) || [];
+      inMemoryCommands.delete(gatewayId);
+      return queue;
+    }
+    throw error;
+  }
 }
 
 export async function updateCommandResult(
@@ -250,39 +309,48 @@ export async function getAgentStatuses(
 export async function getAllAgentStatuses(): Promise<
   Record<string, AgentStatus[]>
 > {
-  const results = await query<{
-    gateway_id: string;
-    id: string;
-    name: string;
-    status: string;
-    current_task: string | null;
-    session_key: string | null;
-    updated_at: string;
-  }>(
-    `
-    SELECT gateway_id, id, name, status, current_task, session_key, updated_at
-    FROM agent_statuses
-    ORDER BY gateway_id, updated_at DESC
-  `,
-    []
-  );
+  try {
+    const results = await query<{
+      gateway_id: string;
+      id: string;
+      name: string;
+      status: string;
+      current_task: string | null;
+      session_key: string | null;
+      updated_at: string;
+    }>(
+      `
+      SELECT gateway_id, id, name, status, current_task, session_key, updated_at
+      FROM agent_statuses
+      ORDER BY gateway_id, updated_at DESC
+    `,
+      []
+    );
 
-  const grouped: Record<string, AgentStatus[]> = {};
+    dbAvailable = true;
+    const grouped: Record<string, AgentStatus[]> = {};
 
-  for (const r of results) {
-    if (!grouped[r.gateway_id]) {
-      grouped[r.gateway_id] = [];
+    for (const r of results) {
+      if (!grouped[r.gateway_id]) {
+        grouped[r.gateway_id] = [];
+      }
+
+      grouped[r.gateway_id].push({
+        id: r.id,
+        name: r.name,
+        status: r.status as AgentStatus["status"],
+        currentTask: r.current_task || undefined,
+        sessionKey: r.session_key || undefined,
+        updatedAt: r.updated_at,
+      });
     }
 
-    grouped[r.gateway_id].push({
-      id: r.id,
-      name: r.name,
-      status: r.status as AgentStatus["status"],
-      currentTask: r.current_task || undefined,
-      sessionKey: r.session_key || undefined,
-      updatedAt: r.updated_at,
-    });
+    return grouped;
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      return {};
+    }
+    throw error;
   }
-
-  return grouped;
 }

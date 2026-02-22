@@ -103,11 +103,12 @@ describe("API routes when database is down", () => {
   });
 
   describe("POST /api/relay/command", () => {
-    it("should return 503 when DB is down", async () => {
+    it("should queue command in-memory when DB is down", async () => {
       const { POST } = await import("@/app/api/relay/command/route");
       const request = makeRelayRequest("/api/relay/command", {
         method: "POST",
         body: JSON.stringify({
+          gatewayId: "test-gateway",
           type: "spawn",
           payload: { agentId: "dev", task: "test" },
         }),
@@ -115,8 +116,10 @@ describe("API routes when database is down", () => {
       const response = await POST(request);
       const data = await response.json();
 
-      expect(response.status).toBe(503);
-      expect(data.error).toContain("unavailable");
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.command).toBeDefined();
+      expect(data.command.type).toBe("spawn");
     });
   });
 

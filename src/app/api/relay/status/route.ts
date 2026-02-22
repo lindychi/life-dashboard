@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { getConnectedGateways, getAllAgentStatuses, validateRelayKey } from "@/lib/relay";
+import { getConnectedGateways, getAllAgentStatuses, validateRelayKey, isDbAvailable } from "@/lib/relay";
 import { isDbConnectionError } from "@/lib/db";
 
 // Dashboard에서 현재 상태 조회 (supports both user session and relay key auth)
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       gateways,
       agents,
-      dbConnected: true,
+      dbConnected: isDbAvailable(),
       timestamp: new Date().toISOString(),
     });
   } catch (error) {

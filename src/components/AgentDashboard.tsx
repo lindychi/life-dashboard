@@ -65,6 +65,7 @@ interface AgentDashboardProps {
   pendingReplies: HistoryEntry[];
   orchestrateInput: string;
   isOrchestrating: boolean;
+  dbConnected: boolean;
   onOrchestrateInputChange: (value: string) => void;
   onOrchestrate: (e: React.FormEvent) => void;
   onAddTask: (agentId: string, task: string) => void;
@@ -80,6 +81,7 @@ export default function AgentDashboard({
   pendingReplies,
   orchestrateInput,
   isOrchestrating,
+  dbConnected,
   onOrchestrateInputChange,
   onOrchestrate,
   onAddTask,
@@ -236,6 +238,12 @@ export default function AgentDashboard({
               />
             </div>
             <span className="text-sm">에이전트 팀이 작업 중입니다...</span>
+          </div>
+        )}
+        {!dbConnected && (
+          <div className="mt-3 flex items-center gap-2 text-yellow-400 text-sm">
+            <span>⚠️</span>
+            <span>DB 미연결 상태 — 명령은 전달되지만 히스토리가 저장되지 않습니다</span>
           </div>
         )}
       </div>
