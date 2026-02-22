@@ -17,13 +17,20 @@
  */
 
 import * as os from "os";
+import * as http from "http";
+import * as https from "https";
+import * as path from "path";
+import { config } from "dotenv";
+config({ path: path.resolve(__dirname, "..", ".env.local") });
+
 import { executeClaudeTask, isClaudeAvailable, formatDuration } from "./claude-executor";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
-const RELAY_API_KEY = process.env.RELAY_API_KEY || "life-dashboard-relay-key-2024";
+const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
 const GATEWAY_ID = process.env.GATEWAY_ID || os.hostname();
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
+const MCP_CONFIG_PATH = path.resolve(__dirname, "..", ".mcp.json");
 
 interface RelayCommand {
   id: string;
@@ -60,27 +67,51 @@ function addHistory(agentId: string, type: string, content: string, metadata?: R
   pendingHistoryEntries.push({ agentId, type, content, metadata });
 }
 
-// Helper: API call
-async function apiCall(
+// Helper: API call using http/https directly (avoids Node.js undici's 300s default timeout)
+function apiCall(
   endpoint: string,
   method: "GET" | "POST" = "POST",
   body?: unknown
 ): Promise<unknown> {
   const url = `${RELAY_URL}/api/relay${endpoint}`;
-  const options: RequestInit = {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      "x-relay-key": RELAY_API_KEY,
-    },
-  };
+  const urlObj = new URL(url);
+  const transport = urlObj.protocol === "https:" ? https : http;
+  const bodyStr = body ? JSON.stringify(body) : undefined;
 
-  if (body) {
-    options.body = JSON.stringify(body);
-  }
+  return new Promise((resolve, reject) => {
+    const req = transport.request(
+      {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "x-relay-key": RELAY_API_KEY,
+          ...(bodyStr ? { "Content-Length": Buffer.byteLength(bodyStr).toString() } : {}),
+        },
+        timeout: 0, // No timeout
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: string) => (data += chunk));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            resolve({ error: "Invalid JSON", raw: data });
+          }
+        });
+      }
+    );
 
-  const response = await fetch(url, options);
-  return response.json();
+    req.on("error", reject);
+
+    if (bodyStr) {
+      req.write(bodyStr);
+    }
+    req.end();
+  });
 }
 
 // Register with relay
@@ -146,6 +177,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           agentId,
           task,
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
+          mcpConfig: MCP_CONFIG_PATH,
         }).then((result) => {
           if (result.success) {
             console.log(`   ✅ Task completed for ${agentId}`);
@@ -286,6 +318,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             agentId,
             task: taskStr,
             systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
+            mcpConfig: MCP_CONFIG_PATH,
             onOutput: (chunk: string) => {
               streamBuffer += chunk;
               const now = Date.now();

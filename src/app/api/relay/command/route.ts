@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { queueCommand, getConnectedGateways } from "@/lib/relay";
+import { queueCommand, getConnectedGateways, validateRelayKey } from "@/lib/relay";
 
-// Dashboard에서 Gateway로 명령 전송
+// Dashboard에서 Gateway로 명령 전송 (supports both user session and relay key auth)
 export async function POST(request: NextRequest) {
-  // 인증 체크
-  const user = await getCurrentUser();
-  if (!user) {
+  // 인증 체크: relay key 또는 user session
+  const relayValid = validateRelayKey(request.headers.get("x-relay-key") || "");
+  const user = relayValid ? null : await getCurrentUser();
+  if (!relayValid && !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

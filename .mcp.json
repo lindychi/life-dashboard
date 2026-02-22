@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "life-dashboard": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["tsx", "scripts/mcp-server.ts"],
+      "env": {
+        "DASHBOARD_URL": "${DASHBOARD_URL}",
+        "RELAY_API_KEY": "${RELAY_API_KEY}"
+      }
+    }
+  }
+}

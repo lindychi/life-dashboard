@@ -49,6 +49,24 @@ export interface ProgressEvent {
 }
 
 /**
+ * Helper function to extract JSON from mixed text
+ */
+function extractJson(text: string): string {
+  // Try markdown fence first
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+
+  // Try to find JSON object in text
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return text.slice(firstBrace, lastBrace + 1);
+  }
+
+  return text.trim();
+}
+
+/**
  * Create an orchestration plan by asking Claude to break down the task
  */
 export async function createPlan(
@@ -77,30 +95,55 @@ Return a JSON object with this structure:
 Priority: 1 = highest priority (execute first), higher numbers = lower priority.
 Return ONLY valid JSON, no additional text.`;
 
+  const systemPrompt = "You are a task planner. You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no text before or after the JSON. Start your response with { and end with }.";
+
   const options: ClaudeExecutorOptions = {
     agentId: "planner",
     task: prompt,
-    systemPrompt: "You are a task planner. Break down complex tasks into subtasks and assign them to appropriate agents. Return only valid JSON.",
+    systemPrompt,
+    disableTools: true, // Planner doesn't need file tools - prevents plan mode hanging
   };
 
-  const result = await executeClaudeTask(options);
+  // Try up to 2 times
+  let lastError: Error | null = null;
+  let lastOutput = "";
 
-  if (!result.success) {
-    throw new Error(result.error || "Failed to create plan");
-  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await executeClaudeTask(
+      attempt === 0
+        ? options
+        : {
+            ...options,
+            task: `Your previous response was not valid JSON. You MUST respond with ONLY a JSON object.
 
-  try {
-    // Strip markdown code fences if present (Claude often wraps JSON in ```json...```)
-    let raw = result.output || "";
-    const fenceMatch = raw.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-    if (fenceMatch) {
-      raw = fenceMatch[1];
+Previous invalid response:
+${lastOutput}
+
+${prompt}`,
+          }
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to create plan");
     }
-    const plan = JSON.parse(raw.trim());
-    return plan as OrchestrationPlan;
-  } catch (error) {
-    throw new Error(`Invalid JSON response: ${error}`);
+
+    lastOutput = result.output || "";
+
+    try {
+      const raw = extractJson(lastOutput);
+      const plan = JSON.parse(raw);
+      return plan as OrchestrationPlan;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      // If this is the first attempt, retry; otherwise throw
+      if (attempt === 1) {
+        throw new Error(`Invalid JSON response after ${attempt + 1} attempts: ${lastError.message}`);
+      }
+    }
   }
+
+  // Should not reach here, but TypeScript needs this
+  throw lastError || new Error("Failed to create plan");
 }
 
 /**
@@ -237,15 +280,33 @@ Provide a concise summary mentioning the task, number of successes and failures,
     agentId: "summarizer",
     task: prompt,
     systemPrompt: "You are a results summarizer. Create concise summaries of task execution results.",
+    disableTools: true, // Summarizer doesn't need file tools - prevents plan mode hanging
   };
 
-  const result = await executeClaudeTask(options);
+  try {
+    const result = await executeClaudeTask(options);
 
-  if (!result.success) {
-    throw new Error(result.error || "Failed to generate summary");
+    if (!result.success) {
+      // Provide fallback summary on failure
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.length - successCount;
+      return `Task "${task}" completed with ${successCount} success(es) and ${failureCount} failure(s).`;
+    }
+
+    // Return output or fallback if empty
+    if (!result.output || result.output.trim() === "") {
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.length - successCount;
+      return `Task "${task}" completed with ${successCount} success(es) and ${failureCount} failure(s).`;
+    }
+
+    return result.output;
+  } catch (error) {
+    // If summarization fails, return a basic fallback summary
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.length - successCount;
+    return `Task "${task}" completed with ${successCount} success(es) and ${failureCount} failure(s). (Summary generation failed)`;
   }
-
-  return result.output || "";
 }
 
 /**

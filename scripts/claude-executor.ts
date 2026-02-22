@@ -22,6 +22,8 @@ export interface ClaudeExecutorOptions {
   workDir?: string;
   timeout?: number; // ms, 0 = no timeout (default)
   onOutput?: (chunk: string) => void;
+  disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
+  mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
 }
 
 /**
@@ -64,20 +66,28 @@ export function formatDuration(ms: number): string {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { task, systemPrompt, workDir, timeout = 0, onOutput } = options;
+  const { task, systemPrompt, workDir, timeout = 0, onOutput, disableTools, mcpConfig } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
 
-    const args = [
-      "--print",
-      "--permission-mode",
-      "plan",
-      "--no-session-persistence",
-      "--system-prompt",
-      systemPrompt,
-      task,
-    ];
+    const args = ["--print"];
+
+    // If disableTools is true, add --tools "" to disable all tools
+    // Otherwise, skip permissions since subprocess agents run non-interactively
+    // (stdin is "ignore" so interactive permission prompts would hang forever)
+    if (disableTools) {
+      args.push("--tools", "");
+    } else {
+      args.push("--dangerously-skip-permissions");
+
+      // Add MCP config if provided
+      if (mcpConfig) {
+        args.push("--mcp-config", mcpConfig);
+      }
+    }
+
+    args.push("--no-session-persistence", "--system-prompt", systemPrompt, task);
 
     const child: ChildProcess = spawn("claude", args, {
       cwd: workDir || process.cwd(),

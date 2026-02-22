@@ -490,14 +490,16 @@ describe("orchestrator", () => {
       expect(summary).toBeTruthy();
     });
 
-    it("should throw error when Claude execution fails", async () => {
+    it("should return fallback summary when Claude execution fails", async () => {
       vi.mocked(executeClaudeTask).mockResolvedValue({
         success: false,
         error: "Failed to generate summary",
         exitCode: 1,
       });
 
-      await expect(summarizeResults("Task", mockResults)).rejects.toThrow();
+      const summary = await summarizeResults("Task", mockResults);
+      expect(summary).toContain("Task \"Task\" completed");
+      expect(summary).toContain("success(es)");
     });
 
     it("should pass task and results to Claude executor", async () => {

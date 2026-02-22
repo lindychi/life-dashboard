@@ -7,9 +7,18 @@ import remarkGfm from "remark-gfm";
 interface PendingReply {
   id: string;
   agentId: string;
-  type: string;
+  type:
+    | "task_started"
+    | "task_completed"
+    | "task_failed"
+    | "message_sent"
+    | "message_received"
+    | "status_change"
+    | "command_received"
+    | "output";
   content: string;
   timestamp: string;
+  metadata?: Record<string, unknown>;
 }
 
 interface PendingRepliesBannerProps {

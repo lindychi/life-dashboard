@@ -2,11 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { copyToClipboard } from "@/lib/clipboard";
-import LiveMonitor from "@/components/LiveMonitor";
-import HistoryEntryCard from "@/components/HistoryEntryCard";
-import PendingRepliesBanner from "@/components/PendingRepliesBanner";
-import { looksLikeQuestion, getVisibleRange, filterEntries } from "@/lib/performance-utils";
+import { looksLikeQuestion } from "@/lib/performance-utils";
+import AgentDashboard from "@/components/AgentDashboard";
 
 // ===== Types =====
 interface TaskStack {
@@ -140,177 +137,6 @@ function ProgressBar({ progress }: { progress: number }) {
   );
 }
 
-function StatusBadge({ status }: { status: AgentRuntime["status"] }) {
-  const styles = {
-    running: "bg-green-500/20 text-green-400 border-green-500/30",
-    idle: "bg-gray-500/20 text-gray-400 border-gray-500/30",
-    waiting: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-    error: "bg-red-500/20 text-red-400 border-red-500/30",
-  };
-  const labels = {
-    running: "🟢 실행중",
-    idle: "⚫ 대기",
-    waiting: "🟡 대기중",
-    error: "🔴 에러",
-  };
-  return (
-    <span className={`px-2 py-1 rounded-full text-xs border ${styles[status]}`}>
-      {labels[status]}
-    </span>
-  );
-}
-
-const CATEGORY_BADGE_STYLES: Record<AgentConfig["category"], string> = {
-  dev: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-  business: "bg-green-500/20 text-green-400 border-green-500/30",
-  ops: "bg-orange-500/20 text-orange-400 border-orange-500/30",
-};
-
-const CATEGORY_LABELS: Record<AgentConfig["category"], string> = {
-  dev: "dev",
-  business: "business",
-  ops: "ops",
-};
-
-function AgentCard({
-  agent,
-  onAddTask,
-  onStartTask,
-}: {
-  agent: AgentRuntime;
-  onAddTask: (agentId: string, task: string) => void;
-  onStartTask: (agentId: string, task: string) => void;
-}) {
-  const [newTask, setNewTask] = useState("");
-  const [showInput, setShowInput] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newTask.trim()) {
-      onAddTask(agent.config.id, newTask.trim());
-      setNewTask("");
-      setShowInput(false);
-    }
-  };
-
-  return (
-    <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 hover:border-gray-600 transition-all">
-      <div className="flex justify-between items-start mb-3">
-        <div className="flex items-center gap-3">
-          <span className="text-3xl">{agent.config.emoji}</span>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-lg font-bold text-white">{agent.config.name}</h3>
-              <span
-                className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${CATEGORY_BADGE_STYLES[agent.config.category]}`}
-              >
-                {CATEGORY_LABELS[agent.config.category]}
-              </span>
-            </div>
-            <p className="text-gray-500 text-xs">{agent.config.role}</p>
-          </div>
-        </div>
-        <StatusBadge status={agent.status} />
-      </div>
-
-      {agent.currentTask && (
-        <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 mb-3">
-          <p className="text-xs text-blue-400 mb-1">현재 작업</p>
-          <p className="text-sm text-white">{agent.currentTask}</p>
-        </div>
-      )}
-
-      {/* Task Stack */}
-      <div className="mb-3">
-        <div className="flex justify-between items-center mb-2">
-          <p className="text-xs text-gray-500">
-            Task Stack ({agent.stack.length})
-          </p>
-          <button
-            onClick={() => setShowInput(!showInput)}
-            className="text-xs text-blue-400 hover:text-blue-300"
-          >
-            + 추가
-          </button>
-        </div>
-
-        {showInput && (
-          <form onSubmit={handleSubmit} className="mb-2">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newTask}
-                onChange={(e) => setNewTask(e.target.value)}
-                placeholder="완료 후 실행할 작업..."
-                className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                autoFocus
-              />
-              <button
-                type="submit"
-                className="bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-sm"
-              >
-                추가
-              </button>
-            </div>
-          </form>
-        )}
-
-        {agent.stack.length > 0 ? (
-          <div className="space-y-1">
-            {agent.stack.map((task, i) => (
-              <div
-                key={task.id}
-                className="flex items-center gap-2 text-sm bg-gray-700/50 rounded px-2 py-1"
-              >
-                <span className="text-gray-500">{i + 1}.</span>
-                <span className="text-gray-300 flex-1 truncate">
-                  {task.description}
-                </span>
-                <span className="text-xs text-gray-500">
-                  {task.trigger === "on_complete" ? "chain" : "pause"}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-gray-600 italic">스택 비어있음</p>
-        )}
-      </div>
-
-      {/* Quick Actions */}
-      <div className="flex gap-2">
-        {agent.status === "idle" && agent.stack.length > 0 && (
-          <button
-            onClick={() => onStartTask(agent.config.id, agent.stack[0].description)}
-            className="flex-1 bg-green-600 hover:bg-green-500 text-white text-sm py-2 rounded-lg transition-colors"
-          >
-            스택 실행
-          </button>
-        )}
-        {agent.status === "idle" && (
-          <button
-            onClick={() => setShowInput(true)}
-            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-sm py-2 rounded-lg transition-colors"
-          >
-            + 작업 할당
-          </button>
-        )}
-        {agent.status === "running" && (
-          <button className="flex-1 bg-gray-700 text-gray-400 text-sm py-2 rounded-lg cursor-not-allowed">
-            실행중...
-          </button>
-        )}
-      </div>
-
-      {/* Stats */}
-      <div className="mt-3 pt-3 border-t border-gray-700 flex justify-between text-xs text-gray-500">
-        <span>오늘 완료: {agent.completedToday}</span>
-        {agent.sessionKey && <span>세션: {agent.sessionKey}</span>}
-      </div>
-    </div>
-  );
-}
-
 function ProjectCard({ project }: { project: Project }) {
   return (
     <div className="bg-gray-800 rounded-xl p-5 hover:bg-gray-750 transition-colors border border-gray-700">
@@ -391,17 +217,6 @@ function relativeTime(timestamp: string): string {
   return `${Math.floor(diff / 86_400_000)}일 전`;
 }
 
-const HISTORY_TYPE_LABELS_FOR_FILTERS: Record<HistoryEntry["type"], { label: string; color: string }> = {
-  task_started: { label: "시작", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
-  task_completed: { label: "완료", color: "bg-green-500/20 text-green-400 border-green-500/30" },
-  task_failed: { label: "실패", color: "bg-red-500/20 text-red-400 border-red-500/30" },
-  message_sent: { label: "발신", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-  message_received: { label: "수신", color: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" },
-  status_change: { label: "상태", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
-  command_received: { label: "명령", color: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
-  output: { label: "Output", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-};
-
 const MSG_TYPE_STYLES: Record<Message["type"], string> = {
   text: "bg-gray-700 border-gray-600 text-gray-200",
   task: "bg-blue-500/10 border-blue-500/30 text-blue-200",
@@ -419,172 +234,6 @@ const MSG_TYPE_LABELS: Record<Message["type"], string> = {
 };
 
 // getAgentDisplay is now dynamic, created inside Home via agentMap useMemo
-
-// ===== History Panel Component =====
-function HistoryPanel({
-  historyData,
-  agents,
-  agentMap,
-}: {
-  historyData: Record<string, HistoryEntry[]>;
-  agents: AgentRuntime[];
-  agentMap: Record<string, { emoji: string; name: string }>;
-}) {
-  const [filterAgent, setFilterAgent] = useState<string>("all");
-  const [filterType, setFilterType] = useState<string>("all");
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [replyingTo, setReplyingTo] = useState<string | null>(null);
-  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
-  const [scrollTop, setScrollTop] = useState(0);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-
-  const getDisplay = (agentId: string) =>
-    agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
-
-  const toggleExpand = useCallback((id: string) => {
-    setExpandedEntries((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const handleCopy = useCallback(async (entryId: string, content: string) => {
-    const success = await copyToClipboard(content);
-    if (success) {
-      setCopiedId(entryId);
-      setTimeout(() => setCopiedId(null), 2000);
-    }
-  }, []);
-
-  const handleReply = useCallback(async (entry: { id: string; agentId: string; type: string; content: string; timestamp: string; metadata?: Record<string, unknown> }, replyText: string) => {
-    try {
-      await fetch("/api/relay/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "spawn",
-          payload: {
-            agentId: entry.agentId,
-            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
-          },
-        }),
-      });
-      await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agentId: entry.agentId,
-          type: "message_sent",
-          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
-        }),
-      });
-      setReplyingTo(null);
-    } catch (error) {
-      console.error("Reply failed:", error);
-    }
-  }, [agentMap]);
-
-  const allEntries = useMemo(() =>
-    Object.values(historyData).flat().sort((a, b) =>
-      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    ), [historyData]);
-
-  const filtered = useMemo(() =>
-    filterEntries(allEntries, filterAgent, filterType),
-    [allEntries, filterAgent, filterType]
-  );
-
-  const allTypes = useMemo(() =>
-    Array.from(new Set(allEntries.map((e) => e.type))),
-    [allEntries]
-  );
-
-  // Virtual scrolling constants
-  const ITEM_HEIGHT = 120;
-  const CONTAINER_HEIGHT = 600;
-
-  const { start, end, totalHeight } = useMemo(() =>
-    getVisibleRange(scrollTop, CONTAINER_HEIGHT, ITEM_HEIGHT, filtered.length),
-    [scrollTop, filtered.length]
-  );
-
-  return (
-    <div className="space-y-4">
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        {/* Agent filter */}
-        <select
-          value={filterAgent}
-          onChange={(e) => setFilterAgent(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-        >
-          <option value="all">All Agents</option>
-          {agents.map((a) => (
-            <option key={a.config.id} value={a.config.id}>
-              {a.config.emoji} {a.config.name}
-            </option>
-          ))}
-        </select>
-
-        {/* Type filter */}
-        <select
-          value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-        >
-          <option value="all">All Types</option>
-          {allTypes.map((t) => (
-            <option key={t} value={t}>
-              {HISTORY_TYPE_LABELS_FOR_FILTERS[t as keyof typeof HISTORY_TYPE_LABELS_FOR_FILTERS]?.label || t}
-            </option>
-          ))}
-        </select>
-
-        <span className="flex items-center text-xs text-gray-500 ml-auto">
-          {filtered.length} entries
-        </span>
-      </div>
-
-      {/* Timeline */}
-      {filtered.length === 0 ? (
-        <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
-          <p className="text-gray-500">No history entries yet</p>
-          <p className="text-gray-600 text-sm mt-1">
-            Agent activities will appear here as they occur
-          </p>
-        </div>
-      ) : (
-        <div
-          ref={scrollContainerRef}
-          style={{ height: CONTAINER_HEIGHT, overflowY: 'auto' }}
-          onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-          className="relative"
-        >
-          <div style={{ height: totalHeight, position: 'relative' }}>
-            <div style={{ position: 'absolute', top: start * ITEM_HEIGHT, left: 0, right: 0 }} className="space-y-2">
-              {filtered.slice(start, end).map((entry) => (
-                <HistoryEntryCard
-                  key={entry.id}
-                  entry={entry}
-                  agentDisplay={getDisplay(entry.agentId)}
-                  isExpanded={expandedEntries.has(entry.id)}
-                  isReplying={replyingTo === entry.id}
-                  isCopied={copiedId === entry.id}
-                  onToggleExpand={toggleExpand}
-                  onToggleReply={(id) => { setReplyingTo(replyingTo === id ? null : id); }}
-                  onCopy={handleCopy}
-                  onReply={handleReply}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ===== Messages Panel Component =====
 function MessagesPanel({
@@ -837,10 +486,9 @@ interface User {
 // ===== Main =====
 export default function Home() {
   const [activeTab, setActiveTab] = useState<
-    "agents" | "projects" | "finance" | "history" | "messages"
+    "agents" | "projects" | "finance" | "messages"
   >("agents");
   const [agents, setAgents] = useState<AgentRuntime[]>([]);
-  const [categoryFilter, setCategoryFilter] = useState<"all" | "dev" | "business" | "ops">("all");
   const [user, setUser] = useState<User | null>(null);
   const [gateways, setGateways] = useState<GatewayConnection[]>([]);
   const [historyData, setHistoryData] = useState<Record<string, HistoryEntry[]>>({});
@@ -1133,8 +781,6 @@ export default function Home() {
       }
 
       setOrchestrateInput("");
-      // Switch to history tab to see progress
-      setActiveTab("history");
     } catch (error) {
       console.error("Orchestrate failed:", error);
       alert(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
@@ -1226,7 +872,7 @@ export default function Home() {
                   <>
                     {" · "}
                     <button
-                      onClick={() => setActiveTab("history")}
+                      onClick={() => setActiveTab("agents")}
                       className="text-yellow-400 hover:text-yellow-300 transition-colors"
                     >
                       {pendingReplies.length} 응답 대기
@@ -1271,12 +917,6 @@ export default function Home() {
               💰 <span className="hidden sm:inline">Finance</span>
             </TabButton>
             <TabButton
-              active={activeTab === "history"}
-              onClick={() => setActiveTab("history")}
-            >
-              📜 <span className="hidden sm:inline">History</span>
-            </TabButton>
-            <TabButton
               active={activeTab === "messages"}
               onClick={() => setActiveTab("messages")}
             >
@@ -1296,118 +936,41 @@ export default function Home() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {activeTab === "agents" && (
-          <div>
-            {/* Orchestrate Command Bar */}
-            <div className="mb-4 sm:mb-6">
-              <form onSubmit={handleOrchestrate} className="flex gap-2">
-                <div className="flex-1 relative">
-                  <input
-                    type="text"
-                    value={orchestrateInput}
-                    onChange={(e) => setOrchestrateInput(e.target.value)}
-                    placeholder="전체 지시를 입력하세요... (예: 이번 주 블로그 쓰고, 매출 정리하고, 코드 리뷰해줘)"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30"
-                    disabled={isOrchestrating}
-                  />
-                  {isOrchestrating && (
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                      <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="submit"
-                  disabled={isOrchestrating || !orchestrateInput.trim()}
-                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 sm:px-6 py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap"
-                >
-                  {isOrchestrating ? "분배 중..." : "🎯 전체 지시"}
-                </button>
-              </form>
-              {isOrchestrating && (
-                <div className="mt-3 flex items-center gap-2 text-sm text-blue-400">
-                  <div className="flex gap-1">
-                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
-                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
-                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
-                  </div>
-                  <span>에이전트 팀이 작업 중입니다... History 탭에서 진행상황을 확인하세요</span>
-                </div>
-              )}
-            </div>
-
-            {/* Live Monitor */}
-            {liveAgentStatuses.length > 0 && (
-              <LiveMonitor
-                agentStatuses={liveAgentStatuses}
-                historyData={historyData}
-                agentMap={agentMap}
-              />
-            )}
-
-            {/* Category Filter */}
-            <div className="flex gap-2 mb-4">
-              {([
-                { key: "all", label: "전체" },
-                { key: "dev", label: "개발" },
-                { key: "business", label: "경영" },
-                { key: "ops", label: "운영" },
-              ] as const).map((cat) => (
-                <button
-                  key={cat.key}
-                  onClick={() => setCategoryFilter(cat.key)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    categoryFilter === cat.key
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
-                  }`}
-                >
-                  {cat.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Agent Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {agents
-                .filter((agent) =>
-                  categoryFilter === "all"
-                    ? true
-                    : agent.config.category === categoryFilter
-                )
-                .map((agent) => (
-                  <AgentCard
-                    key={agent.config.id}
-                    agent={agent}
-                    onAddTask={handleAddTask}
-                    onStartTask={handleStartTask}
-                  />
-                ))}
-            </div>
-
-            {/* Pipeline Preview */}
-            <div className="mt-8 bg-gray-800 rounded-xl p-6 border border-gray-700">
-              <h3 className="text-lg font-bold mb-4">
-                🔗 Pipeline (oh-my-claudecode style)
-              </h3>
-              <div className="flex items-center gap-2 overflow-x-auto pb-2">
-                {["Plan", "PRD", "Execute", "Verify", "Fix"].map(
-                  (stage, i, arr) => (
-                    <div key={stage} className="flex items-center gap-2">
-                      <div className="bg-gray-700 px-4 py-2 rounded-lg text-sm whitespace-nowrap">
-                        {stage}
-                      </div>
-                      {i < arr.length - 1 && (
-                        <span className="text-gray-600">→</span>
-                      )}
-                    </div>
-                  )
-                )}
-              </div>
-              <p className="text-gray-500 text-sm mt-3">
-                복잡한 작업은 자동으로 파이프라인으로 분해됩니다
-              </p>
-            </div>
-          </div>
+          <AgentDashboard
+            agents={agents}
+            historyData={historyData}
+            agentMap={agentMap}
+            liveAgentStatuses={liveAgentStatuses}
+            pendingReplies={pendingReplies}
+            orchestrateInput={orchestrateInput}
+            isOrchestrating={isOrchestrating}
+            onOrchestrateInputChange={setOrchestrateInput}
+            onOrchestrate={handleOrchestrate}
+            onAddTask={handleAddTask}
+            onStartTask={handleStartTask}
+            onPendingReply={async (entry, replyText) => {
+              await fetch("/api/relay/command", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  type: "spawn",
+                  payload: {
+                    agentId: entry.agentId,
+                    task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
+                  },
+                }),
+              });
+              await fetch("/api/history", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  agentId: entry.agentId,
+                  type: "message_sent",
+                  content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
+                }),
+              });
+            }}
+          />
         )}
 
         {activeTab === "projects" && (
@@ -1442,38 +1005,6 @@ export default function Home() {
                 Supabase 연동 후 데이터 표시
               </p>
             </div>
-          </div>
-        )}
-
-        {activeTab === "history" && (
-          <div>
-            <PendingRepliesBanner
-              pendingReplies={pendingReplies}
-              agentMap={agentMap}
-              onReply={async (entry, replyText) => {
-                await fetch("/api/relay/command", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    type: "spawn",
-                    payload: {
-                      agentId: entry.agentId,
-                      task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
-                    },
-                  }),
-                });
-                await fetch("/api/history", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    agentId: entry.agentId,
-                    type: "message_sent",
-                    content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
-                  }),
-                });
-              }}
-            />
-            <HistoryPanel historyData={historyData} agents={agents} agentMap={agentMap} />
           </div>
         )}
 

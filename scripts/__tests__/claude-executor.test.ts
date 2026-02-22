@@ -62,7 +62,7 @@ describe("claude-executor", () => {
       // Verify spawn was called with correct args
       expect(spawn).toHaveBeenCalledWith(
         "claude",
-        ["--print", "--permission-mode", "plan", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
+        ["--print", "--dangerously-skip-permissions", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
         expect.objectContaining({
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -218,6 +218,93 @@ describe("claude-executor", () => {
       const result = await promise;
       expect(result.success).toBe(false);
       expect(result.exitCode).toBe(-1);
+    });
+
+    it("should pass --mcp-config when mcpConfig is provided", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "pm",
+        task: "Check status",
+        systemPrompt: "You are PM.",
+        mcpConfig: "/path/to/.mcp.json",
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--mcp-config", "/path/to/.mcp.json"]),
+        expect.any(Object)
+      );
+
+      mockProc.emit("close", 0);
+      await promise;
+    });
+
+    it("should not pass --mcp-config when mcpConfig is not provided", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "pm",
+        task: "Check status",
+        systemPrompt: "You are PM.",
+      });
+
+      const spawnCall = vi.mocked(spawn).mock.calls[0];
+      const args = spawnCall[1] as string[];
+      expect(args).not.toContain("--mcp-config");
+
+      mockProc.emit("close", 0);
+      await promise;
+    });
+
+    it("should not pass --mcp-config when disableTools is true even if mcpConfig is provided", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "pm",
+        task: "Plan something",
+        systemPrompt: "You are PM.",
+        mcpConfig: "/path/to/.mcp.json",
+        disableTools: true,
+      });
+
+      const spawnCall = vi.mocked(spawn).mock.calls[0];
+      const args = spawnCall[1] as string[];
+      expect(args).not.toContain("--mcp-config");
+
+      mockProc.emit("close", 0);
+      await promise;
+    });
+
+    it("should include both --dangerously-skip-permissions and --mcp-config in correct order", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "pm",
+        task: "Task",
+        systemPrompt: "Prompt",
+        mcpConfig: "/project/.mcp.json",
+      });
+
+      const spawnCall = vi.mocked(spawn).mock.calls[0];
+      const args = spawnCall[1] as string[];
+
+      // Should have both flags
+      expect(args).toContain("--dangerously-skip-permissions");
+      expect(args).toContain("--mcp-config");
+      expect(args).toContain("/project/.mcp.json");
+
+      // --mcp-config should come after --dangerously-skip-permissions
+      const skipIndex = args.indexOf("--dangerously-skip-permissions");
+      const mcpIndex = args.indexOf("--mcp-config");
+      expect(mcpIndex).toBeGreaterThan(skipIndex);
+
+      mockProc.emit("close", 0);
+      await promise;
     });
   });
 });
