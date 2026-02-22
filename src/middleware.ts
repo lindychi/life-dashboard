@@ -12,8 +12,7 @@ const publicPaths = [
   "/auth/verify",
   "/api/auth/login",
   "/api/auth/verify",
-  "/api/relay/register",
-  "/api/relay/poll",
+  "/api/relay/",
 ];
 
 export async function middleware(request: NextRequest) {
