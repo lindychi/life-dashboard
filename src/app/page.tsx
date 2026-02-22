@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { copyToClipboard } from "@/lib/clipboard";
 import LiveMonitor from "@/components/LiveMonitor";
+import HistoryEntryCard from "@/components/HistoryEntryCard";
+import PendingRepliesBanner from "@/components/PendingRepliesBanner";
+import { looksLikeQuestion, getVisibleRange, filterEntries } from "@/lib/performance-utils";
 
 // ===== Types =====
 interface TaskStack {
@@ -390,7 +391,7 @@ function relativeTime(timestamp: string): string {
   return `${Math.floor(diff / 86_400_000)}일 전`;
 }
 
-const HISTORY_TYPE_LABELS: Record<HistoryEntry["type"], { label: string; color: string }> = {
+const HISTORY_TYPE_LABELS_FOR_FILTERS: Record<HistoryEntry["type"], { label: string; color: string }> = {
   task_started: { label: "시작", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
   task_completed: { label: "완료", color: "bg-green-500/20 text-green-400 border-green-500/30" },
   task_failed: { label: "실패", color: "bg-red-500/20 text-red-400 border-red-500/30" },
@@ -433,88 +434,81 @@ function HistoryPanel({
   const [filterType, setFilterType] = useState<string>("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
-  const [replyText, setReplyText] = useState("");
-  const [replySending, setReplySending] = useState(false);
+  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
+  const [scrollTop, setScrollTop] = useState(0);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const getDisplay = (agentId: string) =>
     agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
 
-  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
-
-  const toggleExpand = (id: string) => {
+  const toggleExpand = useCallback((id: string) => {
     setExpandedEntries((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
-  const handleCopy = async (entryId: string, content: string) => {
+  const handleCopy = useCallback(async (entryId: string, content: string) => {
     const success = await copyToClipboard(content);
     if (success) {
       setCopiedId(entryId);
       setTimeout(() => setCopiedId(null), 2000);
     }
-  };
+  }, []);
 
-  const handleReply = async (entry: HistoryEntry) => {
-    if (!replyText.trim() || replySending) return;
-
-    setReplySending(true);
+  const handleReply = useCallback(async (entry: { id: string; agentId: string; type: string; content: string; timestamp: string; metadata?: Record<string, unknown> }, replyText: string) => {
     try {
-      // Send reply as a new spawn command to the agent with user's feedback
-      const response = await fetch("/api/relay/command", {
+      await fetch("/api/relay/command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "spawn",
           payload: {
             agentId: entry.agentId,
-            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText.trim()}`,
+            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
           },
         }),
       });
-
-      if (!response.ok) {
-        throw new Error(`Failed: ${response.statusText}`);
-      }
-
-      // Also add a local history entry for the user's reply
       await fetch("/api/history", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           agentId: entry.agentId,
           type: "message_sent",
-          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText.trim()}`,
+          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
         }),
       });
-
-      setReplyText("");
       setReplyingTo(null);
     } catch (error) {
       console.error("Reply failed:", error);
-      alert(`답신 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
-    } finally {
-      setReplySending(false);
     }
-  };
+  }, [agentMap]);
 
-  const COLLAPSE_THRESHOLD = 200; // chars
+  const allEntries = useMemo(() =>
+    Object.values(historyData).flat().sort((a, b) =>
+      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    ), [historyData]);
 
-  // Flatten and sort all entries newest-first
-  const allEntries: HistoryEntry[] = Object.values(historyData)
-    .flat()
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const filtered = useMemo(() =>
+    filterEntries(allEntries, filterAgent, filterType),
+    [allEntries, filterAgent, filterType]
+  );
 
-  const filtered = allEntries.filter((entry) => {
-    if (filterAgent !== "all" && entry.agentId !== filterAgent) return false;
-    if (filterType !== "all" && entry.type !== filterType) return false;
-    return true;
-  });
+  const allTypes = useMemo(() =>
+    Array.from(new Set(allEntries.map((e) => e.type))),
+    [allEntries]
+  );
 
-  const allTypes = Array.from(new Set(allEntries.map((e) => e.type)));
+  // Virtual scrolling constants
+  const ITEM_HEIGHT = 120;
+  const CONTAINER_HEIGHT = 600;
+
+  const { start, end, totalHeight } = useMemo(() =>
+    getVisibleRange(scrollTop, CONTAINER_HEIGHT, ITEM_HEIGHT, filtered.length),
+    [scrollTop, filtered.length]
+  );
 
   return (
     <div className="space-y-4">
@@ -543,7 +537,7 @@ function HistoryPanel({
           <option value="all">All Types</option>
           {allTypes.map((t) => (
             <option key={t} value={t}>
-              {HISTORY_TYPE_LABELS[t]?.label || t}
+              {HISTORY_TYPE_LABELS_FOR_FILTERS[t as keyof typeof HISTORY_TYPE_LABELS_FOR_FILTERS]?.label || t}
             </option>
           ))}
         </select>
@@ -562,142 +556,30 @@ function HistoryPanel({
           </p>
         </div>
       ) : (
-        <div className="space-y-2">
-          {filtered.map((entry) => {
-            const display = getDisplay(entry.agentId);
-            const typeInfo = HISTORY_TYPE_LABELS[entry.type as keyof typeof HISTORY_TYPE_LABELS] || {
-              label: entry.type,
-              color: "bg-gray-500/20 text-gray-400 border-gray-500/30",
-            };
-            return (
-              <div
-                key={entry.id}
-                id={`history-entry-${entry.id}`}
-                className={`bg-gray-800 rounded-xl p-4 border hover:border-gray-600 transition-colors ${
-                  entry.agentId === "orchestrator" && entry.type === "output"
-                    ? "border-l-4 border-l-blue-500 border-gray-700"
-                    : "border-gray-700"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <span className="text-2xl flex-shrink-0">{display.emoji}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-white text-sm">
-                        {display.name}
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-xs border ${typeInfo.color}`}
-                      >
-                        {typeInfo.label}
-                      </span>
-                      <span className="text-xs text-gray-500 ml-auto flex-shrink-0">
-                        {relativeTime(entry.timestamp)}
-                      </span>
-                      {(entry.type === "output" || entry.type === "task_completed") && (
-                        <button
-                          onClick={() => {
-                            setReplyingTo(replyingTo === entry.id ? null : entry.id);
-                            setReplyText("");
-                          }}
-                          className={`ml-1 transition-colors flex-shrink-0 ${
-                            replyingTo === entry.id
-                              ? "text-blue-400"
-                              : "text-gray-500 hover:text-white"
-                          }`}
-                          title="답신"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                          </svg>
-                        </button>
-                      )}
-                      {(entry.type === "output" || entry.type === "task_completed" || entry.type === "task_failed") && (
-                        <button
-                          onClick={() => handleCopy(entry.id, entry.content)}
-                          className="ml-2 text-gray-500 hover:text-white transition-colors flex-shrink-0"
-                          title="복사"
-                        >
-                          {copiedId === entry.id ? (
-                            <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                          ) : (
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                          )}
-                        </button>
-                      )}
-                    </div>
-                    {entry.content.length > COLLAPSE_THRESHOLD ? (
-                      <div className="mt-1">
-                        <div
-                          className={`prose prose-sm prose-invert max-w-none break-words ${
-                            !expandedEntries.has(entry.id) ? "line-clamp-3" : ""
-                          }`}
-                        >
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {expandedEntries.has(entry.id)
-                              ? entry.content
-                              : entry.content}
-                          </ReactMarkdown>
-                        </div>
-                        <button
-                          onClick={() => toggleExpand(entry.id)}
-                          className="text-blue-400 hover:text-blue-300 text-xs mt-1 transition-colors"
-                        >
-                          {expandedEntries.has(entry.id) ? "접기 ▲" : "더보기 ▼"}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="prose prose-sm prose-invert max-w-none mt-1 break-words">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {entry.content}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {replyingTo === entry.id && (
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          handleReply(entry);
-                        }}
-                        className="mt-3 flex gap-2"
-                      >
-                        <input
-                          type="text"
-                          value={replyText}
-                          onChange={(e) => setReplyText(e.target.value)}
-                          placeholder={`${agentMap[entry.agentId]?.name || entry.agentId}에게 답신...`}
-                          className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                          autoFocus
-                          disabled={replySending}
-                        />
-                        <button
-                          type="submit"
-                          disabled={replySending || !replyText.trim()}
-                          className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
-                        >
-                          {replySending ? "..." : "답신"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setReplyingTo(null);
-                            setReplyText("");
-                          }}
-                          className="text-gray-500 hover:text-white px-2 py-2 rounded-lg text-sm transition-colors"
-                        >
-                          취소
-                        </button>
-                      </form>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+        <div
+          ref={scrollContainerRef}
+          style={{ height: CONTAINER_HEIGHT, overflowY: 'auto' }}
+          onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+          className="relative"
+        >
+          <div style={{ height: totalHeight, position: 'relative' }}>
+            <div style={{ position: 'absolute', top: start * ITEM_HEIGHT, left: 0, right: 0 }} className="space-y-2">
+              {filtered.slice(start, end).map((entry) => (
+                <HistoryEntryCard
+                  key={entry.id}
+                  entry={entry}
+                  agentDisplay={getDisplay(entry.agentId)}
+                  isExpanded={expandedEntries.has(entry.id)}
+                  isReplying={replyingTo === entry.id}
+                  isCopied={copiedId === entry.id}
+                  onToggleExpand={toggleExpand}
+                  onToggleReply={(id) => { setReplyingTo(replyingTo === id ? null : id); }}
+                  onCopy={handleCopy}
+                  onReply={handleReply}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1264,81 +1146,7 @@ export default function Home() {
   const runningCount = agents.filter((a) => a.status === "running").length;
   const totalStacked = agents.reduce((sum, a) => sum + a.stack.length, 0);
 
-  // Pending reply banner state
-  const [bannerExpandedId, setBannerExpandedId] = useState<string | null>(null);
-  const [bannerReplyText, setBannerReplyText] = useState("");
-  const [bannerReplySending, setBannerReplySending] = useState(false);
-
-  const handleBannerReply = async (entry: HistoryEntry) => {
-    if (!bannerReplyText.trim() || bannerReplySending) return;
-
-    setBannerReplySending(true);
-    try {
-      const response = await fetch("/api/relay/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "spawn",
-          payload: {
-            agentId: entry.agentId,
-            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${bannerReplyText.trim()}`,
-          },
-        }),
-      });
-
-      if (!response.ok) throw new Error(`Failed: ${response.statusText}`);
-
-      await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agentId: entry.agentId,
-          type: "message_sent",
-          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${bannerReplyText.trim()}`,
-        }),
-      });
-
-      setBannerReplyText("");
-      setBannerExpandedId(null);
-    } catch (error) {
-      console.error("Reply failed:", error);
-      alert(`답신 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
-    } finally {
-      setBannerReplySending(false);
-    }
-  };
-
   // Compute entries awaiting user reply
-  // An entry "awaits reply" if it's output/task_completed and there's no subsequent message_sent to that agent
-  // Detect if content contains a question or request for user input
-  const looksLikeQuestion = useCallback((content: string): boolean => {
-    // Skip short completion messages
-    if (content.length < 30) return false;
-
-    // Exclude simple completion patterns
-    const completionPatterns = /^(completed|task completed|done|완료|성공|실패|error|timeout)/i;
-    if (completionPatterns.test(content.trim())) return false;
-
-    // Exclude orchestrator summary/status entries
-    if (/^[🏁📊📋📨⏳]/.test(content.trim())) return false;
-
-    // Check for question/request patterns (Korean + English)
-    const questionPatterns = [
-      /\?/,                          // Question mark
-      /기다리/,                       // "기다리고 있습니다" (waiting)
-      /확인.*(?:필요|싶|주세요|할까)/,  // "확인이 필요합니다" / "확인하고 싶습니다"
-      /알려.*주/,                     // "알려주세요"
-      /어떤.*(?:할까|좋을까|원하)/,     // "어떤 걸 할까요?"
-      /선택.*(?:해주|필요)/,           // "선택해주세요"
-      /의견/,                         // "의견"
-      /피드백/,                       // "피드백"
-      /결정.*(?:필요|해주)/,           // "결정이 필요합니다"
-      /(?:which|what|how|should|would you|please|let me know)/i,
-    ];
-
-    return questionPatterns.some((pattern) => pattern.test(content));
-  }, []);
-
   const pendingReplies = useMemo(() => {
     const allEntries = Object.values(historyData).flat();
     const sorted = [...allEntries].sort(
@@ -1366,7 +1174,7 @@ export default function Home() {
     return Object.entries(agentLastQuestion)
       .filter(([agentId]) => !agentReplied.has(agentId))
       .map(([, entry]) => entry);
-  }, [historyData, looksLikeQuestion]);
+  }, [historyData]);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -1639,95 +1447,32 @@ export default function Home() {
 
         {activeTab === "history" && (
           <div>
-            {/* Pending replies banner */}
-            {pendingReplies.length > 0 && (
-              <div className="mb-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-yellow-400 text-sm font-bold">
-                    ⏳ 응답 대기 ({pendingReplies.length})
-                  </span>
-                  <span className="text-xs text-gray-500">
-                    에이전트가 답신을 기다리고 있습니다
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {pendingReplies.map((entry) => {
-                    const display = agentMap[entry.agentId] || { emoji: "\u{1F916}", name: entry.agentId };
-                    const isExpanded = bannerExpandedId === entry.id;
-                    return (
-                      <div
-                        key={entry.id}
-                        className={`bg-gray-800/80 rounded-lg border transition-colors ${
-                          isExpanded
-                            ? "border-yellow-500/40"
-                            : "border-gray-700 hover:border-yellow-500/30"
-                        }`}
-                      >
-                        {/* Header - always visible */}
-                        <div
-                          className="flex items-start gap-3 p-3 cursor-pointer"
-                          onClick={() => {
-                            setBannerExpandedId(isExpanded ? null : entry.id);
-                            setBannerReplyText("");
-                          }}
-                        >
-                          <span className="text-xl flex-shrink-0">{display.emoji}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-white">{display.name}</span>
-                              <span className="text-xs text-gray-500">{relativeTime(entry.timestamp)}</span>
-                            </div>
-                            <p className={`text-xs text-gray-400 mt-1 ${isExpanded ? "" : "line-clamp-2"}`}>
-                              {entry.content}
-                            </p>
-                          </div>
-                          <span className="text-yellow-400 text-xs whitespace-nowrap flex-shrink-0">
-                            {isExpanded ? "접기 ▲" : "펼치기 ▼"}
-                          </span>
-                        </div>
-
-                        {/* Expanded: full content + reply form */}
-                        {isExpanded && (
-                          <div className="px-3 pb-3 border-t border-gray-700/50">
-                            {/* Full content with markdown */}
-                            <div className="prose prose-sm prose-invert max-w-none mt-3 mb-3 break-words text-gray-300 max-h-64 overflow-y-auto">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {entry.content}
-                              </ReactMarkdown>
-                            </div>
-                            {/* Reply form */}
-                            <form
-                              onSubmit={(e) => {
-                                e.preventDefault();
-                                handleBannerReply(entry);
-                              }}
-                              className="flex gap-2"
-                            >
-                              <input
-                                type="text"
-                                value={bannerReplyText}
-                                onChange={(e) => setBannerReplyText(e.target.value)}
-                                placeholder={`${display.name}에게 답신...`}
-                                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
-                                autoFocus
-                                disabled={bannerReplySending}
-                              />
-                              <button
-                                type="submit"
-                                disabled={bannerReplySending || !bannerReplyText.trim()}
-                                className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
-                              >
-                                {bannerReplySending ? "..." : "답신"}
-                              </button>
-                            </form>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            <PendingRepliesBanner
+              pendingReplies={pendingReplies}
+              agentMap={agentMap}
+              onReply={async (entry, replyText) => {
+                await fetch("/api/relay/command", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    type: "spawn",
+                    payload: {
+                      agentId: entry.agentId,
+                      task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
+                    },
+                  }),
+                });
+                await fetch("/api/history", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    agentId: entry.agentId,
+                    type: "message_sent",
+                    content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
+                  }),
+                });
+              }}
+            />
             <HistoryPanel historyData={historyData} agents={agents} agentMap={agentMap} />
           </div>
         )}
