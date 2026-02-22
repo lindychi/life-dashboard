@@ -11,8 +11,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const gateways = getConnectedGateways();
-    const agents = getAllAgentStatuses();
+    const gateways = await getConnectedGateways();
+    const agents = await getAllAgentStatuses();
 
     return NextResponse.json({
       gateways,

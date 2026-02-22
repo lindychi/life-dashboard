@@ -16,8 +16,8 @@
  *   POLL_INTERVAL: polling 간격 ms (기본: 3000)
  */
 
-import { execSync, spawn } from "child_process";
 import * as os from "os";
+import { executeClaudeTask, isClaudeAvailable } from "./claude-executor";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -27,7 +27,7 @@ const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
 
 interface RelayCommand {
   id: string;
-  type: "spawn" | "send" | "status";
+  type: "spawn" | "send" | "status" | "message";
   payload: Record<string, unknown>;
 }
 
@@ -39,14 +39,26 @@ interface AgentStatus {
   sessionKey?: string;
 }
 
-// Agent definitions (matching dashboard)
-const agents: AgentStatus[] = [
-  { id: "coder", name: "Coder", status: "idle" },
-  { id: "researcher", name: "Researcher", status: "idle" },
-  { id: "designer", name: "Designer", status: "idle" },
-  { id: "reviewer", name: "Reviewer", status: "idle" },
-  { id: "planner", name: "Planner", status: "idle" },
-];
+// Dynamic agent status tracking (populated from relay commands)
+const agentStatusMap = new Map<string, AgentStatus>();
+
+// Helper to get agents array for polling
+function getAgentsList(): AgentStatus[] {
+  return Array.from(agentStatusMap.values());
+}
+
+// History buffer
+const pendingHistoryEntries: Array<{
+  agentId: string;
+  type: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}> = [];
+
+// Helper: Add history entry
+function addHistory(agentId: string, type: string, content: string, metadata?: Record<string, unknown>) {
+  pendingHistoryEntries.push({ agentId, type, content, metadata });
+}
 
 // Helper: API call
 async function apiCall(
@@ -98,26 +110,61 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
   try {
     switch (command.type) {
       case "spawn": {
-        const { agentId, task } = command.payload as {
+        const { agentId, task, systemPrompt } = command.payload as {
           agentId: string;
           task: string;
+          systemPrompt?: string;
         };
-        
-        // Update agent status
-        const agent = agents.find((a) => a.id === agentId);
-        if (agent) {
-          agent.status = "running";
-          agent.currentTask = task;
+
+        // Update agent status to running
+        agentStatusMap.set(agentId, {
+          id: agentId,
+          name: agentId,
+          status: "running",
+          currentTask: task,
+        });
+
+        addHistory(agentId, "task_started", `Task started: ${task}`);
+
+        // Check Claude CLI availability
+        if (!isClaudeAvailable()) {
+          console.log(`   ⚠️ Claude CLI not found. Simulating task.`);
+          agentStatusMap.set(agentId, {
+            id: agentId,
+            name: agentId,
+            status: "idle",
+          });
+          addHistory(agentId, "task_failed", "Claude CLI not available");
+          return { success: false, error: "Claude CLI not available" };
         }
 
-        // Execute via OpenClaw CLI (simplified - adjust based on actual CLI)
-        console.log(`   🚀 Spawning agent: ${agentId}`);
+        // Execute asynchronously (don't block the poll loop)
+        console.log(`   🚀 Spawning Claude for agent: ${agentId}`);
         console.log(`   📋 Task: ${task}`);
-        
-        // TODO: Actually call OpenClaw sessions_spawn
-        // const result = execSync(`openclaw sessions spawn --task "${task}" --label "${agentId}"`, {
-        //   encoding: "utf-8",
-        // });
+
+        executeClaudeTask({
+          agentId,
+          task,
+          systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
+        }).then((result) => {
+          if (result.success) {
+            console.log(`   ✅ Task completed for ${agentId}`);
+            addHistory(agentId, "task_completed", result.output || "Task completed");
+            agentStatusMap.set(agentId, {
+              id: agentId,
+              name: agentId,
+              status: "idle",
+            });
+          } else {
+            console.log(`   ❌ Task failed for ${agentId}: ${result.error}`);
+            addHistory(agentId, "task_failed", result.error || "Task failed");
+            agentStatusMap.set(agentId, {
+              id: agentId,
+              name: agentId,
+              status: "error",
+            });
+          }
+        });
 
         return { success: true, agentId, message: "Task started" };
       }
@@ -129,13 +176,36 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         };
         console.log(`   📤 Sending to session: ${sessionKey}`);
         console.log(`   💬 Message: ${message}`);
-        
+
+        // Add history entry
+        const agent = Array.from(agentStatusMap.values()).find((a) => a.sessionKey === sessionKey);
+        if (agent) {
+          addHistory(agent.id, "message_sent", `Message sent: ${message}`);
+        }
+
         // TODO: Actually call OpenClaw sessions_send
         return { success: true, sessionKey };
       }
 
       case "status": {
-        return { agents };
+        // Add history entry for status check
+        addHistory("system", "status_change", "Gateway status checked");
+        return { agents: getAgentsList() };
+      }
+
+      case "message": {
+        const { from, to, content, type: msgType } = command.payload as {
+          from: string;
+          to: string;
+          content: string;
+          type: string;
+        };
+        console.log(`   💬 Message from ${from} to ${to}: ${content}`);
+
+        // Add to history
+        addHistory(to, "message_received", `[${from}] ${content}`);
+
+        return { success: true, delivered: true };
       }
 
       default:
@@ -150,9 +220,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 // Main polling loop
 async function pollLoop(): Promise<void> {
   try {
+    // Snapshot entries to send (new entries may be added during command execution)
+    const entriesToSend = [...pendingHistoryEntries];
+    pendingHistoryEntries.length = 0;
+
     const result = (await apiCall("/poll", "POST", {
       gatewayId: GATEWAY_ID,
-      agents,
+      agents: getAgentsList(),
+      historyEntries: entriesToSend,
     })) as { commands?: RelayCommand[] };
 
     if (result.commands && result.commands.length > 0) {
@@ -173,6 +248,13 @@ async function main(): Promise<void> {
   console.log(`\n📡 Relay URL: ${RELAY_URL}`);
   console.log(`🔑 Gateway ID: ${GATEWAY_ID}`);
   console.log(`⏱️  Poll interval: ${POLL_INTERVAL}ms\n`);
+
+  // Check Claude CLI
+  if (isClaudeAvailable()) {
+    console.log("✅ Claude CLI found");
+  } else {
+    console.log("⚠️  Claude CLI not found - tasks will fail");
+  }
 
   // Register
   const registered = await register();

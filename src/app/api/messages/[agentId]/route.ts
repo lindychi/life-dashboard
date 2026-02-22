@@ -1,0 +1,86 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/auth";
+import { getMessages, getConversation, markAsRead } from "@/lib/messages";
+
+interface RouteContext {
+  params: Promise<{ agentId: string }>;
+}
+
+/**
+ * GET /api/messages/[agentId] - 특정 에이전트의 메시지 조회
+ * Query params:
+ *   - unreadOnly=true: 읽지 않은 메시지만 조회
+ *   - with=otherAgentId: 특정 에이전트와의 대화 조회
+ */
+export async function GET(req: NextRequest, context: RouteContext) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { agentId } = await context.params;
+    const { searchParams } = new URL(req.url);
+    const unreadOnly = searchParams.get("unreadOnly") === "true";
+    const withAgent = searchParams.get("with");
+
+    let messages;
+
+    if (withAgent) {
+      // 대화 조회 (두 에이전트 간)
+      messages = await getConversation(agentId, withAgent);
+    } else {
+      // 일반 inbox 조회
+      messages = await getMessages(agentId, unreadOnly);
+    }
+
+    return NextResponse.json({ agentId, messages });
+  } catch (error) {
+    console.error("Failed to get messages:", error);
+    return NextResponse.json(
+      { error: "Failed to get messages" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PATCH /api/messages/[agentId] - 메시지를 읽음으로 표시
+ * Body: { messageId: string }
+ */
+export async function PATCH(req: NextRequest, context: RouteContext) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { agentId } = await context.params;
+    const body = await req.json();
+    const { messageId } = body;
+
+    if (!messageId) {
+      return NextResponse.json(
+        { error: "Missing required field: messageId" },
+        { status: 400 }
+      );
+    }
+
+    const success = await markAsRead(agentId, messageId);
+
+    if (!success) {
+      return NextResponse.json(
+        { error: "Message not found" },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Failed to mark message as read:", error);
+    return NextResponse.json(
+      { error: "Failed to mark message as read" },
+      { status: 500 }
+    );
+  }
+}

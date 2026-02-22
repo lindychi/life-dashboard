@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // ===== Types =====
 interface TaskStack {
@@ -11,11 +13,19 @@ interface TaskStack {
   priority: "high" | "medium" | "low";
 }
 
-interface Agent {
+interface AgentConfig {
   id: string;
   name: string;
   role: string;
   emoji: string;
+  category: "dev" | "business" | "ops";
+  systemPrompt: string;
+  enabled: boolean;
+  projects?: string[];
+}
+
+interface AgentRuntime {
+  config: AgentConfig;
   status: "running" | "idle" | "waiting" | "error";
   currentTask?: string;
   sessionKey?: string;
@@ -32,54 +42,39 @@ interface Project {
   kpis: { label: string; value: string }[];
 }
 
+interface HistoryEntry {
+  id: string;
+  agentId: string;
+  type:
+    | "task_started"
+    | "task_completed"
+    | "task_failed"
+    | "message_sent"
+    | "message_received"
+    | "status_change"
+    | "command_received"
+    | "output";
+  content: string;
+  metadata?: Record<string, unknown>;
+  timestamp: string;
+}
+
+interface Message {
+  id: string;
+  from: string;
+  to: string;
+  content: string;
+  type: "text" | "task" | "result" | "question" | "answer";
+  read: boolean;
+  timestamp: string;
+}
+
+interface AgentMessageOverview {
+  unread: number;
+  latest?: Message;
+}
+
 // ===== Data =====
-const initialAgents: Agent[] = [
-  {
-    id: "coder",
-    name: "Coder",
-    role: "코드 작성, 버그 수정, 리팩토링",
-    emoji: "👨‍💻",
-    status: "idle",
-    stack: [],
-    completedToday: 0,
-  },
-  {
-    id: "researcher",
-    name: "Researcher",
-    role: "조사, 분석, 문서화",
-    emoji: "🔍",
-    status: "idle",
-    stack: [],
-    completedToday: 0,
-  },
-  {
-    id: "designer",
-    name: "Designer",
-    role: "UI/UX 리뷰, 디자인 제안",
-    emoji: "🎨",
-    status: "idle",
-    stack: [],
-    completedToday: 0,
-  },
-  {
-    id: "reviewer",
-    name: "Reviewer",
-    role: "코드 리뷰, 품질 검증",
-    emoji: "✅",
-    status: "idle",
-    stack: [],
-    completedToday: 0,
-  },
-  {
-    id: "planner",
-    name: "Planner",
-    role: "작업 분해, 우선순위 설정",
-    emoji: "📋",
-    status: "idle",
-    stack: [],
-    completedToday: 0,
-  },
-];
 
 const projects: Project[] = [
   {
@@ -142,7 +137,7 @@ function ProgressBar({ progress }: { progress: number }) {
   );
 }
 
-function StatusBadge({ status }: { status: Agent["status"] }) {
+function StatusBadge({ status }: { status: AgentRuntime["status"] }) {
   const styles = {
     running: "bg-green-500/20 text-green-400 border-green-500/30",
     idle: "bg-gray-500/20 text-gray-400 border-gray-500/30",
@@ -162,12 +157,24 @@ function StatusBadge({ status }: { status: Agent["status"] }) {
   );
 }
 
+const CATEGORY_BADGE_STYLES: Record<AgentConfig["category"], string> = {
+  dev: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  business: "bg-green-500/20 text-green-400 border-green-500/30",
+  ops: "bg-orange-500/20 text-orange-400 border-orange-500/30",
+};
+
+const CATEGORY_LABELS: Record<AgentConfig["category"], string> = {
+  dev: "dev",
+  business: "business",
+  ops: "ops",
+};
+
 function AgentCard({
   agent,
   onAddTask,
   onStartTask,
 }: {
-  agent: Agent;
+  agent: AgentRuntime;
   onAddTask: (agentId: string, task: string) => void;
   onStartTask: (agentId: string, task: string) => void;
 }) {
@@ -177,7 +184,7 @@ function AgentCard({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (newTask.trim()) {
-      onAddTask(agent.id, newTask.trim());
+      onAddTask(agent.config.id, newTask.trim());
       setNewTask("");
       setShowInput(false);
     }
@@ -187,10 +194,17 @@ function AgentCard({
     <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 hover:border-gray-600 transition-all">
       <div className="flex justify-between items-start mb-3">
         <div className="flex items-center gap-3">
-          <span className="text-3xl">{agent.emoji}</span>
+          <span className="text-3xl">{agent.config.emoji}</span>
           <div>
-            <h3 className="text-lg font-bold text-white">{agent.name}</h3>
-            <p className="text-gray-500 text-xs">{agent.role}</p>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-bold text-white">{agent.config.name}</h3>
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${CATEGORY_BADGE_STYLES[agent.config.category]}`}
+              >
+                {CATEGORY_LABELS[agent.config.category]}
+              </span>
+            </div>
+            <p className="text-gray-500 text-xs">{agent.config.role}</p>
           </div>
         </div>
         <StatusBadge status={agent.status} />
@@ -207,7 +221,7 @@ function AgentCard({
       <div className="mb-3">
         <div className="flex justify-between items-center mb-2">
           <p className="text-xs text-gray-500">
-            📥 Task Stack ({agent.stack.length})
+            Task Stack ({agent.stack.length})
           </p>
           <button
             onClick={() => setShowInput(!showInput)}
@@ -250,7 +264,7 @@ function AgentCard({
                   {task.description}
                 </span>
                 <span className="text-xs text-gray-500">
-                  {task.trigger === "on_complete" ? "🔗" : "⏸️"}
+                  {task.trigger === "on_complete" ? "chain" : "pause"}
                 </span>
               </div>
             ))}
@@ -264,10 +278,10 @@ function AgentCard({
       <div className="flex gap-2">
         {agent.status === "idle" && agent.stack.length > 0 && (
           <button
-            onClick={() => onStartTask(agent.id, agent.stack[0].description)}
+            onClick={() => onStartTask(agent.config.id, agent.stack[0].description)}
             className="flex-1 bg-green-600 hover:bg-green-500 text-white text-sm py-2 rounded-lg transition-colors"
           >
-            ▶️ 스택 실행
+            스택 실행
           </button>
         )}
         {agent.status === "idle" && (
@@ -361,6 +375,439 @@ function TabButton({
   );
 }
 
+// ===== Helper =====
+function relativeTime(timestamp: string): string {
+  const now = Date.now();
+  const then = new Date(timestamp).getTime();
+  const diff = now - then;
+
+  if (diff < 0) return "방금";
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}초 전`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}시간 전`;
+  return `${Math.floor(diff / 86_400_000)}일 전`;
+}
+
+const HISTORY_TYPE_LABELS: Record<HistoryEntry["type"], { label: string; color: string }> = {
+  task_started: { label: "시작", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
+  task_completed: { label: "완료", color: "bg-green-500/20 text-green-400 border-green-500/30" },
+  task_failed: { label: "실패", color: "bg-red-500/20 text-red-400 border-red-500/30" },
+  message_sent: { label: "발신", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
+  message_received: { label: "수신", color: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" },
+  status_change: { label: "상태", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
+  command_received: { label: "명령", color: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
+  output: { label: "출력", color: "bg-gray-500/20 text-gray-400 border-gray-500/30" },
+};
+
+const MSG_TYPE_STYLES: Record<Message["type"], string> = {
+  text: "bg-gray-700 border-gray-600 text-gray-200",
+  task: "bg-blue-500/10 border-blue-500/30 text-blue-200",
+  result: "bg-green-500/10 border-green-500/30 text-green-200",
+  question: "bg-yellow-500/10 border-yellow-500/30 text-yellow-200",
+  answer: "bg-purple-500/10 border-purple-500/30 text-purple-200",
+};
+
+const MSG_TYPE_LABELS: Record<Message["type"], string> = {
+  text: "",
+  task: "TASK",
+  result: "RESULT",
+  question: "QUESTION",
+  answer: "ANSWER",
+};
+
+// getAgentDisplay is now dynamic, created inside Home via agentMap useMemo
+
+// ===== History Panel Component =====
+function HistoryPanel({
+  historyData,
+  agents,
+  agentMap,
+}: {
+  historyData: Record<string, HistoryEntry[]>;
+  agents: AgentRuntime[];
+  agentMap: Record<string, { emoji: string; name: string }>;
+}) {
+  const [filterAgent, setFilterAgent] = useState<string>("all");
+  const [filterType, setFilterType] = useState<string>("all");
+
+  const getDisplay = (agentId: string) =>
+    agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
+
+  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) => {
+    setExpandedEntries((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const COLLAPSE_THRESHOLD = 200; // chars
+
+  // Flatten and sort all entries newest-first
+  const allEntries: HistoryEntry[] = Object.values(historyData)
+    .flat()
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const filtered = allEntries.filter((entry) => {
+    if (filterAgent !== "all" && entry.agentId !== filterAgent) return false;
+    if (filterType !== "all" && entry.type !== filterType) return false;
+    return true;
+  });
+
+  const allTypes = Array.from(new Set(allEntries.map((e) => e.type)));
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2">
+        {/* Agent filter */}
+        <select
+          value={filterAgent}
+          onChange={(e) => setFilterAgent(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+        >
+          <option value="all">All Agents</option>
+          {agents.map((a) => (
+            <option key={a.config.id} value={a.config.id}>
+              {a.config.emoji} {a.config.name}
+            </option>
+          ))}
+        </select>
+
+        {/* Type filter */}
+        <select
+          value={filterType}
+          onChange={(e) => setFilterType(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+        >
+          <option value="all">All Types</option>
+          {allTypes.map((t) => (
+            <option key={t} value={t}>
+              {HISTORY_TYPE_LABELS[t]?.label || t}
+            </option>
+          ))}
+        </select>
+
+        <span className="flex items-center text-xs text-gray-500 ml-auto">
+          {filtered.length} entries
+        </span>
+      </div>
+
+      {/* Timeline */}
+      {filtered.length === 0 ? (
+        <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
+          <p className="text-gray-500">No history entries yet</p>
+          <p className="text-gray-600 text-sm mt-1">
+            Agent activities will appear here as they occur
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((entry) => {
+            const display = getDisplay(entry.agentId);
+            const typeInfo = HISTORY_TYPE_LABELS[entry.type as keyof typeof HISTORY_TYPE_LABELS] || {
+              label: entry.type,
+              color: "bg-gray-500/20 text-gray-400 border-gray-500/30",
+            };
+            return (
+              <div
+                key={entry.id}
+                className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-gray-600 transition-colors"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl flex-shrink-0">{display.emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-white text-sm">
+                        {display.name}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs border ${typeInfo.color}`}
+                      >
+                        {typeInfo.label}
+                      </span>
+                      <span className="text-xs text-gray-500 ml-auto flex-shrink-0">
+                        {relativeTime(entry.timestamp)}
+                      </span>
+                    </div>
+                    {entry.content.length > COLLAPSE_THRESHOLD ? (
+                      <div className="mt-1">
+                        <div
+                          className={`prose prose-sm prose-invert max-w-none break-words ${
+                            !expandedEntries.has(entry.id) ? "line-clamp-3" : ""
+                          }`}
+                        >
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {expandedEntries.has(entry.id)
+                              ? entry.content
+                              : entry.content}
+                          </ReactMarkdown>
+                        </div>
+                        <button
+                          onClick={() => toggleExpand(entry.id)}
+                          className="text-blue-400 hover:text-blue-300 text-xs mt-1 transition-colors"
+                        >
+                          {expandedEntries.has(entry.id) ? "접기 ▲" : "더보기 ▼"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="prose prose-sm prose-invert max-w-none mt-1 break-words">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {entry.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== Messages Panel Component =====
+function MessagesPanel({
+  agents,
+  agentOverview,
+  agentMap,
+  onRefreshOverview,
+}: {
+  agents: AgentRuntime[];
+  agentOverview: Record<string, AgentMessageOverview>;
+  agentMap: Record<string, { emoji: string; name: string }>;
+  onRefreshOverview: () => void;
+}) {
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [conversation, setConversation] = useState<Message[]>([]);
+  const [messageInput, setMessageInput] = useState("");
+  const [messageType, setMessageType] = useState<Message["type"]>("text");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch conversation when agent is selected
+  const fetchConversation = useCallback(async (agentId: string) => {
+    try {
+      const res = await fetch(`/api/messages/${agentId}?with=user`);
+      const data = await res.json();
+      if (data.messages) {
+        setConversation(data.messages);
+      }
+    } catch (err) {
+      console.error("Failed to fetch conversation:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedAgent) return;
+    fetchConversation(selectedAgent);
+    const interval = setInterval(() => fetchConversation(selectedAgent), 3000);
+    return () => clearInterval(interval);
+  }, [selectedAgent, fetchConversation]);
+
+  // Scroll to bottom when conversation updates
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversation]);
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!messageInput.trim() || !selectedAgent || sending) return;
+
+    setSending(true);
+    try {
+      await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: "user",
+          to: selectedAgent,
+          content: messageInput.trim(),
+          type: messageType,
+        }),
+      });
+      setMessageInput("");
+      // Refresh conversation and overview
+      await fetchConversation(selectedAgent);
+      onRefreshOverview();
+    } catch (err) {
+      console.error("Failed to send message:", err);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const getDisplay = (agentId: string) =>
+    agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
+
+  // Sort agents by unread count (descending), then alphabetically
+  const sortedAgents = [...agents].sort((a, b) => {
+    const unreadA = agentOverview[a.config.id]?.unread || 0;
+    const unreadB = agentOverview[b.config.id]?.unread || 0;
+    if (unreadB !== unreadA) return unreadB - unreadA;
+    return a.config.name.localeCompare(b.config.name);
+  });
+
+  return (
+    <div className="flex flex-col md:flex-row gap-4 min-h-[500px]">
+      {/* Left sidebar: Agent list */}
+      <div className="md:w-64 flex-shrink-0">
+        <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+          <div className="p-3 border-b border-gray-700">
+            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">
+              Agents
+            </p>
+          </div>
+          <div className="divide-y divide-gray-700">
+            {sortedAgents.map((agent) => {
+              const overview = agentOverview[agent.config.id];
+              const unread = overview?.unread || 0;
+              const isSelected = selectedAgent === agent.config.id;
+              return (
+                <button
+                  key={agent.config.id}
+                  onClick={() => setSelectedAgent(agent.config.id)}
+                  className={`w-full text-left px-3 py-3 flex items-center gap-3 transition-colors ${
+                    isSelected
+                      ? "bg-blue-600/20 border-l-2 border-l-blue-500"
+                      : "hover:bg-gray-700/50"
+                  }`}
+                >
+                  <span className="text-xl">{agent.config.emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-white">
+                        {agent.config.name}
+                      </span>
+                      {unread > 0 && (
+                        <span className="bg-blue-600 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center">
+                          {unread}
+                        </span>
+                      )}
+                    </div>
+                    {overview?.latest && (
+                      <p className="text-xs text-gray-500 truncate mt-0.5">
+                        {overview.latest.content}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Right panel: Conversation */}
+      <div className="flex-1 flex flex-col bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        {!selectedAgent ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <p className="text-gray-500 text-lg">Select an agent to chat</p>
+              <p className="text-gray-600 text-sm mt-1">
+                Choose an agent from the sidebar to start a conversation
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Chat header */}
+            <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
+              <span className="text-xl">
+                {getDisplay(selectedAgent).emoji}
+              </span>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  {getDisplay(selectedAgent).name}
+                </h3>
+                <p className="text-xs text-gray-500">
+                  {agents.find((a) => a.config.id === selectedAgent)?.config.role}
+                </p>
+              </div>
+            </div>
+
+            {/* Messages area */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[400px]">
+              {conversation.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-gray-500 text-sm">No messages yet</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    Send the first message below
+                  </p>
+                </div>
+              ) : (
+                conversation.map((msg) => {
+                  const isUser = msg.from === "user";
+                  const style = MSG_TYPE_STYLES[msg.type];
+                  const typeLabel = MSG_TYPE_LABELS[msg.type];
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[75%] rounded-xl px-4 py-2.5 border ${style}`}
+                      >
+                        {typeLabel && (
+                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-70 block mb-1">
+                            {typeLabel}
+                          </span>
+                        )}
+                        <p className="text-sm break-words">{msg.content}</p>
+                        <p className="text-[10px] opacity-50 mt-1 text-right">
+                          {relativeTime(msg.timestamp)}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input area */}
+            <form
+              onSubmit={handleSend}
+              className="p-3 border-t border-gray-700 flex gap-2"
+            >
+              <select
+                value={messageType}
+                onChange={(e) => setMessageType(e.target.value as Message["type"])}
+                className="bg-gray-700 border border-gray-600 rounded-lg px-2 py-2 text-xs text-white focus:outline-none focus:border-blue-500 w-20 sm:w-24"
+              >
+                <option value="text">Text</option>
+                <option value="task">Task</option>
+                <option value="question">Question</option>
+                <option value="result">Result</option>
+                <option value="answer">Answer</option>
+              </select>
+              <input
+                type="text"
+                value={messageInput}
+                onChange={(e) => setMessageInput(e.target.value)}
+                placeholder="Type a message..."
+                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                type="submit"
+                disabled={sending || !messageInput.trim()}
+                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                {sending ? "..." : "Send"}
+              </button>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ===== Types for API =====
 interface GatewayConnection {
   id: string;
@@ -374,12 +821,16 @@ interface User {
 
 // ===== Main =====
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"agents" | "projects" | "finance">(
-    "agents"
-  );
-  const [agents, setAgents] = useState<Agent[]>(initialAgents);
+  const [activeTab, setActiveTab] = useState<
+    "agents" | "projects" | "finance" | "history" | "messages"
+  >("agents");
+  const [agents, setAgents] = useState<AgentRuntime[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState<"all" | "dev" | "business" | "ops">("all");
   const [user, setUser] = useState<User | null>(null);
   const [gateways, setGateways] = useState<GatewayConnection[]>([]);
+  const [historyData, setHistoryData] = useState<Record<string, HistoryEntry[]>>({});
+  const [agentOverview, setAgentOverview] = useState<Record<string, AgentMessageOverview>>({});
+  const [totalUnread, setTotalUnread] = useState(0);
   const router = useRouter();
 
   const today = new Date().toLocaleDateString("ko-KR", {
@@ -388,6 +839,36 @@ export default function Home() {
     day: "numeric",
     weekday: "long",
   });
+
+  // Fetch agents from API
+  useEffect(() => {
+    fetch("/api/agents")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.agents) {
+          const runtimeAgents: AgentRuntime[] = data.agents.map((config: AgentConfig) => ({
+            config,
+            status: "idle" as const,
+            stack: [],
+            completedToday: 0,
+          }));
+          setAgents(runtimeAgents);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  // Build dynamic agent map for HistoryPanel and MessagesPanel
+  const agentMap = useMemo(() => {
+    const map: Record<string, { emoji: string; name: string }> = {
+      user: { emoji: "\u{1F464}", name: "User" },
+      system: { emoji: "\u{1F5A5}\uFE0F", name: "System" },
+    };
+    agents.forEach((a) => {
+      map[a.config.id] = { emoji: a.config.emoji, name: a.config.name };
+    });
+    return map;
+  }, [agents]);
 
   // Fetch user info
   useEffect(() => {
@@ -415,6 +896,45 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
+  // Fetch history (polling every 5s when on history tab)
+  useEffect(() => {
+    const fetchHistory = () => {
+      fetch("/api/history")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.history) setHistoryData(data.history);
+        })
+        .catch(console.error);
+    };
+
+    fetchHistory();
+    const interval = setInterval(fetchHistory, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch message overview (polling every 3s)
+  const fetchMessageOverview = useCallback(() => {
+    fetch("/api/messages")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.agents) {
+          setAgentOverview(data.agents);
+          const total = Object.values(data.agents as Record<string, AgentMessageOverview>).reduce(
+            (sum, a) => sum + a.unread,
+            0
+          );
+          setTotalUnread(total);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    fetchMessageOverview();
+    const interval = setInterval(fetchMessageOverview, 3000);
+    return () => clearInterval(interval);
+  }, [fetchMessageOverview]);
+
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/login");
@@ -425,7 +945,7 @@ export default function Home() {
   const handleAddTask = (agentId: string, description: string) => {
     setAgents((prev) =>
       prev.map((agent) =>
-        agent.id === agentId
+        agent.config.id === agentId
           ? {
               ...agent,
               stack: [
@@ -443,10 +963,18 @@ export default function Home() {
     );
   };
 
-  const handleStartTask = (agentId: string, task: string) => {
+  const handleStartTask = async (agentId: string, task: string) => {
+    // Find the agent to get systemPrompt
+    const agent = agents.find((a) => a.config.id === agentId);
+    if (!agent) {
+      console.error(`Agent ${agentId} not found`);
+      return;
+    }
+
+    // Update UI state to running
     setAgents((prev) =>
       prev.map((agent) =>
-        agent.id === agentId
+        agent.config.id === agentId
           ? {
               ...agent,
               status: "running" as const,
@@ -456,8 +984,70 @@ export default function Home() {
           : agent
       )
     );
-    // TODO: Actually spawn OpenClaw session here
-    console.log(`Starting task for ${agentId}: ${task}`);
+
+    try {
+      // Call relay API to spawn task
+      const response = await fetch("/api/relay/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "spawn",
+          payload: {
+            agentId,
+            task,
+            systemPrompt: agent.config.systemPrompt,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to spawn task: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log(`Task spawned for ${agentId}:`, result);
+
+      // Add success history entry
+      const historyEntry: HistoryEntry = {
+        id: crypto.randomUUID(),
+        agentId,
+        type: "task_started",
+        content: task,
+        timestamp: new Date().toISOString(),
+      };
+
+      setHistoryData((prev) => ({
+        ...prev,
+        [agentId]: [...(prev[agentId] || []), historyEntry],
+      }));
+    } catch (error) {
+      console.error("Failed to start task:", error);
+
+      // Revert agent status to idle on error
+      setAgents((prev) =>
+        prev.map((agent) =>
+          agent.config.id === agentId
+            ? {
+                ...agent,
+                status: "idle" as const,
+                currentTask: undefined,
+                stack: [
+                  {
+                    id: crypto.randomUUID(),
+                    description: task,
+                    trigger: "on_complete" as const,
+                    priority: "medium" as const,
+                  },
+                  ...agent.stack,
+                ],
+              }
+            : agent
+        )
+      );
+
+      // Show error to user
+      alert(`Failed to start task: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
   };
 
   const runningCount = agents.filter((a) => a.status === "running").length;
@@ -546,6 +1136,25 @@ export default function Home() {
             >
               💰 <span className="hidden sm:inline">Finance</span>
             </TabButton>
+            <TabButton
+              active={activeTab === "history"}
+              onClick={() => setActiveTab("history")}
+            >
+              📜 <span className="hidden sm:inline">History</span>
+            </TabButton>
+            <TabButton
+              active={activeTab === "messages"}
+              onClick={() => setActiveTab("messages")}
+            >
+              <span className="relative">
+                💬 <span className="hidden sm:inline">Messages</span>
+                {totalUnread > 0 && (
+                  <span className="absolute -top-2 -right-3 sm:-right-2 bg-red-500 text-white text-[10px] rounded-full px-1.5 py-0.5 min-w-[18px] text-center leading-none">
+                    {totalUnread > 99 ? "99+" : totalUnread}
+                  </span>
+                )}
+              </span>
+            </TabButton>
           </div>
         </div>
       </header>
@@ -560,23 +1169,51 @@ export default function Home() {
                 + 새 작업 분배
               </button>
               <button className="bg-gray-800 hover:bg-gray-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
-                🔄 새로고침
+                새로고침
               </button>
               <button className="bg-gray-800 hover:bg-gray-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors">
-                📊 리포트
+                리포트
               </button>
+            </div>
+
+            {/* Category Filter */}
+            <div className="flex gap-2 mb-4">
+              {([
+                { key: "all", label: "전체" },
+                { key: "dev", label: "개발" },
+                { key: "business", label: "경영" },
+                { key: "ops", label: "운영" },
+              ] as const).map((cat) => (
+                <button
+                  key={cat.key}
+                  onClick={() => setCategoryFilter(cat.key)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    categoryFilter === cat.key
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
             </div>
 
             {/* Agent Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {agents.map((agent) => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  onAddTask={handleAddTask}
-                  onStartTask={handleStartTask}
-                />
-              ))}
+              {agents
+                .filter((agent) =>
+                  categoryFilter === "all"
+                    ? true
+                    : agent.config.category === categoryFilter
+                )
+                .map((agent) => (
+                  <AgentCard
+                    key={agent.config.id}
+                    agent={agent}
+                    onAddTask={handleAddTask}
+                    onStartTask={handleStartTask}
+                  />
+                ))}
             </div>
 
             {/* Pipeline Preview */}
@@ -638,6 +1275,19 @@ export default function Home() {
               </p>
             </div>
           </div>
+        )}
+
+        {activeTab === "history" && (
+          <HistoryPanel historyData={historyData} agents={agents} agentMap={agentMap} />
+        )}
+
+        {activeTab === "messages" && (
+          <MessagesPanel
+            agents={agents}
+            agentOverview={agentOverview}
+            agentMap={agentMap}
+            onRefreshOverview={fetchMessageOverview}
+          />
         )}
       </main>
 

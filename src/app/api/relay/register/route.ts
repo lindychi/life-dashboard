@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const connection = registerGateway(gatewayId);
+    const connection = await registerGateway(gatewayId);
 
     return NextResponse.json({
       success: true,

@@ -5,6 +5,7 @@ import {
   getAndClearCommands,
   updateAgentStatuses,
 } from "@/lib/relay";
+import { addHistoryEntry } from "@/lib/history";
 
 // Gateway가 주기적으로 호출 (polling)
 export async function POST(request: NextRequest) {
@@ -15,7 +16,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { gatewayId, agents } = await request.json();
+    const { gatewayId, agents, historyEntries } = await request.json();
 
     if (!gatewayId) {
       return NextResponse.json(
@@ -25,15 +26,29 @@ export async function POST(request: NextRequest) {
     }
 
     // Update heartbeat
-    updateHeartbeat(gatewayId);
+    await updateHeartbeat(gatewayId);
 
     // Update agent statuses if provided
     if (agents && Array.isArray(agents)) {
-      updateAgentStatuses(gatewayId, agents);
+      await updateAgentStatuses(gatewayId, agents);
+    }
+
+    // 히스토리 엔트리 저장
+    if (historyEntries && Array.isArray(historyEntries)) {
+      for (const entry of historyEntries) {
+        if (entry.agentId && entry.type && entry.content) {
+          await addHistoryEntry(entry.agentId, {
+            agentId: entry.agentId,
+            type: entry.type,
+            content: entry.content,
+            metadata: entry.metadata,
+          });
+        }
+      }
     }
 
     // Get pending commands
-    const commands = getAndClearCommands(gatewayId);
+    const commands = await getAndClearCommands(gatewayId);
 
     return NextResponse.json({
       commands,

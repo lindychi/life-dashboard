@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     // gatewayId 없으면 첫 번째 연결된 gateway 사용
     let targetGateway = gatewayId;
     if (!targetGateway) {
-      const gateways = getConnectedGateways().filter(
+      const gateways = (await getConnectedGateways()).filter(
         (g) => g.status === "connected"
       );
       if (gateways.length === 0) {
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const command = queueCommand(targetGateway, { type, payload });
+    const command = await queueCommand(targetGateway, { type, payload });
 
     return NextResponse.json({
       success: true,
