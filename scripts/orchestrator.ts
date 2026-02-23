@@ -40,7 +40,7 @@ export interface OrchestrationResult {
 }
 
 export interface ProgressEvent {
-  phase: "plan_creating" | "plan_created" | "subtask_starting" | "subtask_completed" | "subtask_failed" | "summarizing" | "completed";
+  phase: "plan_creating" | "plan_created" | "subtask_starting" | "subtask_completed" | "subtask_failed" | "subtask_retrying" | "summarizing" | "completed";
   agentId?: string;
   task?: string;
   detail?: string;
@@ -157,7 +157,8 @@ export async function executePlan(
     task: string,
     systemPrompt?: string
   ) => Promise<{ success: boolean; output?: string; error?: string }>,
-  onProgress?: (event: ProgressEvent) => void
+  onProgress?: (event: ProgressEvent) => void,
+  maxSubtaskRetries: number = 1
 ): Promise<SubTaskResult[]> {
   const sortedSubtasks = [...plan.subtasks].sort((a, b) => a.priority - b.priority);
   const totalSubtasks = sortedSubtasks.length;
@@ -172,7 +173,7 @@ export async function executePlan(
   });
 
   // Execute each priority group: within a group, run in parallel
-  const sortedPriorities = [...priorityGroups.keys()].sort((a, b) => a - b);
+  const sortedPriorities = Array.from(priorityGroups.keys()).sort((a, b) => a - b);
 
   for (const priority of sortedPriorities) {
     const group = priorityGroups.get(priority)!;
@@ -190,63 +191,160 @@ export async function executePlan(
 
     // Execute all subtasks in this priority group in parallel
     const promises = group.map(async ({ subtask, index }) => {
-      try {
-        const result = await executor(subtask.agentId, subtask.task, undefined);
-        const subResult: SubTaskResult = {
-          agentId: subtask.agentId,
-          task: subtask.task,
-          success: result.success,
-          output: result.output,
-          error: result.error,
-        };
+      let lastResult: SubTaskResult | null = null;
 
-        if (result.success) {
+      for (let attempt = 0; attempt <= maxSubtaskRetries; attempt++) {
+        try {
+          const taskStr = attempt > 0
+            ? `이전 시도가 시간 초과로 실패했습니다. 핵심 내용만 간결하게 처리해주세요.\n\n${subtask.task}`
+            : subtask.task;
+
+          const result = await executor(subtask.agentId, taskStr, undefined);
+
+          if (result.success) {
+            const subResult: SubTaskResult = {
+              agentId: subtask.agentId,
+              task: subtask.task,
+              success: true,
+              output: result.output,
+            };
+
+            onProgress?.({
+              phase: "subtask_completed",
+              agentId: subtask.agentId,
+              task: subtask.task,
+              subtaskIndex: index,
+              totalSubtasks,
+              detail: result.output,
+            });
+
+            return subResult;
+          }
+
+          lastResult = {
+            agentId: subtask.agentId,
+            task: subtask.task,
+            success: false,
+            error: result.error,
+          };
+
+          // Check if retryable (hung/timeout)
+          const isHung =
+            result.error?.includes("hung") ||
+            result.error?.includes("응답 없음") ||
+            (result as any).exitCode === -2;
+
+          if (!isHung || attempt === maxSubtaskRetries) {
+            onProgress?.({
+              phase: "subtask_failed",
+              agentId: subtask.agentId,
+              task: subtask.task,
+              subtaskIndex: index,
+              totalSubtasks,
+              detail: result.error,
+            });
+            return lastResult;
+          }
+
+          // Retry
           onProgress?.({
-            phase: "subtask_completed",
+            phase: "subtask_retrying",
             agentId: subtask.agentId,
             task: subtask.task,
             subtaskIndex: index,
             totalSubtasks,
-            detail: result.output,
+            detail: `Retry ${attempt + 1}/${maxSubtaskRetries}: previous attempt timed out`,
           });
-        } else {
+
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const subResult: SubTaskResult = {
+            agentId: subtask.agentId,
+            task: subtask.task,
+            success: false,
+            error: errorMessage,
+          };
+
           onProgress?.({
             phase: "subtask_failed",
             agentId: subtask.agentId,
             task: subtask.task,
             subtaskIndex: index,
             totalSubtasks,
-            detail: result.error,
+            detail: errorMessage,
           });
+
+          return subResult;
         }
-
-        return subResult;
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        const subResult: SubTaskResult = {
-          agentId: subtask.agentId,
-          task: subtask.task,
-          success: false,
-          error: errorMessage,
-        };
-
-        onProgress?.({
-          phase: "subtask_failed",
-          agentId: subtask.agentId,
-          task: subtask.task,
-          subtaskIndex: index,
-          totalSubtasks,
-          detail: errorMessage,
-        });
-
-        return subResult;
       }
+
+      return lastResult!;
     });
 
     const batchResults = await Promise.allSettled(promises);
     for (const settled of batchResults) {
       if (settled.status === "fulfilled") {
         results.push(settled.value);
+      }
+    }
+  }
+
+  // Final retry pass: collect failed subtasks with hung/timeout indicators
+  const failedHungIndices: number[] = [];
+  results.forEach((result, index) => {
+    if (
+      !result.success &&
+      (result.error?.includes("hung") || result.error?.includes("응답 없음"))
+    ) {
+      failedHungIndices.push(index);
+    }
+  });
+
+  if (failedHungIndices.length > 0) {
+    const retryPromises = failedHungIndices.map(async (resultIndex) => {
+      const originalResult = results[resultIndex];
+      const retriedTask = `이전 시도가 시간 초과로 실패했습니다. 핵심 내용만 간결하게 처리해주세요.\n\n${originalResult.task}`;
+
+      onProgress?.({
+        phase: "subtask_retrying",
+        agentId: originalResult.agentId,
+        task: originalResult.task,
+        detail: "Final retry attempt for hung task",
+      });
+
+      try {
+        const result = await executor(originalResult.agentId, retriedTask, undefined);
+
+        if (result.success) {
+          onProgress?.({
+            phase: "subtask_completed",
+            agentId: originalResult.agentId,
+            task: originalResult.task,
+            detail: result.output,
+          });
+
+          return {
+            index: resultIndex,
+            result: {
+              agentId: originalResult.agentId,
+              task: originalResult.task,
+              success: true,
+              output: result.output,
+            },
+          };
+        }
+      } catch (error) {
+        // Keep original failure
+      }
+
+      return { index: resultIndex, result: null };
+    });
+
+    const retryResults = await Promise.allSettled(retryPromises);
+    for (const settled of retryResults) {
+      if (settled.status === "fulfilled" && settled.value.result) {
+        results[settled.value.index] = settled.value.result;
       }
     }
   }

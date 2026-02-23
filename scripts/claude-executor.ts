@@ -18,6 +18,7 @@ export interface ExecutionResult {
   rateLimited?: boolean;
   fallbackUsed?: boolean;
   fallbackReason?: "rate_limit";
+  retriesUsed?: number;
 }
 
 // Safe tools whitelist: file operations + MCP tools, NO Bash execution
@@ -68,6 +69,8 @@ export interface ClaudeExecutorOptions {
   disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
   mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
   allowBash?: boolean; // If true, include Bash in allowed tools (use with caution)
+  maxRetries?: number; // Max retry attempts for hung/rate-limited failures (default 2)
+  retryDelayMs?: number; // Delay between retries in ms (default 3000)
 }
 
 /**
@@ -514,4 +517,56 @@ export async function executeLlmTask(
     fallbackReason: "rate_limit",
     rateLimited: false,
   };
+}
+
+/**
+ * Execute a task with automatic retry for hung/rate-limited failures
+ *
+ * Wraps executeLlmTask with retry logic:
+ * - Retries only for hung (exitCode -2) or rate-limited failures
+ * - Increases staleTimeout by 50% on each retry for hung processes
+ * - Logs retry attempts and notifies via onOutput callback
+ */
+export async function executeLlmTaskWithRetry(
+  options: ClaudeExecutorOptions
+): Promise<ExecutionResult> {
+  const maxRetries = options.maxRetries ?? 2;
+  const retryDelay = options.retryDelayMs ?? 3000;
+  let currentStaleTimeout = options.staleTimeout;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await executeLlmTask({
+      ...options,
+      staleTimeout: currentStaleTimeout,
+    });
+
+    // Success or non-retryable failure → return immediately
+    const isRetryable = result.exitCode === -2 || result.rateLimited;
+    if (result.success || !isRetryable || attempt === maxRetries) {
+      if (attempt > 0 && result.success) {
+        console.log(`✅ Retry succeeded on attempt ${attempt + 1} for ${options.agentId}`);
+      }
+      return {
+        ...result,
+        // Track retry info
+        ...(attempt > 0 ? { retriesUsed: attempt } : {}),
+      };
+    }
+
+    // Retryable failure
+    const reason = result.exitCode === -2 ? "hung" : "rate_limited";
+    console.log(`🔄 Retry ${attempt + 1}/${maxRetries} for ${options.agentId}: ${reason}`);
+    options.onOutput?.(`[retry] Attempt ${attempt + 2} starting after ${reason}...\n`);
+
+    // Increase stale timeout by 50% for hung retries
+    if (result.exitCode === -2 && currentStaleTimeout) {
+      currentStaleTimeout = Math.round(currentStaleTimeout * 1.5);
+    }
+
+    // Wait before retry
+    await new Promise((resolve) => setTimeout(resolve, retryDelay));
+  }
+
+  // Should not reach here, but TypeScript safety
+  return executeLlmTask(options);
 }

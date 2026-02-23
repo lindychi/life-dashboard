@@ -27,7 +27,7 @@ import * as path from "path";
 import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "..", ".env.local") });
 
-import { executeLlmTask, isClaudeAvailable, isCodexAvailable, formatDuration } from "./claude-executor";
+import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, formatDuration } from "./claude-executor";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -75,6 +75,36 @@ const pendingHistoryEntries: Array<{
 // Helper: Add history entry
 function addHistory(agentId: string, type: string, content: string, metadata?: Record<string, unknown>) {
   pendingHistoryEntries.push({ agentId, type, content, metadata });
+}
+
+// Helper: Re-queue failed task for one more attempt
+async function requeueFailedTask(
+  agentId: string,
+  task: string,
+  originalCommandId: string,
+  attempt: number
+): Promise<void> {
+  if (attempt >= 2) {
+    console.log(`   ⛔ Max requeue attempts reached for ${agentId}, task permanently failed`);
+    return;
+  }
+
+  try {
+    console.log(`   🔄 Re-queuing failed task for ${agentId} (attempt ${attempt + 1})`);
+    await apiCall("/command", "POST", {
+      gatewayId: GATEWAY_ID,
+      type: "spawn",
+      payload: {
+        agentId,
+        task: `[재시도 ${attempt + 1}회] 이전 시도가 실패했습니다. 핵심만 간결하게 처리해주세요.\n\n${task}`,
+        _requeueAttempt: attempt + 1,
+        _originalCommandId: originalCommandId,
+      },
+    });
+    addHistory(agentId, "output", `🔄 작업 실패로 재큐잉됨 (시도 ${attempt + 1})`);
+  } catch (error) {
+    console.error(`   ❌ Failed to requeue task for ${agentId}:`, error);
+  }
 }
 
 // Helper: API call using http/https directly (avoids Node.js undici's 300s default timeout)
@@ -192,7 +222,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         let lastHistoryUpdate = 0;
         const HISTORY_INTERVAL = 10000; // Send history entries every 10s
 
-        executeLlmTask({
+        executeLlmTaskWithRetry({
           agentId,
           task,
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
@@ -263,6 +293,12 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               name: agentId,
               status: isHung ? "idle" : "error",
             });
+
+            // Re-queue hung tasks for another attempt
+            if (isHung) {
+              const currentAttempt = (command.payload as any)?._requeueAttempt || 0;
+              requeueFailedTask(agentId, task, command.id, currentAttempt);
+            }
           }
         });
 
@@ -359,6 +395,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               addHistory(event.agentId || "unknown", "task_failed", `❌ ${agentName} → Orchestrator: 실패 — ${event.detail || "알 수 없는 오류"}`);
               break;
             }
+            case "subtask_retrying": {
+              const agentName = getAgentName(event.agentId || "unknown");
+              addHistory(event.agentId || "unknown", "output", `🔄 ${agentName} 재시도 중: ${event.detail || ""}`);
+              break;
+            }
             case "summarizing":
               addHistory("orchestrator", "output", "📊 결과 종합 중...");
               break;
@@ -387,7 +428,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획/i.test(taskStr);
           const taskStaleTimeout = isComplexTask ? 600000 : 300000;
 
-          const result = await executeLlmTask({
+          const result = await executeLlmTaskWithRetry({
             agentId,
             task: taskStr,
             systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
@@ -451,6 +492,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               name: agentName,
               status: isHung ? "idle" : "error",
             });
+
+            // Add retry info if retries were used
+            if (result.exitCode === -2 && (result as any).retriesUsed) {
+              addHistory(agentId, "output", `🔄 ${agentName}: ${(result as any).retriesUsed}회 재시도 후에도 실패`);
+            }
           }
 
           return result;
