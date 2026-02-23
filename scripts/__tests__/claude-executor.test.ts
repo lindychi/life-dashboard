@@ -167,6 +167,7 @@ describe("claude-executor", () => {
         agentId: "dev",
         task: "Task",
         systemPrompt: "Prompt",
+        staleTimeout: 0, // Disable stale timeout for this test
       });
 
       // Should not timeout even after a very long time
@@ -305,6 +306,119 @@ describe("claude-executor", () => {
 
       mockProc.emit("close", 0);
       await promise;
+    });
+
+    it("should kill hung process when no output for staleTimeout", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "dev",
+        task: "Hung task",
+        systemPrompt: "Prompt",
+        staleTimeout: 120000, // 2 minutes
+      });
+
+      // Initial output
+      mockProc.stdout!.emit("data", Buffer.from("Starting...\n"));
+
+      // Advance time but no output
+      await vi.advanceTimersByTimeAsync(30000); // 30s - check interval
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30000); // 60s total
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30000); // 90s total
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      // Advance past stale timeout - should trigger kill
+      await vi.advanceTimersByTimeAsync(30001); // 120s+ total - should detect hung
+
+      // Run all pending timers to ensure promise resolution
+      await vi.runAllTimersAsync();
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Process hung (no output for");
+      expect(result.error).toContain("2분");
+      expect(result.exitCode).toBe(-2);
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
+
+      vi.useRealTimers();
+    }, 10000); // Increase test timeout to 10s
+
+    it("should NOT kill process that produces output slowly", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "dev",
+        task: "Slow task",
+        systemPrompt: "Prompt",
+        staleTimeout: 120000, // 2 minutes
+      });
+
+      // Initial output
+      mockProc.stdout!.emit("data", Buffer.from("Starting...\n"));
+
+      // Advance time and emit output every 60 seconds
+      await vi.advanceTimersByTimeAsync(60000);
+      mockProc.stdout!.emit("data", Buffer.from("Working...\n"));
+
+      await vi.advanceTimersByTimeAsync(60000);
+      mockProc.stdout!.emit("data", Buffer.from("Still working...\n"));
+
+      await vi.advanceTimersByTimeAsync(60000);
+      mockProc.stdout!.emit("data", Buffer.from("Almost done...\n"));
+
+      // Process should NOT be killed
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      // Complete normally
+      mockProc.stdout!.emit("data", Buffer.from("Done!"));
+      mockProc.emit("close", 0);
+
+      const result = await promise;
+      expect(result.success).toBe(true);
+      expect(result.output).toContain("Done!");
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
+
+    it("staleTimeout defaults to 5 minutes", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "dev",
+        task: "Task",
+        systemPrompt: "Prompt",
+        // No staleTimeout specified
+      });
+
+      // Initial output
+      mockProc.stdout!.emit("data", Buffer.from("Starting...\n"));
+
+      // Advance time just under 5 minutes with no output
+      await vi.advanceTimersByTimeAsync(4 * 60 * 1000 + 30000); // 4.5 minutes
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      // Advance past 5 minutes
+      await vi.advanceTimersByTimeAsync(60000); // Total: 5.5 minutes
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Process hung");
+      expect(result.error).toContain("5분");
+      expect(result.exitCode).toBe(-2);
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
+
+      vi.useRealTimers();
     });
   });
 });

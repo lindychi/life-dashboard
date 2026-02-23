@@ -188,12 +188,17 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               status: "idle",
             });
           } else {
-            console.log(`   ❌ Task failed for ${agentId}: ${result.error}`);
-            addHistory(agentId, "task_failed", result.error || "Task failed");
+            const isHung = result.exitCode === -2;
+            const errorMsg = isHung
+              ? `⏰ 프로세스 응답 없음으로 자동 종료됨: ${result.error}`
+              : result.error || "Task failed";
+
+            console.log(`   ❌ Task ${isHung ? 'hung' : 'failed'} for ${agentId}: ${errorMsg}`);
+            addHistory(agentId, "task_failed", errorMsg);
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
-              status: "error",
+              status: isHung ? "idle" : "error",
             });
           }
         });
@@ -339,8 +344,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${result.output || "완료"}`);
             agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "idle" });
           } else {
-            addHistory(agentId, "output", `⚠️ ${agentName} 오류${elapsed}:\n${result.error || "실패"}`);
-            agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "error" });
+            const isHung = result.exitCode === -2;
+            const label = isHung ? "⏰ 응답 없음 자동 종료" : "⚠️ 오류";
+            addHistory(agentId, "output", `${label}${elapsed}:\n${result.error || "실패"}`);
+            agentStatusMap.set(agentId, {
+              id: agentId,
+              name: agentName,
+              status: isHung ? "idle" : "error",
+            });
           }
 
           return result;

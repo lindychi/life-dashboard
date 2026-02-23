@@ -31,6 +31,7 @@ export interface ClaudeExecutorOptions {
   systemPrompt: string;
   workDir?: string;
   timeout?: number; // ms, 0 = no timeout (default)
+  staleTimeout?: number; // ms, kill if no output for this long (default: 300000 = 5 min, 0 = disabled)
   onOutput?: (chunk: string) => void;
   disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
   mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
@@ -77,10 +78,17 @@ export function formatDuration(ms: number): string {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { task, systemPrompt, workDir, timeout = 0, onOutput, disableTools, mcpConfig, allowBash } = options;
+  const { task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, disableTools, mcpConfig, allowBash } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
+    let resolved = false;
+
+    const safeResolve = (result: ExecutionResult) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(result);
+    };
 
     const args = ["--print"];
 
@@ -107,9 +115,11 @@ export function executeClaudeTask(
 
     let stdout = "";
     let stderr = "";
+    let lastOutputTime = Date.now();
 
     child.stdout?.on("data", (data: Buffer) => {
       stdout += data.toString();
+      lastOutputTime = Date.now();
       onOutput?.(data.toString());
     });
 
@@ -117,11 +127,14 @@ export function executeClaudeTask(
       stderr += data.toString();
     });
 
+    // Wall-clock timeout
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (timeout > 0) {
       timer = setTimeout(() => {
+        if (staleTimer) clearInterval(staleTimer);
+        staleTimer = null;
         child.kill("SIGTERM");
-        resolve({
+        safeResolve({
           success: false,
           error: `Timeout after ${formatDuration(timeout)}`,
           exitCode: -1,
@@ -130,9 +143,39 @@ export function executeClaudeTask(
       }, timeout);
     }
 
+    // Hung process detection (no output timeout)
+    let staleTimer: ReturnType<typeof setInterval> | null = null;
+    if (staleTimeout > 0) {
+      staleTimer = setInterval(() => {
+        if (Date.now() - lastOutputTime > staleTimeout) {
+          if (timer) clearTimeout(timer);
+          timer = null;
+          if (staleTimer) clearInterval(staleTimer);
+          staleTimer = null;
+
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // Process may already be dead
+            }
+          }, 5000);
+
+          safeResolve({
+            success: false,
+            error: `Process hung (no output for ${formatDuration(staleTimeout)})`,
+            exitCode: -2,
+            elapsedMs: Date.now() - startTime,
+          });
+        }
+      }, 30000); // Check every 30 seconds
+    }
+
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
-      resolve({
+      if (staleTimer) clearInterval(staleTimer);
+      safeResolve({
         success: false,
         error: err.message,
         exitCode: -1,
@@ -142,15 +185,16 @@ export function executeClaudeTask(
 
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
+      if (staleTimer) clearInterval(staleTimer);
       if (code === 0) {
-        resolve({
+        safeResolve({
           success: true,
           output: stdout.trim(),
           exitCode: 0,
           elapsedMs: Date.now() - startTime,
         });
       } else {
-        resolve({
+        safeResolve({
           success: false,
           output: stdout.trim(),
           error: stderr.trim() || `Process exited with code ${code}`,
