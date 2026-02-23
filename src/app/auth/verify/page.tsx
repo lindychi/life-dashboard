@@ -48,7 +48,7 @@ function VerifyContent() {
 
   return (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-      <div className="bg-gray-800 rounded-2xl p-8 w-full max-w-md border border-gray-700 text-center">
+      <div className="bg-gray-800 rounded-xl p-8 w-full max-w-md border border-gray-700 text-center">
         {status === "loading" && (
           <>
             <div className="animate-spin w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4" />
@@ -72,7 +72,7 @@ function VerifyContent() {
             <p className="text-red-400 mb-4">{error}</p>
             <button
               onClick={() => router.push("/login")}
-              className="bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 px-6 rounded-lg transition-colors"
+              className="bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 px-6 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               다시 로그인하기
             </button>

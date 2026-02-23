@@ -13,6 +13,7 @@ const publicPaths = [
   "/api/auth/login",
   "/api/auth/verify",
   "/api/relay/",
+  "/api/tasks/health",
 ];
 
 export async function middleware(request: NextRequest) {

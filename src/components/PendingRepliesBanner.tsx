@@ -3,6 +3,7 @@
 import React, { useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { relativeTime } from "@/lib/format-utils";
 
 interface PendingReply {
   id: string;
@@ -34,17 +35,6 @@ interface PendingReplyCardProps {
   isExpanded: boolean;
   onToggle: () => void;
   onReply: (entry: PendingReply, replyText: string) => Promise<void>;
-}
-
-function relativeTime(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = now - then;
-  if (diff < 0) return "방금";
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}초 전`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}시간 전`;
-  return `${Math.floor(diff / 86_400_000)}일 전`;
 }
 
 const PendingReplyCard = React.memo<PendingReplyCardProps>(
@@ -99,7 +89,7 @@ const PendingReplyCard = React.memo<PendingReplyCardProps>(
           </div>
           <button
             onClick={onToggle}
-            className="text-xs text-yellow-400 hover:text-yellow-300 transition-colors whitespace-nowrap"
+            className="text-xs text-yellow-400 hover:text-yellow-300 transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           >
             {isExpanded ? "접기 ▲" : "펼치기 ▼"}
           </button>
@@ -111,13 +101,13 @@ const PendingReplyCard = React.memo<PendingReplyCardProps>(
               value={replyText}
               onChange={(e) => setReplyText(e.target.value)}
               placeholder="답신 입력..."
-              className="flex-1 px-3 py-1.5 bg-white/5 border border-white/10 rounded text-sm text-white placeholder-white/40 focus:outline-none focus:border-yellow-500/50"
+              className="flex-1 px-3 py-1.5 bg-white/5 border border-white/10 rounded text-sm text-white placeholder-white/40 focus:outline-none focus:border-yellow-500/50 focus-visible:ring-2 focus-visible:ring-yellow-500"
               disabled={replySending}
             />
             <button
               type="submit"
               disabled={!replyText.trim() || replySending}
-              className="px-4 py-1.5 bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-500/30 disabled:cursor-not-allowed text-white text-sm rounded transition-colors"
+              className="px-4 py-1.5 bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-500/30 disabled:cursor-not-allowed text-white text-sm rounded transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               {replySending ? "전송중..." : "답신"}
             </button>

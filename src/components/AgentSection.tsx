@@ -3,43 +3,8 @@
 import React, { useState, memo, useEffect } from "react";
 import HistoryEntryCard from "@/components/HistoryEntryCard";
 import { copyToClipboard } from "@/lib/clipboard";
-
-// Types
-interface TaskStack {
-  id: string;
-  description: string;
-  trigger: "on_complete" | "manual" | "on_idle";
-  priority: "high" | "medium" | "low";
-}
-
-interface AgentConfig {
-  id: string;
-  name: string;
-  role: string;
-  emoji: string;
-  category: "dev" | "business" | "ops";
-  systemPrompt: string;
-  enabled: boolean;
-  projects?: string[];
-}
-
-interface AgentRuntime {
-  config: AgentConfig;
-  status: "running" | "idle" | "waiting" | "error";
-  currentTask?: string;
-  sessionKey?: string;
-  stack: TaskStack[];
-  completedToday: number;
-}
-
-interface HistoryEntry {
-  id: string;
-  agentId: string;
-  type: "task_started" | "task_completed" | "task_failed" | "message_sent" | "message_received" | "status_change" | "command_received" | "output";
-  content: string;
-  metadata?: Record<string, unknown>;
-  timestamp: string;
-}
+import { relativeTime, formatBytes } from "@/lib/format-utils";
+import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 
 interface AgentSectionProps {
   agent: AgentRuntime;
@@ -65,16 +30,11 @@ const CATEGORY_STYLES: Record<AgentConfig["category"], string> = {
   ops: "bg-orange-500/20 text-orange-400 border-orange-500/30",
 };
 
-// Utility
-function relativeTime(timestamp: string): string {
+// Keep this local as it's only used here
+function isRecentActivity(timestamp: string): boolean {
   const now = Date.now();
   const then = new Date(timestamp).getTime();
-  const diff = now - then;
-  if (diff < 0) return "방금";
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}초 전`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}시간 전`;
-  return `${Math.floor(diff / 86_400_000)}일 전`;
+  return (now - then) < 30000; // Within 30 seconds
 }
 
 const AgentSection = memo(function AgentSection({
@@ -194,8 +154,13 @@ const AgentSection = memo(function AgentSection({
         <div className="flex items-start gap-3">
           <div className="text-3xl flex-shrink-0">{agent.config.emoji}</div>
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-lg font-bold text-white">{agent.config.name}</h3>
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap overflow-x-auto">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                {agent.config.name}
+                {agent.liveOutput && isRecentActivity(agent.liveOutput.lastActivityAt) && (
+                  <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" title="실시간 출력 수신 중" />
+                )}
+              </h3>
               <span className={`text-xs px-2 py-1 rounded border ${categoryStyle}`}>
                 {agent.config.category}
               </span>
@@ -209,7 +174,8 @@ const AgentSection = memo(function AgentSection({
               )}
               <button
                 onClick={handleToggleExpand}
-                className="ml-auto text-gray-400 hover:text-white text-sm"
+                className="ml-auto text-gray-400 hover:text-white text-sm focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                aria-label={isExpanded ? "섹션 접기" : "섹션 펼치기"}
               >
                 {isExpanded ? "▼" : "▶"}
               </button>
@@ -241,16 +207,34 @@ const AgentSection = memo(function AgentSection({
             </div>
           )}
 
+          {/* Live Output */}
+          {agent.status === "running" && agent.liveOutput && (
+            <div className="rounded-lg bg-gray-900 p-3 font-mono text-xs text-green-400">
+              <div className="mb-1 flex items-center justify-between text-gray-500">
+                <span>📡 실시간 출력</span>
+                <span>
+                  {agent.liveOutput.chunksReceived} chunks · {formatBytes(agent.liveOutput.totalChars)}
+                </span>
+              </div>
+              <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
+                {agent.liveOutput.lastChunk}
+              </div>
+              <div className="mt-1 text-right text-gray-600">
+                마지막 활동: {relativeTime(agent.liveOutput.lastActivityAt)}
+              </div>
+            </div>
+          )}
+
           {/* Task Stack */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-semibold text-gray-300">
-                Task Stack ({agent.stack.length})
+                작업 스택 ({agent.stack.length})
               </h4>
               {!showAddTaskForm && (
                 <button
                   onClick={() => setShowAddTaskForm(true)}
-                  className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600"
+                  className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 >
                   + 추가
                 </button>
@@ -319,7 +303,7 @@ const AgentSection = memo(function AgentSection({
             {!pendingTask && agent.status === "idle" && agent.stack.length > 0 && (
               <button
                 onClick={handleStartStack}
-                className="px-4 py-2 rounded bg-green-500 text-white text-sm font-medium hover:bg-green-600"
+                className="px-4 py-2 rounded bg-green-500 text-white text-sm font-medium hover:bg-green-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 스택 실행
               </button>
@@ -327,7 +311,7 @@ const AgentSection = memo(function AgentSection({
             {!pendingTask && agent.status === "idle" && !showQuickTaskForm && (
               <button
                 onClick={() => setShowQuickTaskForm(true)}
-                className="px-4 py-2 rounded bg-gray-700 text-gray-300 text-sm hover:bg-gray-600"
+                className="px-4 py-2 rounded bg-gray-700 text-gray-300 text-sm hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 + 작업 할당
               </button>
@@ -378,9 +362,10 @@ const AgentSection = memo(function AgentSection({
           <div className="space-y-2">
             <button
               onClick={handleToggleHistory}
-              className="text-sm font-semibold text-gray-300 hover:text-white flex items-center gap-1"
+              className="text-sm font-semibold text-gray-300 hover:text-white flex items-center gap-1 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+              aria-label={showHistory ? "기록 접기" : "기록 펼치기"}
             >
-              📜 {historyEntries.length} entries
+              📜 기록 {historyEntries.length}건
               <span className="text-xs text-gray-500">
                 {showHistory ? "▼" : "▶"}
               </span>
@@ -413,7 +398,7 @@ const AgentSection = memo(function AgentSection({
                 {historyEntries.length > 3 && (
                   <button
                     onClick={handleToggleAllHistory}
-                    className="w-full text-xs text-blue-400 hover:text-blue-300 py-2 border border-gray-700 rounded bg-gray-900/50 hover:bg-gray-900"
+                    className="w-full text-xs text-blue-400 hover:text-blue-300 py-2 border border-gray-700 rounded bg-gray-900/50 hover:bg-gray-900 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     {showAllHistory
                       ? "최근 3개만 보기 ▲"
@@ -444,7 +429,9 @@ const AgentSection = memo(function AgentSection({
     prevAgent.stack.length === nextAgent.stack.length &&
     prevAgent.completedToday === nextAgent.completedToday &&
     prevProps.historyEntries.length === nextProps.historyEntries.length &&
-    (prevProps.historyEntries[0]?.timestamp ?? "") === (nextProps.historyEntries[0]?.timestamp ?? "")
+    (prevProps.historyEntries[0]?.timestamp ?? "") === (nextProps.historyEntries[0]?.timestamp ?? "") &&
+    prevAgent.liveOutput?.chunksReceived === nextAgent.liveOutput?.chunksReceived &&
+    prevAgent.liveOutput?.lastActivityAt === nextAgent.liveOutput?.lastActivityAt
   );
 });
 

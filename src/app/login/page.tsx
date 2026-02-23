@@ -53,7 +53,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-      <div className="bg-gray-800 rounded-2xl p-8 w-full max-w-md border border-gray-700">
+      <div className="bg-gray-800 rounded-xl p-8 w-full max-w-md border border-gray-700">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-white mb-2">🎛️ LifeDashboard</h1>
           <p className="text-gray-400">이메일로 로그인하세요</p>
@@ -74,14 +74,14 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
               required
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus-visible:outline-none"
             />
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white font-medium py-3 rounded-lg transition-colors"
+            className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white font-medium py-3 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           >
             {loading ? "전송 중..." : "로그인 링크 받기"}
           </button>
@@ -106,7 +106,7 @@ export default function LoginPage() {
             </p>
             <button
               onClick={handleDevLogin}
-              className="w-full bg-yellow-600 hover:bg-yellow-500 text-white font-medium py-2 rounded-lg transition-colors text-sm"
+              className="w-full bg-yellow-600 hover:bg-yellow-500 text-white font-medium py-2 rounded-lg transition-colors text-sm focus-visible:ring-2 focus-visible:ring-yellow-500 focus-visible:outline-none"
             >
               개발 모드 로그인 →
             </button>

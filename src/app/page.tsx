@@ -3,35 +3,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { looksLikeQuestion } from "@/lib/performance-utils";
+import { relativeTime } from "@/lib/format-utils";
+import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 import AgentDashboard from "@/components/AgentDashboard";
+import CronJobsPanel from "@/components/CronJobsPanel";
 
 // ===== Types =====
-interface TaskStack {
-  id: string;
-  description: string;
-  trigger: "on_complete" | "manual" | "on_idle";
-  priority: "high" | "medium" | "low";
-}
-
-interface AgentConfig {
-  id: string;
-  name: string;
-  role: string;
-  emoji: string;
-  category: "dev" | "business" | "ops";
-  systemPrompt: string;
-  enabled: boolean;
-  projects?: string[];
-}
-
-interface AgentRuntime {
-  config: AgentConfig;
-  status: "running" | "idle" | "waiting" | "error";
-  currentTask?: string;
-  sessionKey?: string;
-  stack: TaskStack[];
-  completedToday: number;
-}
 
 interface Project {
   name: string;
@@ -40,23 +17,6 @@ interface Project {
   progress: number;
   url?: string;
   kpis: { label: string; value: string }[];
-}
-
-interface HistoryEntry {
-  id: string;
-  agentId: string;
-  type:
-    | "task_started"
-    | "task_completed"
-    | "task_failed"
-    | "message_sent"
-    | "message_received"
-    | "status_change"
-    | "command_received"
-    | "output";
-  content: string;
-  metadata?: Record<string, unknown>;
-  timestamp: string;
 }
 
 interface Message {
@@ -192,8 +152,10 @@ function TabButton({
 }) {
   return (
     <button
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
-      className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-sm sm:text-base font-medium transition-colors whitespace-nowrap ${
+      className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-sm sm:text-base font-medium transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
         active
           ? "bg-blue-600 text-white"
           : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
@@ -205,18 +167,6 @@ function TabButton({
 }
 
 // ===== Helper =====
-function relativeTime(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = now - then;
-
-  if (diff < 0) return "방금";
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}초 전`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}시간 전`;
-  return `${Math.floor(diff / 86_400_000)}일 전`;
-}
-
 const MSG_TYPE_STYLES: Record<Message["type"], string> = {
   text: "bg-gray-700 border-gray-600 text-gray-200",
   task: "bg-blue-500/10 border-blue-500/30 text-blue-200",
@@ -336,7 +286,7 @@ function MessagesPanel({
                 <button
                   key={agent.config.id}
                   onClick={() => setSelectedAgent(agent.config.id)}
-                  className={`w-full text-left px-3 py-3 flex items-center gap-3 transition-colors ${
+                  className={`w-full text-left px-3 py-3 flex items-center gap-3 transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                     isSelected
                       ? "bg-blue-600/20 border-l-2 border-l-blue-500"
                       : "hover:bg-gray-700/50"
@@ -372,9 +322,9 @@ function MessagesPanel({
         {!selectedAgent ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
-              <p className="text-gray-500 text-lg">Select an agent to chat</p>
+              <p className="text-gray-500 text-lg">대화할 에이전트를 선택하세요</p>
               <p className="text-gray-600 text-sm mt-1">
-                Choose an agent from the sidebar to start a conversation
+                사이드바에서 에이전트를 선택해 대화를 시작하세요
               </p>
             </div>
           </div>
@@ -396,12 +346,12 @@ function MessagesPanel({
             </div>
 
             {/* Messages area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[400px]">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[500px] sm:max-h-[600px]">
               {conversation.length === 0 ? (
                 <div className="text-center py-8">
-                  <p className="text-gray-500 text-sm">No messages yet</p>
+                  <p className="text-gray-500 text-sm">아직 메시지가 없습니다</p>
                   <p className="text-gray-600 text-xs mt-1">
-                    Send the first message below
+                    아래에서 첫 메시지를 보내세요
                   </p>
                 </div>
               ) : (
@@ -442,7 +392,7 @@ function MessagesPanel({
               <select
                 value={messageType}
                 onChange={(e) => setMessageType(e.target.value as Message["type"])}
-                className="bg-gray-700 border border-gray-600 rounded-lg px-2 py-2 text-xs text-white focus:outline-none focus:border-blue-500 w-20 sm:w-24"
+                className="bg-gray-700 border border-gray-600 rounded-lg px-2 py-2 text-xs text-white focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 w-20 sm:w-24"
               >
                 <option value="text">Text</option>
                 <option value="task">Task</option>
@@ -454,15 +404,15 @@ function MessagesPanel({
                 type="text"
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
-                placeholder="Type a message..."
-                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                placeholder="메시지를 입력하세요..."
+                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500"
               />
               <button
                 type="submit"
                 disabled={sending || !messageInput.trim()}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
-                {sending ? "..." : "Send"}
+                {sending ? "전송중..." : "전송"}
               </button>
             </form>
           </>
@@ -486,7 +436,7 @@ interface User {
 // ===== Main =====
 export default function Home() {
   const [activeTab, setActiveTab] = useState<
-    "agents" | "projects" | "finance" | "messages"
+    "agents" | "projects" | "finance" | "messages" | "cronjobs"
   >("agents");
   const [agents, setAgents] = useState<AgentRuntime[]>([]);
   const [user, setUser] = useState<User | null>(null);
@@ -504,8 +454,23 @@ export default function Home() {
       status: "running" | "idle" | "waiting" | "error";
       currentTask?: string;
       updatedAt: string;
+      liveOutput?: {
+        lastChunk: string;
+        totalChars: number;
+        lastActivityAt: string;
+        chunksReceived: number;
+      };
     }>
   >([]);
+  const [pendingInstructions, setPendingInstructions] = useState<
+    Record<string, Array<{ id: string; content: string; createdAt: string; position: number }>>
+  >({});
+  const [pendingCount, setPendingCount] = useState(0);
+  const [queuedCommands, setQueuedCommands] = useState<
+    Record<string, Array<{ id: string; type: string; payload: Record<string, unknown>; createdAt: string; status: string }>>
+  >({});
+  const [queuedCommandsCount, setQueuedCommandsCount] = useState(0);
+  const [queuedNotification, setQueuedNotification] = useState<string | null>(null);
   const router = useRouter();
 
   const today = new Date().toLocaleDateString("ko-KR", {
@@ -586,8 +551,37 @@ export default function Home() {
               status: "running" | "idle" | "waiting" | "error";
               currentTask?: string;
               updatedAt: string;
+              liveOutput?: {
+                lastChunk: string;
+                totalChars: number;
+                lastActivityAt: string;
+                chunksReceived: number;
+              };
             }>>).flat();
             setLiveAgentStatuses(all);
+
+            // Merge liveOutput into agents state
+            setAgents((prev) => {
+              const liveMap = new Map(all.map((a) => [a.id, a]));
+              let changed = false;
+              const next = prev.map((agent) => {
+                const live = liveMap.get(agent.config.id);
+                if (!live) return agent;
+                const newLiveOutput = live.liveOutput || undefined;
+                const statusChanged = live.status !== agent.status;
+                const taskChanged = live.currentTask !== agent.currentTask;
+                const liveOutputChanged = newLiveOutput?.chunksReceived !== agent.liveOutput?.chunksReceived;
+                if (!statusChanged && !taskChanged && !liveOutputChanged) return agent;
+                changed = true;
+                return {
+                  ...agent,
+                  status: live.status,
+                  currentTask: live.currentTask,
+                  liveOutput: newLiveOutput,
+                };
+              });
+              return changed ? next : prev;
+            });
 
             // Auto-detect orchestration: if any agent is running, keep fast polling
             const hasRunning = all.some((a) => a.status === "running");
@@ -597,6 +591,10 @@ export default function Home() {
               setIsOrchestrating(false);
             }
           }
+          if (data.pendingInstructions) setPendingInstructions(data.pendingInstructions);
+          if (data.pendingCount !== undefined) setPendingCount(data.pendingCount);
+          if (data.queuedCommands) setQueuedCommands(data.queuedCommands);
+          if (data.queuedCommandsCount !== undefined) setQueuedCommandsCount(data.queuedCommandsCount);
           if (data.dbConnected !== undefined) setDbConnected(data.dbConnected);
         })
         .catch(console.error);
@@ -766,9 +764,11 @@ export default function Home() {
 
   const handleOrchestrate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!orchestrateInput.trim() || isOrchestrating) return;
+    if (!orchestrateInput.trim()) return;
 
-    setIsOrchestrating(true);
+    const task = orchestrateInput.trim();
+    // Clear input immediately so user can type the next instruction
+    setOrchestrateInput("");
 
     try {
       const response = await fetch("/api/relay/command", {
@@ -776,7 +776,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "orchestrate",
-          payload: { task: orchestrateInput.trim() },
+          payload: { task },
         }),
       });
 
@@ -785,12 +785,18 @@ export default function Home() {
         throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
-      setOrchestrateInput("");
+      // Show notification when agents are already busy
+      if (isOrchestrating) {
+        setQueuedNotification("큐에 추가됨");
+        setTimeout(() => setQueuedNotification(null), 3000);
+      }
+      // Note: isOrchestrating is auto-detected from agent status polling.
+      // We don't set it here — it will be set when the polling detects running agents.
     } catch (error) {
       console.error("Orchestrate failed:", error);
+      // Restore the input on error so user doesn't lose their text
+      setOrchestrateInput(task);
       alert(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
-    } finally {
-      setIsOrchestrating(false);
     }
   };
 
@@ -844,7 +850,7 @@ export default function Home() {
               {user && (
                 <button
                   onClick={handleLogout}
-                  className="sm:hidden text-xs text-gray-500 hover:text-white"
+                  className="sm:hidden text-xs text-gray-500 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 >
                   로그아웃
                 </button>
@@ -900,7 +906,7 @@ export default function Home() {
                   <span className="text-gray-400">{user.email}</span>
                   <button
                     onClick={handleLogout}
-                    className="text-gray-500 hover:text-white transition-colors"
+                    className="text-gray-500 hover:text-white transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     로그아웃
                   </button>
@@ -910,7 +916,7 @@ export default function Home() {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1.5 sm:gap-2 mt-3 sm:mt-4 overflow-x-auto">
+          <div className="flex gap-1.5 sm:gap-2 mt-3 sm:mt-4 overflow-x-auto" role="tablist">
             <TabButton
               active={activeTab === "agents"}
               onClick={() => setActiveTab("agents")}
@@ -942,6 +948,12 @@ export default function Home() {
                 )}
               </span>
             </TabButton>
+            <TabButton
+              active={activeTab === "cronjobs"}
+              onClick={() => setActiveTab("cronjobs")}
+            >
+              ⏰ <span className="hidden sm:inline">Cron Jobs</span>
+            </TabButton>
           </div>
         </div>
       </header>
@@ -958,6 +970,11 @@ export default function Home() {
             orchestrateInput={orchestrateInput}
             isOrchestrating={isOrchestrating}
             dbConnected={dbConnected}
+            pendingInstructions={pendingInstructions}
+            pendingCount={pendingCount}
+            queuedCommands={queuedCommands}
+            queuedCommandsCount={queuedCommandsCount}
+            queuedNotification={queuedNotification}
             onOrchestrateInputChange={setOrchestrateInput}
             onOrchestrate={handleOrchestrate}
             onAddTask={handleAddTask}
@@ -1039,6 +1056,8 @@ export default function Home() {
             onRefreshOverview={fetchMessageOverview}
           />
         )}
+
+        {activeTab === "cronjobs" && <CronJobsPanel />}
       </main>
 
       {/* Footer */}

@@ -27,6 +27,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { sendMessageWithAttachments, uploadAttachment } from "./mcp-attachments";
 
 // Configuration
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "http://localhost:3000";
@@ -96,6 +97,15 @@ const SendMessageSchema = z.object({
   to: z.string().describe("Recipient agent ID"),
   content: z.string().describe("Message content"),
   type: z.string().default("text").describe("Message type"),
+  attachments: z.array(z.object({
+    filePath: z.string().describe("Local file path to attach"),
+    refKey: z.string().optional().describe("Custom ref_key"),
+  })).optional().describe("Files to upload and attach to the message. Each file gets a ref_key that is auto-appended to the message content as @file:ref_key"),
+});
+
+const UploadAttachmentSchema = z.object({
+  filePath: z.string().describe("Local file path to upload"),
+  refKey: z.string().optional().describe("Custom ref_key for the attachment (auto-generated if omitted)"),
 });
 
 const SendCommandSchema = z.object({
@@ -223,7 +233,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "dashboard_send_message",
-        description: "Send a message between agents",
+        description: "Send a message between agents. Supports file attachments via the 'attachments' option - files are uploaded and their @file:ref_key references are appended to the message content.",
         inputSchema: {
           type: "object",
           properties: {
@@ -243,6 +253,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Message type",
               default: "text",
+            },
+            attachments: {
+              type: "array",
+              description: "Files to upload and attach. Each file gets a ref_key auto-appended to message content.",
+              items: {
+                type: "object",
+                properties: {
+                  filePath: {
+                    type: "string",
+                    description: "Local file path to attach",
+                  },
+                  refKey: {
+                    type: "string",
+                    description: "Custom ref_key (auto-generated if omitted)",
+                  },
+                },
+                required: ["filePath"],
+              },
             },
           },
           required: ["from", "to", "content"],
@@ -288,6 +316,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ["query"],
+        },
+      },
+      {
+        name: "dashboard_upload_attachment",
+        description: "Upload a file as an attachment. Returns a ref_key that can be used in messages with @file:ref_key syntax.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            filePath: {
+              type: "string",
+              description: "Local file path to upload",
+            },
+            refKey: {
+              type: "string",
+              description: "Custom ref_key for the attachment (auto-generated if omitted)",
+            },
+          },
+          required: ["filePath"],
         },
       },
     ],
@@ -383,13 +429,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "dashboard_send_message": {
         const params = SendMessageSchema.parse(args);
-        const data = await apiCall("/api/relay/messages", "POST", params);
+        const data = await sendMessageWithAttachments({
+          dashboardUrl: DASHBOARD_URL,
+          relayApiKey: RELAY_API_KEY,
+          from: params.from,
+          to: params.to,
+          content: params.content,
+          type: params.type,
+          attachments: params.attachments,
+        });
 
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(data, null, 2),
+            },
+          ],
+        };
+      }
+      case "dashboard_upload_attachment": {
+        const params = UploadAttachmentSchema.parse(args);
+        const data = await uploadAttachment({
+          dashboardUrl: DASHBOARD_URL,
+          relayApiKey: RELAY_API_KEY,
+          filePath: params.filePath,
+          refKey: params.refKey,
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ success: true, ...data }, null, 2),
             },
           ],
         };

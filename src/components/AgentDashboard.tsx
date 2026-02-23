@@ -5,51 +5,7 @@ import AgentSection from "@/components/AgentSection";
 import HistoryPanel from "@/components/HistoryPanel";
 import LiveMonitor from "@/components/LiveMonitor";
 import PendingRepliesBanner from "@/components/PendingRepliesBanner";
-
-// Types
-interface TaskStack {
-  id: string;
-  description: string;
-  trigger: "on_complete" | "manual" | "on_idle";
-  priority: "high" | "medium" | "low";
-}
-
-interface AgentConfig {
-  id: string;
-  name: string;
-  role: string;
-  emoji: string;
-  category: "dev" | "business" | "ops";
-  systemPrompt: string;
-  enabled: boolean;
-  projects?: string[];
-}
-
-interface AgentRuntime {
-  config: AgentConfig;
-  status: "running" | "idle" | "waiting" | "error";
-  currentTask?: string;
-  sessionKey?: string;
-  stack: TaskStack[];
-  completedToday: number;
-}
-
-interface HistoryEntry {
-  id: string;
-  agentId: string;
-  type:
-    | "task_started"
-    | "task_completed"
-    | "task_failed"
-    | "message_sent"
-    | "message_received"
-    | "status_change"
-    | "command_received"
-    | "output";
-  content: string;
-  metadata?: Record<string, unknown>;
-  timestamp: string;
-}
+import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 
 interface AgentDashboardProps {
   agents: AgentRuntime[];
@@ -61,11 +17,22 @@ interface AgentDashboardProps {
     status: "running" | "idle" | "waiting" | "error";
     currentTask?: string;
     updatedAt: string;
+    liveOutput?: {
+      lastChunk: string;
+      totalChars: number;
+      lastActivityAt: string;
+      chunksReceived: number;
+    };
   }>;
   pendingReplies: HistoryEntry[];
   orchestrateInput: string;
   isOrchestrating: boolean;
   dbConnected: boolean;
+  pendingInstructions: Record<string, Array<{ id: string; content: string; createdAt: string; position: number }>>;
+  pendingCount: number;
+  queuedCommands: Record<string, Array<{ id: string; type: string; payload: Record<string, unknown>; createdAt: string; status: string }>>;
+  queuedCommandsCount: number;
+  queuedNotification: string | null;
   onOrchestrateInputChange: (value: string) => void;
   onOrchestrate: (e: React.FormEvent) => void;
   onAddTask: (agentId: string, task: string) => void;
@@ -82,6 +49,11 @@ export default function AgentDashboard({
   orchestrateInput,
   isOrchestrating,
   dbConnected,
+  pendingInstructions,
+  pendingCount,
+  queuedCommands,
+  queuedCommandsCount,
+  queuedNotification,
   onOrchestrateInputChange,
   onOrchestrate,
   onAddTask,
@@ -175,7 +147,8 @@ export default function AgentDashboard({
   return (
     <div className="space-y-6">
       {/* Orchestrate Bar */}
-      <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+      <div className="bg-gray-800 rounded-xl p-5 border border-blue-500/20">
+        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">전체 지시</h2>
         <form onSubmit={onOrchestrate} className="space-y-4">
           <div className="flex gap-3">
             <input
@@ -184,36 +157,16 @@ export default function AgentDashboard({
               onChange={(e) => onOrchestrateInputChange(e.target.value)}
               placeholder="전체 지시를 입력하세요... (예: 이번 주 블로그 쓰고, 매출 정리하고, 코드 리뷰해줘)"
               className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-              disabled={isOrchestrating}
             />
             <button
               type="submit"
-              disabled={isOrchestrating || !orchestrateInput.trim()}
+              disabled={!orchestrateInput.trim()}
               className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
             >
               {isOrchestrating ? (
                 <>
-                  <svg
-                    className="animate-spin h-5 w-5"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
-                  <span>처리 중...</span>
+                  <span>📋</span>
+                  <span>큐에 추가</span>
                 </>
               ) : (
                 <>
@@ -224,6 +177,59 @@ export default function AgentDashboard({
             </button>
           </div>
         </form>
+
+        {/* Queued notification */}
+        {queuedNotification && (
+          <div className="mt-3 flex items-center gap-2 text-green-400 text-sm">
+            <span>✅</span>
+            <span>{queuedNotification}</span>
+          </div>
+        )}
+
+        {/* Pending Instructions Queue */}
+        {pendingCount > 0 && (
+          <div className="mt-4 bg-gray-900/50 rounded-lg p-3 border border-gray-700/50">
+            <div className="text-xs text-gray-400 font-medium mb-2">
+              📋 대기중인 지시 ({pendingCount}개)
+            </div>
+            <div className="space-y-1">
+              {Object.entries(pendingInstructions).map(([agentId, instructions]) =>
+                instructions.map((inst) => (
+                  <div key={inst.id} className="flex items-center gap-2 text-sm">
+                    <span className="text-gray-500 text-xs w-5">#{inst.position}</span>
+                    <span className="text-gray-300 truncate">{inst.content}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Queued Commands */}
+        {queuedCommandsCount > 0 && (
+          <div className="mt-4 bg-gray-900/50 rounded-lg p-3 border border-amber-700/30">
+            <div className="text-xs text-amber-400 font-medium mb-2">
+              ⏳ 대기중인 명령 ({queuedCommandsCount}개)
+            </div>
+            <div className="space-y-1">
+              {Object.entries(queuedCommands).map(([agentId, commands]) =>
+                commands.map((cmd) => (
+                  <div key={cmd.id} className="flex items-center gap-2 text-sm">
+                    <span className="text-amber-500/70 text-xs font-mono">{cmd.type}</span>
+                    <span className="text-gray-400 text-xs">→ {agentId}</span>
+                    <span className="text-gray-300 truncate text-xs">
+                      {(cmd.payload?.task as string) || (cmd.payload?.message as string) || cmd.type}
+                    </span>
+                    <span className="text-gray-600 text-xs ml-auto">
+                      {new Date(cmd.createdAt).toLocaleTimeString("ko-KR")}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
         {isOrchestrating && (
           <div className="mt-4 flex items-center gap-2 text-blue-400">
             <div className="flex gap-1">
@@ -268,10 +274,12 @@ export default function AgentDashboard({
 
       {/* View Mode Toggle */}
       <div className="flex items-center justify-between">
-        <div className="inline-flex rounded-lg bg-gray-800 p-1">
+        <div className="inline-flex rounded-lg bg-gray-800 p-1" role="tablist">
           <button
+            role="tab"
+            aria-selected={viewMode === "agents"}
             onClick={() => setViewMode("agents")}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
               viewMode === "agents"
                 ? "bg-blue-600 text-white"
                 : "text-gray-400 hover:text-white"
@@ -280,8 +288,10 @@ export default function AgentDashboard({
             에이전트
           </button>
           <button
+            role="tab"
+            aria-selected={viewMode === "timeline"}
             onClick={() => setViewMode("timeline")}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
               viewMode === "timeline"
                 ? "bg-blue-600 text-white"
                 : "text-gray-400 hover:text-white"
@@ -296,7 +306,7 @@ export default function AgentDashboard({
           <div className="inline-flex rounded-lg bg-gray-800 p-1">
             <button
               onClick={() => setCategoryFilter("all")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
                 categoryFilter === "all"
                   ? "bg-gray-700 text-white"
                   : "text-gray-400 hover:text-white"
@@ -306,7 +316,7 @@ export default function AgentDashboard({
             </button>
             <button
               onClick={() => setCategoryFilter("dev")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
                 categoryFilter === "dev"
                   ? "bg-gray-700 text-white"
                   : "text-gray-400 hover:text-white"
@@ -316,7 +326,7 @@ export default function AgentDashboard({
             </button>
             <button
               onClick={() => setCategoryFilter("business")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
                 categoryFilter === "business"
                   ? "bg-gray-700 text-white"
                   : "text-gray-400 hover:text-white"
@@ -326,7 +336,7 @@ export default function AgentDashboard({
             </button>
             <button
               onClick={() => setCategoryFilter("ops")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
                 categoryFilter === "ops"
                   ? "bg-gray-700 text-white"
                   : "text-gray-400 hover:text-white"
@@ -388,31 +398,6 @@ export default function AgentDashboard({
           agentMap={agentMap}
         />
       )}
-
-      {/* Pipeline Preview */}
-      <div className="mt-8 bg-gray-800 rounded-xl p-6 border border-gray-700">
-        <h3 className="text-lg font-bold mb-4">
-          🔗 Pipeline (oh-my-claudecode style)
-        </h3>
-        <div className="flex items-center gap-2 overflow-x-auto pb-2">
-          {["Plan", "PRD", "Execute", "Verify", "Fix"].map((stage, i, arr) => (
-            <React.Fragment key={stage}>
-              <div className="flex flex-col items-center gap-1 min-w-[80px]">
-                <div className="w-12 h-12 rounded-lg bg-gray-700 border border-gray-600 flex items-center justify-center text-sm font-medium">
-                  {stage}
-                </div>
-                <span className="text-xs text-gray-500">{stage}</span>
-              </div>
-              {i < arr.length - 1 && (
-                <div className="flex-shrink-0 w-8 h-0.5 bg-gray-600" />
-              )}
-            </React.Fragment>
-          ))}
-        </div>
-        <p className="text-gray-500 text-sm mt-3">
-          복잡한 작업은 자동으로 파이프라인으로 분해됩니다
-        </p>
-      </div>
     </div>
   );
 }

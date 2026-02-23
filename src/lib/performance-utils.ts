@@ -10,50 +10,6 @@ export interface HistoryEntry {
   timestamp: string;
 }
 
-export interface VisibleRange {
-  start: number;
-  end: number;
-  totalHeight: number;
-}
-
-/**
- * Calculate which items are visible in a virtual scrolling container
- *
- * @param scrollTop - Current scroll position
- * @param containerHeight - Height of the scrollable container
- * @param itemHeight - Fixed height of each item
- * @param totalItems - Total number of items in the list
- * @param overscan - Number of extra items to render above/below viewport (default: 5)
- * @returns Object with start index, end index, and total height
- */
-export function getVisibleRange(
-  scrollTop: number,
-  containerHeight: number,
-  itemHeight: number,
-  totalItems: number,
-  overscan: number = 5
-): VisibleRange {
-  // Handle edge cases
-  if (totalItems === 0 || itemHeight <= 0 || containerHeight <= 0) {
-    return { start: 0, end: 0, totalHeight: 0 };
-  }
-
-  // Ensure scrollTop is non-negative
-  const safeScrollTop = Math.max(0, scrollTop);
-
-  // Calculate visible range
-  const firstVisibleIndex = Math.floor(safeScrollTop / itemHeight);
-  const lastVisibleIndex = Math.ceil((safeScrollTop + containerHeight) / itemHeight);
-
-  // Apply overscan and clamp to valid range
-  const start = Math.max(0, firstVisibleIndex - overscan);
-  const end = Math.min(totalItems, lastVisibleIndex + overscan);
-
-  const totalHeight = totalItems * itemHeight;
-
-  return { start, end, totalHeight };
-}
-
 /**
  * Filter history entries by agent and type
  *

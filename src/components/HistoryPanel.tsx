@@ -1,45 +1,25 @@
 "use client";
 
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import HistoryEntryCard from "@/components/HistoryEntryCard";
 import { copyToClipboard } from "@/lib/clipboard";
-import { filterEntries, getVisibleRange } from "@/lib/performance-utils";
+import { filterEntries } from "@/lib/performance-utils";
+import { relativeTime } from "@/lib/format-utils";
+import { HISTORY_TYPE_LABELS } from "@/lib/ui-constants";
+import type { AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 
 // ===== Types =====
-interface TaskStack {
-  id: string;
-  description: string;
-  trigger: "on_complete" | "manual" | "on_idle";
-  priority: "high" | "medium" | "low";
-}
 
-interface AgentConfig {
-  id: string;
-  name: string;
-  role: string;
-  emoji: string;
-  category: "dev" | "business" | "ops";
-  systemPrompt: string;
-  enabled: boolean;
-  projects?: string[];
-}
-
-interface AgentRuntime {
-  config: AgentConfig;
-  status: "running" | "idle" | "waiting" | "error";
-  currentTask?: string;
-  sessionKey?: string;
-  stack: TaskStack[];
-  completedToday: number;
-}
-
-interface HistoryEntry {
-  id: string;
-  agentId: string;
-  type: "task_started" | "task_completed" | "task_failed" | "message_sent" | "message_received" | "status_change" | "command_received" | "output";
-  content: string;
-  metadata?: Record<string, unknown>;
-  timestamp: string;
+interface GroupedHistoryEntry {
+  requestGroupId: string;
+  requestTitle: string;
+  totalCount: number;
+  completedCount: number;
+  failedCount: number;
+  inProgressCount: number;
+  startedAt: string;
+  lastActivityAt: string;
+  entries: HistoryEntry[];
 }
 
 interface HistoryPanelProps {
@@ -47,18 +27,6 @@ interface HistoryPanelProps {
   agents: AgentRuntime[];
   agentMap: Record<string, { emoji: string; name: string }>;
 }
-
-// ===== Constants =====
-const HISTORY_TYPE_LABELS: Record<HistoryEntry["type"], { label: string; color: string }> = {
-  task_started: { label: "시작", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
-  task_completed: { label: "완료", color: "bg-green-500/20 text-green-400 border-green-500/30" },
-  task_failed: { label: "실패", color: "bg-red-500/20 text-red-400 border-red-500/30" },
-  message_sent: { label: "발신", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-  message_received: { label: "수신", color: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" },
-  status_change: { label: "상태", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
-  command_received: { label: "명령", color: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
-  output: { label: "Output", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-};
 
 export default function HistoryPanel({
   historyData,
@@ -70,8 +38,10 @@ export default function HistoryPanel({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
-  const [scrollTop, setScrollTop] = useState(0);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<"timeline" | "grouped">("timeline");
+  const [groupedData, setGroupedData] = useState<GroupedHistoryEntry[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [loadingGroups, setLoadingGroups] = useState(false);
 
   const getDisplay = (agentId: string) =>
     agentMap[agentId] || { emoji: "🤖", name: agentId };
@@ -136,15 +106,6 @@ export default function HistoryPanel({
     [allEntries]
   );
 
-  // Virtual scrolling constants
-  const ITEM_HEIGHT = 120;
-  const CONTAINER_HEIGHT = 600;
-
-  const { start, end, totalHeight } = useMemo(() =>
-    getVisibleRange(scrollTop, CONTAINER_HEIGHT, ITEM_HEIGHT, filtered.length),
-    [scrollTop, filtered.length]
-  );
-
   return (
     <div className="space-y-4">
       {/* Filters */}
@@ -153,9 +114,9 @@ export default function HistoryPanel({
         <select
           value={filterAgent}
           onChange={(e) => setFilterAgent(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500"
         >
-          <option value="all">All Agents</option>
+          <option value="all">전체 에이전트</option>
           {agents.map((a) => (
             <option key={a.config.id} value={a.config.id}>
               {a.config.emoji} {a.config.name}
@@ -167,9 +128,9 @@ export default function HistoryPanel({
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500"
         >
-          <option value="all">All Types</option>
+          <option value="all">전체 타입</option>
           {allTypes.map((t) => (
             <option key={t} value={t}>
               {HISTORY_TYPE_LABELS[t as keyof typeof HISTORY_TYPE_LABELS]?.label || t}
@@ -178,43 +139,34 @@ export default function HistoryPanel({
         </select>
 
         <span className="flex items-center text-xs text-gray-500 ml-auto">
-          {filtered.length} entries
+          {filtered.length}건
         </span>
       </div>
 
       {/* Timeline */}
       {filtered.length === 0 ? (
         <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
-          <p className="text-gray-500">No history entries yet</p>
+          <p className="text-gray-500">아직 기록이 없습니다</p>
           <p className="text-gray-600 text-sm mt-1">
-            Agent activities will appear here as they occur
+            에이전트 활동이 발생하면 여기에 표시됩니다
           </p>
         </div>
       ) : (
-        <div
-          ref={scrollContainerRef}
-          style={{ height: CONTAINER_HEIGHT, overflowY: 'auto' }}
-          onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-          className="relative"
-        >
-          <div style={{ height: totalHeight, position: 'relative' }}>
-            <div style={{ position: 'absolute', top: start * ITEM_HEIGHT, left: 0, right: 0 }} className="space-y-2">
-              {filtered.slice(start, end).map((entry) => (
-                <HistoryEntryCard
-                  key={entry.id}
-                  entry={entry}
-                  agentDisplay={getDisplay(entry.agentId)}
-                  isExpanded={expandedEntries.has(entry.id)}
-                  isReplying={replyingTo === entry.id}
-                  isCopied={copiedId === entry.id}
-                  onToggleExpand={toggleExpand}
-                  onToggleReply={(id) => { setReplyingTo(replyingTo === id ? null : id); }}
-                  onCopy={handleCopy}
-                  onReply={handleReply}
-                />
-              ))}
-            </div>
-          </div>
+        <div className="max-h-[600px] overflow-y-auto space-y-2">
+          {filtered.map((entry) => (
+            <HistoryEntryCard
+              key={entry.id}
+              entry={entry}
+              agentDisplay={getDisplay(entry.agentId)}
+              isExpanded={expandedEntries.has(entry.id)}
+              isReplying={replyingTo === entry.id}
+              isCopied={copiedId === entry.id}
+              onToggleExpand={toggleExpand}
+              onToggleReply={(id) => { setReplyingTo(replyingTo === id ? null : id); }}
+              onCopy={handleCopy}
+              onReply={handleReply}
+            />
+          ))}
         </div>
       )}
     </div>

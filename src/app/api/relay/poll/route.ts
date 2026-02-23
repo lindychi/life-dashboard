@@ -4,6 +4,7 @@ import {
   updateHeartbeat,
   getAndClearCommands,
   updateAgentStatuses,
+  drainQueueForIdleAgents,
 } from "@/lib/relay";
 import { addHistoryEntry } from "@/lib/history";
 import { isDbConnectionError } from "@/lib/db";
@@ -68,6 +69,20 @@ export async function POST(request: NextRequest) {
 
     // Get pending commands (has fallback for DB down)
     const commands = await getAndClearCommands(gatewayId);
+
+    // Drain queued instructions for idle agents
+    if (agents && Array.isArray(agents)) {
+      const idleAgentIds = agents
+        .filter((a: { status: string }) => a.status === "idle")
+        .map((a: { id: string }) => a.id);
+
+      try {
+        const drained = await drainQueueForIdleAgents(gatewayId, idleAgentIds);
+        commands.push(...drained);
+      } catch {
+        // Queue drain is best-effort
+      }
+    }
 
     return NextResponse.json({
       commands,

@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { relativeTime } from "@/lib/format-utils";
 
 interface AgentStatusEntry {
   id: string;
@@ -24,18 +25,6 @@ interface LiveMonitorProps {
   agentStatuses: AgentStatusEntry[];
   historyData: Record<string, HistoryEntry[]>;
   agentMap: Record<string, { emoji: string; name: string }>;
-}
-
-function relativeTime(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = now - then;
-
-  if (diff < 0) return "방금";
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}초 전`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}시간 전`;
-  return `${Math.floor(diff / 86_400_000)}일 전`;
 }
 
 const STATUS_STYLES: Record<string, { bg: string; pulse: boolean; label: string }> = {
@@ -73,7 +62,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
           <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-            Live Monitor
+            실시간 모니터
           </h3>
           <span className="text-xs text-gray-500">
             {activeAgents.length} 활성 / {agentStatuses.length} 전체
@@ -170,6 +159,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
                   className={`w-1.5 h-1.5 rounded-full ${style.bg} ${
                     style.pulse ? "animate-pulse" : ""
                   }`}
+                  title={style.label}
                 />
               </div>
             );

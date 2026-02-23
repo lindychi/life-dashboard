@@ -39,9 +39,11 @@ brew install postgresql@14    # macOS
 brew services start postgresql@14
 createdb life_dashboard
 psql life_dashboard < sql/001_init.sql
+psql life_dashboard < sql/002_attachments.sql
 ```
 
 - `sql/001_init.sql` — Schema migration (5 tables: agent_history, messages, gateway_connections, relay_commands, agent_statuses)
+- `sql/002_attachments.sql` — Attachments table (file metadata, ref_key, storage_key, message FK)
 - `src/lib/db.ts` — Minimal PostgreSQL client using `pg` Pool. Exports `query<T>()`, `queryOne<T>()`, `pool`
 - `DATABASE_URL` env var (default: `postgresql://localhost:5432/life_dashboard`)
 
@@ -61,6 +63,47 @@ PostgreSQL-backed stores for agent task history and inter-agent messaging.
 - `src/lib/messages.ts` — Messaging system (async). `sendMessage()`, `getMessages()`, `markAsRead()`, `getConversation()`, `getUnreadCount()`, `getAllAgentsOverview()`
 - API routes: `/api/history/`, `/api/history/[agentId]`, `/api/messages/`, `/api/messages/[agentId]`
 
+### Attachments & File Storage
+
+File attachment system for uploading, referencing, and downloading files between agents and the dashboard. Files are linked to messages via the `@file:ref_key` inline reference syntax.
+
+**Database Schema** (`sql/002_attachments.sql`):
+- `attachments` table — `id` (UUID PK), `message_id` (FK → messages, nullable), `original_filename`, `mime_type`, `size_bytes`, `storage_key`, `ref_key` (UNIQUE, 8-char), `created_at`
+- Indexes on `message_id` and `ref_key`
+
+**Setup:**
+```bash
+psql life_dashboard < sql/002_attachments.sql
+```
+
+**Storage Layer** (`src/lib/storage.ts`):
+- `StorageDriver` interface — `save()`, `read()`, `delete()`, `exists()`, `getUrl()`
+- `LocalStorageDriver` — saves to `uploads/YYYY/MM/ref_key.ext` directory
+- `S3StorageDriver` — S3-compatible object storage (requires `S3_BUCKET`, `S3_REGION`, etc.)
+- `STORAGE_TYPE` env var selects driver (`local` default, `s3`)
+- `UPLOAD_MAX_SIZE` env var (default 10MB = 10485760 bytes)
+
+**Core Library** (`src/lib/attachments.ts`):
+- `saveAttachment(buffer, filename, mimeType, refKey?)` — Upload file + create DB record
+- `generateRefKey(buffer)` — 8-char key: 4 SHA-256 hash + 4 random hex
+- `linkAttachmentsFromContent(content, messageId)` — Auto-link all `@file:ref_key` in message text
+- `parseFileReferences(content)` — Extract `@file:ref_key` patterns via regex
+- `getAttachment(id)`, `getAttachmentByRefKey(refKey)`, `getMessageAttachments(messageId)` — Query functions
+- `readAttachmentFile(storageKey)` — Read file buffer from storage
+- `deleteAttachment(id)` — Delete file + DB record
+
+**API Routes:**
+- `POST /api/attachments` — Upload file (multipart/form-data: `file` + optional `refKey`). Auth: session or `x-relay-key`
+- `GET /api/attachments/[id]` — Download file by attachment UUID. Streams with `Content-Type`, immutable caching
+- `GET /api/attachments/by-ref/[refKey]` — Lookup attachment metadata by ref_key
+
+**`@file:ref_key` Reference Syntax:**
+Messages can reference uploaded files inline using `@file:<ref_key>` (e.g., `@file:a3f9k2m1`). When `sendMessage()` is called, `linkAttachmentsFromContent()` automatically parses the content and links matching attachments to the message via `message_id` FK.
+
+**MCP Tool (`scripts/mcp-server.ts`):**
+- `dashboard_send_message` — `attachments` parameter accepts `[{filePath, refKey?}]`. MCP server uploads each file, appends `@file:ref_key` to content
+- `dashboard_upload_attachment` — Standalone upload: `{filePath, refKey?}`. Returns `ref_key` for later use
+
 ### Frontend
 
 Single-page client component (`src/app/page.tsx`) with tabs: Agents, History, Messages, Projects, Finance. Uses react-markdown + remark-gfm for rendering Claude's markdown responses. Polls `/api/relay/status` every 5 seconds for gateway connectivity.
@@ -71,7 +114,7 @@ Single-page client component (`src/app/page.tsx`) with tabs: Agents, History, Me
 
 ### Environment Variables
 
-See `.env.example`: `JWT_SECRET`, `ALLOWED_EMAILS`, `RESEND_API_KEY`, `RELAY_API_KEY`, `DATABASE_URL`, `NEXT_PUBLIC_APP_URL`
+See `.env.example`: `JWT_SECRET`, `ALLOWED_EMAILS`, `RESEND_API_KEY`, `RELAY_API_KEY`, `DATABASE_URL`, `NEXT_PUBLIC_APP_URL`, `UPLOAD_MAX_SIZE`, `STORAGE_TYPE`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_ENDPOINT`
 
 ### Deployment
 

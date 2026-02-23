@@ -1,79 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-  getVisibleRange,
   filterEntries,
   looksLikeQuestion,
   truncateForPreview,
 } from '@/lib/performance-utils';
-
-describe('VirtualList logic - getVisibleRange', () => {
-  it('returns correct visible range for middle scroll position', () => {
-    const result = getVisibleRange(1000, 600, 100, 50);
-
-    // scrollTop=1000, containerHeight=600, itemHeight=100
-    // visible items: index 10 to 15 (6 items fit in viewport)
-    expect(result.start).toBeLessThanOrEqual(10);
-    expect(result.end).toBeGreaterThanOrEqual(16);
-    expect(result.totalHeight).toBe(5000); // 50 items * 100px
-  });
-
-  it('includes overscan buffer above and below viewport', () => {
-    const result = getVisibleRange(1000, 600, 100, 50, 2);
-
-    // With overscan=2, should render 2 items before and after visible range
-    // Visible: 10-15, with buffer: 8-17
-    expect(result.start).toBeLessThanOrEqual(8);
-    expect(result.end).toBeGreaterThanOrEqual(17);
-  });
-
-  it('handles scroll at top (start of list)', () => {
-    const result = getVisibleRange(0, 600, 100, 50, 2);
-
-    expect(result.start).toBe(0); // Can't go below 0
-    expect(result.end).toBeGreaterThanOrEqual(6); // 6 visible + overscan
-    expect(result.totalHeight).toBe(5000);
-  });
-
-  it('handles scroll at bottom (end of list)', () => {
-    const result = getVisibleRange(4400, 600, 100, 50, 2);
-
-    // scrollTop=4400, last item starts at index 44
-    // visible items: 44-49 (last 6 items)
-    expect(result.start).toBeLessThanOrEqual(44);
-    expect(result.end).toBe(50); // Can't go beyond totalItems
-    expect(result.totalHeight).toBe(5000);
-  });
-
-  it('handles empty list', () => {
-    const result = getVisibleRange(0, 600, 100, 0);
-
-    expect(result.start).toBe(0);
-    expect(result.end).toBe(0);
-    expect(result.totalHeight).toBe(0);
-  });
-
-  it('handles single item', () => {
-    const result = getVisibleRange(0, 600, 100, 1);
-
-    expect(result.start).toBe(0);
-    expect(result.end).toBe(1);
-    expect(result.totalHeight).toBe(100);
-  });
-
-  it('calculates correct total height for any item count', () => {
-    expect(getVisibleRange(0, 600, 150, 100).totalHeight).toBe(15000);
-    expect(getVisibleRange(0, 600, 200, 25).totalHeight).toBe(5000);
-  });
-
-  it('uses default overscan of 3 when not specified', () => {
-    const result = getVisibleRange(1000, 600, 100, 50);
-
-    // Default overscan should be 3
-    // Visible: 10-15, with buffer: 7-18
-    expect(result.start).toBeLessThanOrEqual(7);
-    expect(result.end).toBeGreaterThanOrEqual(18);
-  });
-});
 
 describe('Memoized filtering - filterEntries', () => {
   const mockEntries = [

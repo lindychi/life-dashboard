@@ -2,37 +2,51 @@
 
 import { query, queryOne, isDbConnectionError } from "./db";
 import { randomUUID } from "crypto";
+import type {
+  GatewayConnection,
+  RelayCommand,
+  RelayCommandType,
+  RelayCommandStatus,
+  AgentStatus,
+  AgentStatusValue,
+  QueuedInstruction,
+  PendingCommand,
+} from "./types";
 
-export interface GatewayConnection {
-  id: string;
-  connectedAt: string;
-  lastHeartbeat: string;
-  status: "connected" | "disconnected";
-}
+// Re-export types for backwards compatibility
+export type {
+  GatewayConnection,
+  RelayCommand,
+  RelayCommandType,
+  RelayCommandStatus,
+  AgentStatus,
+  AgentStatusValue,
+  QueuedInstruction,
+  PendingCommand,
+};
 
-export interface RelayCommand {
-  id: string;
-  type: "spawn" | "send" | "status" | "message" | "orchestrate";
-  payload: Record<string, unknown>;
-  createdAt: string;
-  status: "pending" | "processing" | "completed" | "failed";
-  result?: unknown;
-}
-
-export interface AgentStatus {
-  id: string;
-  name: string;
-  status: "running" | "idle" | "waiting" | "error";
-  currentTask?: string;
-  sessionKey?: string;
-  updatedAt: string;
-}
+// Queue size limits to prevent memory leaks
+export const MAX_COMMANDS_PER_GATEWAY = 100;
+export const MAX_GATEWAYS_IN_MEMORY = 50;
+export const COMMAND_TTL_MS = 5 * 60 * 1000; // 5 minutes
+export const MAX_LIVE_OUTPUT_ENTRIES = 200;
 
 const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
 
 // In-memory fallback when DB is unavailable
 const inMemoryCommands = new Map<string, RelayCommand[]>();
 let dbAvailable = true;
+
+// In-memory cache for live output (too frequent for DB writes)
+const liveOutputCache = new Map<
+  string,
+  {
+    lastChunk: string;
+    totalChars: number;
+    lastActivityAt: string;
+    chunksReceived: number;
+  }
+>();
 
 export function validateRelayKey(key: string): boolean {
   return key === RELAY_API_KEY;
@@ -175,7 +189,29 @@ export async function queueCommand(
       };
       const queue = inMemoryCommands.get(gatewayId) || [];
       queue.push(cmd);
+
+      // FIFO eviction: keep only latest MAX_COMMANDS_PER_GATEWAY
+      if (queue.length > MAX_COMMANDS_PER_GATEWAY) {
+        queue.splice(0, queue.length - MAX_COMMANDS_PER_GATEWAY);
+      }
+
       inMemoryCommands.set(gatewayId, queue);
+
+      // Gateway eviction: keep only MAX_GATEWAYS_IN_MEMORY
+      if (inMemoryCommands.size > MAX_GATEWAYS_IN_MEMORY) {
+        // Evict gateways with oldest commands
+        const entries = [...inMemoryCommands.entries()];
+        entries.sort((a, b) => {
+          const aOldest = a[1][0]?.createdAt || "";
+          const bOldest = b[1][0]?.createdAt || "";
+          return aOldest.localeCompare(bOldest);
+        });
+        while (inMemoryCommands.size > MAX_GATEWAYS_IN_MEMORY) {
+          const oldest = entries.shift();
+          if (oldest) inMemoryCommands.delete(oldest[0]);
+        }
+      }
+
       return cmd;
     }
     throw error;
@@ -223,8 +259,11 @@ export async function getAndClearCommands(
   } catch (error) {
     if (isDbConnectionError(error)) {
       dbAvailable = false;
-      // Return in-memory commands only
-      const queue = inMemoryCommands.get(gatewayId) || [];
+      // Return in-memory commands only, filtering expired
+      const now = Date.now();
+      const queue = (inMemoryCommands.get(gatewayId) || []).filter(
+        (cmd) => now - new Date(cmd.createdAt).getTime() < COMMAND_TTL_MS
+      );
       inMemoryCommands.delete(gatewayId);
       return queue;
     }
@@ -253,7 +292,14 @@ export async function updateCommandResult(
 
 export async function updateAgentStatuses(
   gatewayId: string,
-  agents: Omit<AgentStatus, "updatedAt">[]
+  agents: Array<Omit<AgentStatus, "updatedAt"> & {
+    liveOutput?: {
+      lastChunk: string;
+      totalChars: number;
+      lastActivityAt: string;
+      chunksReceived: number;
+    };
+  }>
 ): Promise<void> {
   // Use UPSERT for each agent
   for (const agent of agents) {
@@ -273,6 +319,19 @@ export async function updateAgentStatuses(
         agent.sessionKey || null,
       ]
     );
+
+    // Cache liveOutput in memory (too frequent for DB)
+    const cacheKey = `${gatewayId}:${agent.id}`;
+    if (agent.liveOutput) {
+      liveOutputCache.set(cacheKey, agent.liveOutput);
+      // Evict oldest entries if cache exceeds limit
+      if (liveOutputCache.size > MAX_LIVE_OUTPUT_ENTRIES) {
+        const firstKey = liveOutputCache.keys().next().value;
+        if (firstKey) liveOutputCache.delete(firstKey);
+      }
+    } else if (agent.status !== "running") {
+      liveOutputCache.delete(cacheKey);
+    }
   }
 }
 
@@ -335,6 +394,9 @@ export async function getAllAgentStatuses(): Promise<
         grouped[r.gateway_id] = [];
       }
 
+      const cacheKey = `${r.gateway_id}:${r.id}`;
+      const cachedLiveOutput = liveOutputCache.get(cacheKey);
+
       grouped[r.gateway_id].push({
         id: r.id,
         name: r.name,
@@ -342,6 +404,7 @@ export async function getAllAgentStatuses(): Promise<
         currentTask: r.current_task || undefined,
         sessionKey: r.session_key || undefined,
         updatedAt: r.updated_at,
+        ...(cachedLiveOutput ? { liveOutput: cachedLiveOutput } : {}),
       });
     }
 
@@ -352,5 +415,323 @@ export async function getAllAgentStatuses(): Promise<
       return {};
     }
     throw error;
+  }
+}
+
+
+// Get pending relay commands (not instructions) that are waiting to be picked up
+export async function getPendingCommands(
+  gatewayId?: string,
+  agentId?: string
+): Promise<PendingCommand[]> {
+  try {
+    let queryStr = `
+      SELECT
+        id,
+        gateway_id,
+        type,
+        payload,
+        status,
+        created_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY payload->>'agentId'
+          ORDER BY created_at
+        ) as position
+      FROM relay_commands
+      WHERE status = 'pending' AND type != 'instruction'
+    `;
+    const params: string[] = [];
+
+    if (gatewayId) {
+      params.push(gatewayId);
+      queryStr += ` AND gateway_id = $${params.length}`;
+    }
+
+    if (agentId) {
+      params.push(agentId);
+      queryStr += ` AND payload->>'agentId' = $${params.length}`;
+    }
+
+    queryStr += ` ORDER BY created_at`;
+
+    const results = await query<{
+      id: string;
+      gateway_id: string;
+      type: string;
+      payload: Record<string, unknown>;
+      status: string;
+      created_at: string;
+      position: number;
+    }>(queryStr, params);
+
+    dbAvailable = true;
+    return results.map((r) => ({
+      id: r.id,
+      gatewayId: r.gateway_id,
+      type: r.type,
+      payload: r.payload,
+      agentId: (r.payload?.agentId as string) || "unknown",
+      createdAt: r.created_at,
+      position: Number(r.position),
+    }));
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      return [];
+    }
+    throw error;
+  }
+}
+
+// Queue a follow-up instruction for an agent that's currently busy
+export async function queueInstruction(
+  gatewayId: string,
+  agentId: string,
+  instruction: string,
+  metadata?: Record<string, unknown>
+): Promise<{ id: string; position: number }> {
+  try {
+    // Insert with a special 'queued' status to distinguish from regular commands
+    const result = await queryOne<{
+      id: string;
+      created_at: string;
+    }>(
+      `
+      INSERT INTO relay_commands (gateway_id, type, payload, status)
+      VALUES ($1, 'instruction', $2, 'queued')
+      RETURNING id, created_at
+    `,
+      [
+        gatewayId,
+        JSON.stringify({
+          agentId,
+          content: instruction,
+          metadata: metadata || {},
+        }),
+      ]
+    );
+
+    if (!result) {
+      throw new Error("Failed to queue instruction");
+    }
+
+    // Get position in queue for this agent
+    const positionResult = await queryOne<{ position: number }>(
+      `
+      SELECT COUNT(*) as position
+      FROM relay_commands
+      WHERE gateway_id = $1
+        AND status = 'queued'
+        AND payload->>'agentId' = $2
+        AND created_at <= $3
+    `,
+      [gatewayId, agentId, result.created_at]
+    );
+
+    const position = positionResult?.position || 1;
+
+    dbAvailable = true;
+    return {
+      id: result.id,
+      position: Number(position),
+    };
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      throw new Error("Database unavailable, cannot queue instruction");
+    }
+    throw error;
+  }
+}
+
+// Get queued instructions for an agent or all agents
+export async function getPendingInstructions(
+  gatewayId?: string,
+  agentId?: string
+): Promise<QueuedInstruction[]> {
+  try {
+    let queryStr = `
+      SELECT
+        id,
+        payload,
+        created_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY payload->>'agentId'
+          ORDER BY created_at
+        ) as position
+      FROM relay_commands
+      WHERE status = 'queued'
+    `;
+    const params: (string | undefined)[] = [];
+
+    if (gatewayId) {
+      params.push(gatewayId);
+      queryStr += ` AND gateway_id = $${params.length}`;
+    }
+
+    if (agentId) {
+      params.push(agentId);
+      queryStr += ` AND payload->>'agentId' = $${params.length}`;
+    }
+
+    queryStr += ` ORDER BY created_at`;
+
+    const results = await query<{
+      id: string;
+      payload: { agentId: string; content: string };
+      created_at: string;
+      position: number;
+    }>(queryStr, params);
+
+    dbAvailable = true;
+    return results.map((r) => ({
+      id: r.id,
+      agentId: r.payload.agentId,
+      content: r.payload.content,
+      createdAt: r.created_at,
+      position: Number(r.position),
+    }));
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      return [];
+    }
+    throw error;
+  }
+}
+
+// Consume next instruction for an agent (mark as delivered)
+export async function consumeInstruction(
+  gatewayId: string,
+  instructionId: string
+): Promise<void> {
+  try {
+    await query(
+      `
+      UPDATE relay_commands
+      SET status = 'processing'
+      WHERE id = $1 AND gateway_id = $2 AND status = 'queued'
+    `,
+      [instructionId, gatewayId]
+    );
+    dbAvailable = true;
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      throw new Error("Database unavailable, cannot consume instruction");
+    }
+    throw error;
+  }
+}
+
+// Check if an agent is currently busy (has running task)
+export async function isAgentBusy(
+  gatewayId: string,
+  agentId: string
+): Promise<boolean> {
+  try {
+    const result = await queryOne<{ status: string }>(
+      `
+      SELECT status
+      FROM agent_statuses
+      WHERE gateway_id = $1 AND id = $2
+    `,
+      [gatewayId, agentId]
+    );
+
+    dbAvailable = true;
+    return result?.status === "running";
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      dbAvailable = false;
+      return false; // Assume not busy if DB unavailable
+    }
+    throw error;
+  }
+}
+
+// Drain queued instructions for idle agents, returning them as commands
+export async function drainQueueForIdleAgents(
+  gatewayId: string,
+  idleAgentIds: string[]
+): Promise<RelayCommand[]> {
+  if (idleAgentIds.length === 0) return [];
+
+  const commands: RelayCommand[] = [];
+  for (const agentId of idleAgentIds) {
+    try {
+      // Get oldest queued instruction for this agent
+      const instruction = await queryOne<{
+        id: string;
+        payload: { agentId: string; content: string; metadata?: Record<string, unknown> };
+        created_at: string;
+      }>(
+        `
+        UPDATE relay_commands
+        SET status = 'processing'
+        WHERE id = (
+          SELECT id FROM relay_commands
+          WHERE type = 'instruction' AND status = 'queued'
+            AND gateway_id = $1
+            AND payload->>'agentId' = $2
+          ORDER BY created_at
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, payload, created_at
+      `,
+        [gatewayId, agentId]
+      );
+
+      if (instruction) {
+        commands.push({
+          id: instruction.id,
+          type: "spawn",
+          payload: {
+            agentId,
+            task: instruction.payload.content,
+            ...((instruction.payload.metadata as Record<string, unknown>) || {}),
+          },
+          createdAt: instruction.created_at,
+          status: "processing",
+        });
+      }
+    } catch {
+      // Skip this agent on error
+    }
+  }
+  return commands;
+}
+
+// Get in-memory queue stats
+export async function getQueueStats(): Promise<{
+  totalCommands: number;
+  totalGateways: number;
+  liveOutputEntries: number;
+}> {
+  let totalCommands = 0;
+  for (const queue of inMemoryCommands.values()) {
+    totalCommands += queue.length;
+  }
+  return {
+    totalCommands,
+    totalGateways: inMemoryCommands.size,
+    liveOutputEntries: liveOutputCache.size,
+  };
+}
+
+// Remove expired commands from in-memory queue
+export async function cleanupExpiredCommands(): Promise<void> {
+  const now = Date.now();
+  for (const [gatewayId, queue] of inMemoryCommands.entries()) {
+    const filtered = queue.filter((cmd) => {
+      const age = now - new Date(cmd.createdAt).getTime();
+      return age < COMMAND_TTL_MS;
+    });
+    if (filtered.length === 0) {
+      inMemoryCommands.delete(gatewayId);
+    } else {
+      inMemoryCommands.set(gatewayId, filtered);
+    }
   }
 }

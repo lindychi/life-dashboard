@@ -3,5 +3,12 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/"
+healthcheckPath = "/api/tasks/health"
 healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# Mount persistent volume for file uploads
+# Configure in Railway dashboard: Volume → Mount Path: /app/uploads
+[[deploy.volumes]]
+mountPath = "/app/uploads"
