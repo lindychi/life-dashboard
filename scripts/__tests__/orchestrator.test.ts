@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock claude-executor before importing orchestrator
 vi.mock("../claude-executor", () => ({
-  executeClaudeTask: vi.fn(),
+  executeLlmTask: vi.fn(),
 }));
 
-import { executeClaudeTask } from "../claude-executor";
+import { executeLlmTask } from "../claude-executor";
 import {
   createPlan,
   executePlan,
@@ -54,7 +54,7 @@ describe("orchestrator", () => {
         reasoning: "First design, then implement",
       };
 
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: JSON.stringify(mockPlan),
         exitCode: 0,
@@ -78,7 +78,7 @@ describe("orchestrator", () => {
         reasoning: "Design, code, test workflow",
       };
 
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: JSON.stringify(mockPlan),
         exitCode: 0,
@@ -101,7 +101,7 @@ describe("orchestrator", () => {
         reasoning: "Sequential execution",
       };
 
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: JSON.stringify(mockPlan),
         exitCode: 0,
@@ -123,7 +123,7 @@ describe("orchestrator", () => {
         reasoning: "No agents available",
       };
 
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: JSON.stringify(mockPlan),
         exitCode: 0,
@@ -142,7 +142,7 @@ describe("orchestrator", () => {
         reasoning: "Complex task requires analysis",
       };
 
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: JSON.stringify(mockPlan),
         exitCode: 0,
@@ -151,7 +151,7 @@ describe("orchestrator", () => {
       const result = await createPlan(longTask, mockAgents);
 
       expect(result.subtasks).toBeDefined();
-      expect(executeClaudeTask).toHaveBeenCalledWith(
+      expect(executeLlmTask).toHaveBeenCalledWith(
         expect.objectContaining({
           task: expect.stringContaining("Build"),
         })
@@ -159,7 +159,7 @@ describe("orchestrator", () => {
     });
 
     it("should throw error when Claude execution fails", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: false,
         error: "Claude CLI not found",
         exitCode: 1,
@@ -169,7 +169,7 @@ describe("orchestrator", () => {
     });
 
     it("should throw error when output is not valid JSON", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: "Invalid JSON {{{",
         exitCode: 0,
@@ -188,7 +188,7 @@ describe("orchestrator", () => {
         reasoning: "Priority order test",
       };
 
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: JSON.stringify(mockPlan),
         exitCode: 0,
@@ -433,7 +433,7 @@ describe("orchestrator", () => {
     ];
 
     it("should return a non-empty summary string", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: "Summary of the orchestration results",
         exitCode: 0,
@@ -447,7 +447,7 @@ describe("orchestrator", () => {
 
     it("should mention the original task in summary", async () => {
       const summaryText = "Built REST API with 2 successful subtasks";
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: summaryText,
         exitCode: 0,
@@ -466,7 +466,7 @@ describe("orchestrator", () => {
       ];
 
       const summaryText = "2 successes, 1 failure";
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: summaryText,
         exitCode: 0,
@@ -479,7 +479,7 @@ describe("orchestrator", () => {
     });
 
     it("should handle empty results array", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: "No subtasks were executed",
         exitCode: 0,
@@ -491,7 +491,7 @@ describe("orchestrator", () => {
     });
 
     it("should return fallback summary when Claude execution fails", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: false,
         error: "Failed to generate summary",
         exitCode: 1,
@@ -503,7 +503,7 @@ describe("orchestrator", () => {
     });
 
     it("should pass task and results to Claude executor", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValue({
+      vi.mocked(executeLlmTask).mockResolvedValue({
         success: true,
         output: "Summary",
         exitCode: 0,
@@ -511,7 +511,7 @@ describe("orchestrator", () => {
 
       await summarizeResults("Build API", mockResults);
 
-      expect(executeClaudeTask).toHaveBeenCalledWith(
+      expect(executeLlmTask).toHaveBeenCalledWith(
         expect.objectContaining({
           task: expect.stringContaining("Build API"),
         })
@@ -535,7 +535,7 @@ describe("orchestrator", () => {
         reasoning: "Simple design task",
       };
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -549,7 +549,7 @@ describe("orchestrator", () => {
 
       await orchestrate("Build feature", mockAgents, mockExecutor);
 
-      expect(executeClaudeTask).toHaveBeenCalledTimes(2);
+      expect(executeLlmTask).toHaveBeenCalledTimes(2);
       expect(mockExecutor).toHaveBeenCalledTimes(1);
     });
 
@@ -562,7 +562,7 @@ describe("orchestrator", () => {
         reasoning: "Design then code",
       };
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -590,7 +590,7 @@ describe("orchestrator", () => {
         reasoning: "Quick task",
       };
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -609,7 +609,7 @@ describe("orchestrator", () => {
     });
 
     it("should handle plan creation failure", async () => {
-      vi.mocked(executeClaudeTask).mockResolvedValueOnce({
+      vi.mocked(executeLlmTask).mockResolvedValueOnce({
         success: false,
         error: "Plan creation failed",
         exitCode: 1,
@@ -633,7 +633,7 @@ describe("orchestrator", () => {
         error: "Execution failed",
       });
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -657,7 +657,7 @@ describe("orchestrator", () => {
         reasoning: "Timed task",
       };
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -687,7 +687,7 @@ describe("orchestrator", () => {
         reasoning: "No work needed",
       };
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -701,7 +701,7 @@ describe("orchestrator", () => {
 
       await orchestrate("Task", mockAgents, mockExecutor);
 
-      expect(executeClaudeTask).toHaveBeenCalledWith(
+      expect(executeLlmTask).toHaveBeenCalledWith(
         expect.objectContaining({
           task: expect.stringContaining("architect"),
         })
@@ -714,7 +714,7 @@ describe("orchestrator", () => {
         reasoning: "Testing phase",
       };
 
-      vi.mocked(executeClaudeTask)
+      vi.mocked(executeLlmTask)
         .mockResolvedValueOnce({
           success: true,
           output: JSON.stringify(mockPlan),
@@ -907,7 +907,7 @@ describe("orchestrator", () => {
           reasoning: "Simple design task",
         };
 
-        vi.mocked(executeClaudeTask)
+        vi.mocked(executeLlmTask)
           .mockResolvedValueOnce({
             success: true,
             output: JSON.stringify(mockPlan),
@@ -935,7 +935,7 @@ describe("orchestrator", () => {
           reasoning: "Design then code",
         };
 
-        vi.mocked(executeClaudeTask)
+        vi.mocked(executeLlmTask)
           .mockResolvedValueOnce({
             success: true,
             output: JSON.stringify(mockPlan),
@@ -966,7 +966,7 @@ describe("orchestrator", () => {
           reasoning: "Simple task",
         };
 
-        vi.mocked(executeClaudeTask)
+        vi.mocked(executeLlmTask)
           .mockResolvedValueOnce({
             success: true,
             output: JSON.stringify(mockPlan),
@@ -991,7 +991,7 @@ describe("orchestrator", () => {
           reasoning: "Simple task",
         };
 
-        vi.mocked(executeClaudeTask)
+        vi.mocked(executeLlmTask)
           .mockResolvedValueOnce({
             success: true,
             output: JSON.stringify(mockPlan),
@@ -1021,7 +1021,7 @@ describe("orchestrator", () => {
           reasoning: "Design then code",
         };
 
-        vi.mocked(executeClaudeTask)
+        vi.mocked(executeLlmTask)
           .mockResolvedValueOnce({
             success: true,
             output: JSON.stringify(mockPlan),
@@ -1057,7 +1057,7 @@ describe("orchestrator", () => {
           reasoning: "Simple task",
         };
 
-        vi.mocked(executeClaudeTask)
+        vi.mocked(executeLlmTask)
           .mockResolvedValueOnce({
             success: true,
             output: JSON.stringify(mockPlan),

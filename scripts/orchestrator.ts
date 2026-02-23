@@ -4,7 +4,7 @@
  * Breaks down high-level tasks into subtasks and coordinates agent execution.
  */
 
-import { executeClaudeTask, type ClaudeExecutorOptions } from "./claude-executor";
+import { executeLlmTask, type ClaudeExecutorOptions } from "./claude-executor";
 
 export interface AgentInfo {
   id: string;
@@ -109,7 +109,7 @@ Return ONLY valid JSON, no additional text.`;
   let lastOutput = "";
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await executeClaudeTask(
+    const result = await executeLlmTask(
       attempt === 0
         ? options
         : {
@@ -284,7 +284,7 @@ Provide a concise summary mentioning the task, number of successes and failures,
   };
 
   try {
-    const result = await executeClaudeTask(options);
+    const result = await executeLlmTask(options);
 
     if (!result.success) {
       // Provide fallback summary on failure

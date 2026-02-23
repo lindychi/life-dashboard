@@ -14,6 +14,10 @@
  *   RELAY_API_KEY: Relay API 키
  *   GATEWAY_ID: 이 Gateway의 고유 ID (기본: hostname)
  *   POLL_INTERVAL: polling 간격 ms (기본: 3000)
+ *   CODEX_BIN: Codex CLI 경로 (기본: codex)
+ *   CODEX_MODEL: Codex 모델 (옵션)
+ *   CODEX_SANDBOX: Codex sandbox 모드 (기본: workspace-write, disableTools일 때 read-only)
+ *   CODEX_APPROVAL: Codex 승인 모드 (기본: never)
  */
 
 import * as os from "os";
@@ -23,7 +27,7 @@ import * as path from "path";
 import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "..", ".env.local") });
 
-import { executeClaudeTask, isClaudeAvailable, formatDuration } from "./claude-executor";
+import { executeLlmTask, isClaudeAvailable, isCodexAvailable, formatDuration } from "./claude-executor";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -44,6 +48,12 @@ interface AgentStatus {
   status: "running" | "idle" | "waiting" | "error";
   currentTask?: string;
   sessionKey?: string;
+  liveOutput?: {
+    lastChunk: string;
+    totalChars: number;
+    lastActivityAt: string;
+    chunksReceived: number;
+  };
 }
 
 // Dynamic agent status tracking (populated from relay commands)
@@ -173,15 +183,68 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         console.log(`   🚀 Spawning Claude for agent: ${agentId}`);
         console.log(`   📋 Task: ${task}`);
 
-        executeClaudeTask({
+        const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그/i.test(task);
+        const staleTimeout = isComplexTask ? 600000 : 300000; // 10 min for complex, 5 min for simple
+
+        let totalChars = 0;
+        let chunksReceived = 0;
+        let outputBuffer = "";
+        let lastHistoryUpdate = 0;
+        const HISTORY_INTERVAL = 10000; // Send history entries every 10s
+
+        executeLlmTask({
           agentId,
           task,
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
           mcpConfig: MCP_CONFIG_PATH,
+          staleTimeout,
+          onOutput: (chunk: string) => {
+            // Log intermediate output for visibility
+            if (chunk.startsWith("[stderr]") || chunk.startsWith("[warning]")) {
+              console.log(`   📡 ${agentId}: ${chunk.trim()}`);
+              return;
+            }
+
+            totalChars += chunk.length;
+            chunksReceived++;
+
+            // Keep last 500 chars as preview
+            outputBuffer += chunk;
+            if (outputBuffer.length > 500) {
+              outputBuffer = outputBuffer.slice(-500);
+            }
+
+            // Update agent status with live output
+            const current = agentStatusMap.get(agentId);
+            if (current) {
+              agentStatusMap.set(agentId, {
+                ...current,
+                liveOutput: {
+                  lastChunk: outputBuffer,
+                  totalChars,
+                  lastActivityAt: new Date().toISOString(),
+                  chunksReceived,
+                },
+              });
+            }
+
+            // Send periodic history entries (less frequently now)
+            const now = Date.now();
+            if (now - lastHistoryUpdate >= HISTORY_INTERVAL) {
+              lastHistoryUpdate = now;
+              const preview = outputBuffer.length > 200 ? "..." + outputBuffer.slice(-200) : outputBuffer;
+              addHistory(agentId, "output", `⏳ ${agentId} 진행 중...\n${preview}`);
+            }
+          },
         }).then((result) => {
+          if (result.fallbackUsed && result.provider === "codex") {
+            console.log(`   🔁 Claude limit reached — Codex fallback used for ${agentId}`);
+          }
+
           if (result.success) {
             console.log(`   ✅ Task completed for ${agentId}`);
-            addHistory(agentId, "task_completed", result.output || "Task completed");
+            const prefix = result.fallbackUsed ? "🔁 Codex fallback\n" : "";
+            addHistory(agentId, "task_completed", `${prefix}${result.output || "Task completed"}`);
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
@@ -305,7 +368,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           }
         };
 
-        // Create an executor function that uses executeClaudeTask
+        // Create an executor function that uses executeLlmTask (Claude → Codex fallback)
         const executor = async (agentId: string, taskStr: string, systemPrompt?: string) => {
           const agentName = getAgentName(agentId);
           agentStatusMap.set(agentId, {
@@ -316,16 +379,51 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           });
 
           let lastStreamUpdate = 0;
-          const STREAM_INTERVAL = 3000; // Send streaming updates every 3 seconds
+          const STREAM_INTERVAL = 10000; // Send streaming updates every 10 seconds
           let streamBuffer = "";
+          let totalChars = 0;
+          let chunksReceived = 0;
 
-          const result = await executeClaudeTask({
+          const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획/i.test(taskStr);
+          const taskStaleTimeout = isComplexTask ? 600000 : 300000;
+
+          const result = await executeLlmTask({
             agentId,
             task: taskStr,
             systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
             mcpConfig: MCP_CONFIG_PATH,
+            staleTimeout: taskStaleTimeout,
             onOutput: (chunk: string) => {
+              // Log stderr and warnings from executor for visibility
+              if (chunk.startsWith("[stderr]") || chunk.startsWith("[warning]")) {
+                console.log(`   📡 ${agentName}: ${chunk.trim()}`);
+                return; // Don't add to streamBuffer
+              }
+
+              totalChars += chunk.length;
+              chunksReceived++;
+
+              // Keep last 500 chars as preview
               streamBuffer += chunk;
+              if (streamBuffer.length > 500) {
+                streamBuffer = streamBuffer.slice(-500);
+              }
+
+              // Update agent status with live output
+              const current = agentStatusMap.get(agentId);
+              if (current) {
+                agentStatusMap.set(agentId, {
+                  ...current,
+                  liveOutput: {
+                    lastChunk: streamBuffer,
+                    totalChars,
+                    lastActivityAt: new Date().toISOString(),
+                    chunksReceived,
+                  },
+                });
+              }
+
+              // Send periodic history entries (less frequently now)
               const now = Date.now();
               if (now - lastStreamUpdate >= STREAM_INTERVAL) {
                 lastStreamUpdate = now;
@@ -341,7 +439,8 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           const elapsed = result.elapsedMs ? ` (${formatDuration(result.elapsedMs)})` : "";
 
           if (result.success) {
-            addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${result.output || "완료"}`);
+            const prefix = result.fallbackUsed ? "🔁 Codex fallback\n" : "";
+            addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${prefix}${result.output || "완료"}`);
             agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "idle" });
           } else {
             const isHung = result.exitCode === -2;
@@ -416,6 +515,13 @@ async function main(): Promise<void> {
     console.log("✅ Claude CLI found");
   } else {
     console.log("⚠️  Claude CLI not found - tasks will fail");
+  }
+
+  // Check Codex CLI (fallback)
+  if (isCodexAvailable()) {
+    console.log("✅ Codex CLI found (fallback enabled)");
+  } else {
+    console.log("⚠️  Codex CLI not found - fallback disabled");
   }
 
   // Register

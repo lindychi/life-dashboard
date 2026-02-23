@@ -12,15 +12,16 @@ import { execFileSync, spawn } from "child_process";
 import {
   isClaudeAvailable,
   executeClaudeTask,
+  executeLlmTask,
   type ClaudeExecutorOptions,
 } from "../claude-executor";
 
 function createMockProcess(): ChildProcess & EventEmitter {
   const proc = new EventEmitter() as ChildProcess & EventEmitter;
-  proc.stdout = new EventEmitter() as NodeJS.ReadableStream & EventEmitter;
-  proc.stderr = new EventEmitter() as NodeJS.ReadableStream & EventEmitter;
+  proc.stdout = new EventEmitter() as unknown as ChildProcess["stdout"];
+  proc.stderr = new EventEmitter() as unknown as ChildProcess["stderr"];
   proc.kill = vi.fn().mockReturnValue(true);
-  proc.pid = 12345;
+  Object.defineProperty(proc, "pid", { value: 12345 });
   return proc;
 }
 
@@ -115,6 +116,25 @@ describe("claude-executor", () => {
       expect(result.success).toBe(false);
       expect(result.error).toBe("Error: something went wrong");
       expect(result.exitCode).toBe(1);
+    });
+
+    it("should flag rate-limited errors", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executeClaudeTask({
+        agentId: "dev",
+        task: "Rate limited task",
+        systemPrompt: "Prompt",
+      });
+
+      mockProc.stderr!.emit("data", Buffer.from("Rate limit exceeded"));
+      mockProc.emit("close", 1);
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(result.rateLimited).toBe(true);
+      expect(result.error).toContain("rate limit");
     });
 
     it("should handle spawn errors (ENOENT)", async () => {
@@ -280,7 +300,7 @@ describe("claude-executor", () => {
       await promise;
     });
 
-    it("should include both --allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard and --mcp-config in correct order", async () => {
+    it("should include both --allowedTools and --mcp-config in correct order", async () => {
       const mockProc = createMockProcess();
       vi.mocked(spawn).mockReturnValue(mockProc);
 
@@ -295,12 +315,13 @@ describe("claude-executor", () => {
       const args = spawnCall[1] as string[];
 
       // Should have both flags
-      expect(args).toContain("--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
+      expect(args).toContain("--allowedTools");
+      expect(args).toContain("Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
       expect(args).toContain("--mcp-config");
       expect(args).toContain("/project/.mcp.json");
 
-      // --mcp-config should come after --allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard
-      const skipIndex = args.indexOf("--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
+      // --mcp-config should come after --allowedTools
+      const skipIndex = args.indexOf("--allowedTools");
       const mcpIndex = args.indexOf("--mcp-config");
       expect(mcpIndex).toBeGreaterThan(skipIndex);
 
@@ -341,7 +362,7 @@ describe("claude-executor", () => {
 
       const result = await promise;
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Process hung (no output for");
+      expect(result.error).toContain("Process hung (no activity for");
       expect(result.error).toContain("2분");
       expect(result.exitCode).toBe(-2);
       expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
@@ -419,6 +440,57 @@ describe("claude-executor", () => {
       expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
 
       vi.useRealTimers();
+    });
+  });
+
+  describe("executeLlmTask", () => {
+    it("should fall back to Codex when Claude is rate-limited", async () => {
+      const claudeProc = createMockProcess();
+      const codexProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValueOnce(claudeProc).mockReturnValueOnce(codexProc);
+      vi.mocked(execFileSync).mockReturnValue(Buffer.from("/usr/local/bin/codex\n"));
+
+      const promise = executeLlmTask({
+        agentId: "dev",
+        task: "Fallback task",
+        systemPrompt: "Prompt",
+      });
+
+      claudeProc.stderr!.emit("data", Buffer.from("Rate limit exceeded"));
+      claudeProc.emit("close", 1);
+
+      codexProc.stdout!.emit("data", Buffer.from("Codex output"));
+      codexProc.emit("close", 0);
+
+      const result = await promise;
+      expect(result.success).toBe(true);
+      expect(result.provider).toBe("codex");
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.output).toBe("Codex output");
+      expect(vi.mocked(spawn).mock.calls[0][0]).toBe("claude");
+      expect(vi.mocked(spawn).mock.calls[1][0]).toBe("codex");
+    });
+
+    it("should return Claude error when Codex is unavailable", async () => {
+      const claudeProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValueOnce(claudeProc);
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw new Error("not found");
+      });
+
+      const promise = executeLlmTask({
+        agentId: "dev",
+        task: "Fallback task",
+        systemPrompt: "Prompt",
+      });
+
+      claudeProc.stderr!.emit("data", Buffer.from("Rate limit exceeded"));
+      claudeProc.emit("close", 1);
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(result.fallbackUsed).toBe(false);
+      expect(result.error).toContain("Codex CLI not available");
     });
   });
 });
