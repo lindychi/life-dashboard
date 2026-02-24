@@ -501,13 +501,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
   try {
     switch (command.type) {
       case "spawn": {
-        const { agentId, task, systemPrompt, _attachmentRefKeys, requestGroupId, requestTitle } = command.payload as {
+        const { agentId, task, systemPrompt, _attachmentRefKeys, requestGroupId, requestTitle, allowBash } = command.payload as {
           agentId: string;
           task: string;
           systemPrompt?: string;
           _attachmentRefKeys?: string[];
           requestGroupId?: string;
           requestTitle?: string;
+          allowBash?: boolean;
         };
 
         // Request group context for history entries
@@ -591,6 +592,9 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         // Execute asynchronously (don't block the poll loop)
         console.log(`   🚀 Spawning Claude for agent: ${agentId}`);
         console.log(`   📋 Task: ${finalTask}`);
+        if (allowBash) {
+          console.log(`   🔓 Bash access enabled for this task`);
+        }
 
         const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획|test|QA|테스트|PM|product|orchestrat|전체|comprehensive|deep|tdd|migration|마이그레이션/i.test(task);
         // Agent-specific staleTimeout overrides (agents that inherently need more time)
@@ -618,6 +622,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           mcpConfig: MCP_CONFIG_PATH,
           staleTimeout,
           enableTmux: ENABLE_TMUX,
+          allowBash: allowBash || false,
           onToolCall: (tc: ToolCall) => {
             taskToolCalls.push(tc);
           },
@@ -820,9 +825,10 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
       }
 
       case "orchestrate": {
-        const { task, _attachmentRefKeys: orchAttRefKeys } = command.payload as {
+        const { task, _attachmentRefKeys: orchAttRefKeys, allowBash: orchAllowBash } = command.payload as {
           task: string;
           _attachmentRefKeys?: string[];
+          allowBash?: boolean;
         };
 
         // Download attachments for orchestrate command
@@ -953,6 +959,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             mcpConfig: MCP_CONFIG_PATH,
             staleTimeout: taskStaleTimeout,
             enableTmux: ENABLE_TMUX,
+            allowBash: orchAllowBash || false,
             onToolCall: (tc: ToolCall) => {
               orchToolCalls.push(tc);
             },

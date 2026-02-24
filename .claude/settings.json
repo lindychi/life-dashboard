@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm add*)",
+      "Bash(pnpm install*)",
+      "Bash(pnpm remove*)",
+      "Bash(pnpm run*)",
+      "Bash(pnpm test*)",
+      "Bash(pnpm build*)",
+      "Bash(pnpm lint*)",
+      "Bash(pnpm dev*)",
+      "Bash(pnpm exec*)",
+      "Bash(pnpm dlx*)",
+      "Bash(npx*)",
+      "Bash(node*)",
+
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git pull*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git checkout*)",
+      "Bash(git stash*)",
+      "Bash(git fetch*)",
+      "Bash(git merge*)",
+      "Bash(git rebase*)",
+      "Bash(git rev-parse*)",
+      "Bash(git remote*)",
+      "Bash(git show*)",
+      "Bash(git tag*)",
+
+      "Bash(railway up*)",
+      "Bash(railway deployment*)",
+      "Bash(railway status*)",
+      "Bash(railway variables*)",
+      "Bash(railway logs*)",
+
+      "Bash(launchctl*)",
+      "Bash(pnpm gateway:*)",
+      "Bash(pnpm monitor*)",
+
+      "Bash(lsof*)",
+      "Bash(kill *)",
+      "Bash(ps *)",
+
+      "mcp__life-dashboard__*"
+    ]
+  }
+}
