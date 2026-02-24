@@ -39,7 +39,7 @@ const ENABLE_TMUX = process.env.ENABLE_TMUX === "true";
 
 interface RelayCommand {
   id: string;
-  type: "spawn" | "send" | "status" | "message" | "orchestrate";
+  type: "spawn" | "send" | "status" | "message" | "orchestrate" | "restart";
   payload: Record<string, unknown>;
 }
 
@@ -55,6 +55,13 @@ interface AgentStatus {
     lastActivityAt: string;
     chunksReceived: number;
   };
+}
+
+// Self-restart: process.exit() triggers launchd auto-restart
+function gracefulRestart(reason: string): void {
+  console.log(`\n🔄 Restarting gateway connector: ${reason}`);
+  console.log("   launchd will auto-restart in ~5 seconds...");
+  process.exit(0);
 }
 
 // Dynamic agent status tracking (populated from relay commands)
@@ -344,6 +351,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         addHistory(to, "message_received", `[${from}] ${content}`);
 
         return { success: true, delivered: true };
+      }
+
+      case "restart": {
+        const { reason } = command.payload as { reason?: string };
+        console.log(`   🔄 Restart requested: ${reason || "manual"}`);
+        // Delay slightly so the poll response can be sent
+        setTimeout(() => gracefulRestart(reason || "remote request"), 1000);
+        return { success: true, message: "Restarting..." };
       }
 
       case "orchestrate": {

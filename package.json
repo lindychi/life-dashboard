@@ -11,7 +11,12 @@
     "test:watch": "vitest",
     "monitor": "npx tsx scripts/tmux-monitor.ts",
     "predeploy": "npx tsx scripts/pre-deploy-check.ts",
-    "predeploy:quick": "npx tsx scripts/pre-deploy-check.ts --skip-build --skip-tests"
+    "predeploy:quick": "npx tsx scripts/pre-deploy-check.ts --skip-build --skip-tests",
+    "gateway:install": "bash scripts/gateway-setup.sh install",
+    "gateway:uninstall": "bash scripts/gateway-setup.sh uninstall",
+    "gateway:restart": "bash scripts/gateway-setup.sh restart",
+    "gateway:status": "bash scripts/gateway-setup.sh status",
+    "gateway:logs": "bash scripts/gateway-setup.sh logs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
