@@ -5,9 +5,14 @@ import {
   getAndClearCommands,
   updateAgentStatuses,
   drainQueueForIdleAgents,
+  recoverStaleProcessingCommands,
 } from "@/lib/relay";
 import { addHistoryEntry } from "@/lib/history";
 import { isDbConnectionError } from "@/lib/db";
+
+// Throttle stale command recovery to run at most once per minute
+let lastStaleRecoveryAt = 0;
+const STALE_RECOVERY_INTERVAL_MS = 60_000;
 
 // Gateway가 주기적으로 호출 (polling)
 export async function POST(request: NextRequest) {
@@ -66,6 +71,17 @@ export async function POST(request: NextRequest) {
             }
           }
         }
+      }
+    }
+
+    // Periodically clean up stale 'processing' commands (throttled to 1/min)
+    const now = Date.now();
+    if (now - lastStaleRecoveryAt > STALE_RECOVERY_INTERVAL_MS) {
+      lastStaleRecoveryAt = now;
+      try {
+        await recoverStaleProcessingCommands();
+      } catch {
+        // Best-effort cleanup
       }
     }
 

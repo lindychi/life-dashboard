@@ -315,6 +315,25 @@ async function requeueFailedTask(
   }
 }
 
+// Helper: Report command result back to dashboard (best-effort, non-blocking)
+async function reportCommandResult(
+  commandId: string,
+  status: "completed" | "failed",
+  result?: unknown
+): Promise<void> {
+  try {
+    await apiCall("/command/result", "POST", {
+      gatewayId: GATEWAY_ID,
+      commandId,
+      status,
+      result,
+    });
+  } catch (error) {
+    // Best-effort — don't block main flow
+    console.error(`   ⚠️ Failed to report command result for ${commandId}:`, error);
+  }
+}
+
 // Helper: API call using http/https directly (avoids Node.js undici's 300s default timeout)
 function apiCall(
   endpoint: string,
@@ -725,6 +744,9 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               taskStateManager.completeTask(executionId, result.output?.slice(-2000));
             }
 
+            // Report command result to relay (best-effort)
+            reportCommandResult(command.id, "completed");
+
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
@@ -755,6 +777,9 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             if (executionId) {
               taskStateManager.failTask(executionId, errorMsg);
             }
+
+            // Report command result to relay (best-effort)
+            reportCommandResult(command.id, "failed", { error: errorMsg });
 
             // Update request group agent status to failed
             if (requestGroupId) {
@@ -1046,6 +1071,18 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           return result;
         };
 
+        // Track orchestration in persistent state for recovery
+        const orchExecutionId = await taskStateManager.startTask({
+          agentId: "orchestrator",
+          commandId: command.id,
+          commandType: "orchestrate",
+          task: orchFinalTask,
+          systemPrompt: "Orchestration controller",
+          attachmentRefKeys: orchAttRefKeys,
+          attemptNumber: 1,
+          maxAttempts: 2,
+        });
+
         // Execute orchestration (don't block poll loop)
         orchestrate(orchFinalTask, agents, executor, onProgress).then((result) => {
           // Clean up downloaded attachment temp files
@@ -1056,6 +1093,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           const elapsed = formatDuration(result.totalTime);
           console.log(`   ✅ Orchestration completed: ${result.results.length} subtasks (${elapsed})`);
           addHistory("orchestrator", "task_completed", `🏁 오케스트레이션 완료 — ⏱️ 총 ${elapsed} 소요\n\n${result.summary}`);
+
+          // Mark orchestration task execution as completed
+          if (orchExecutionId) {
+            taskStateManager.completeTask(orchExecutionId, result.summary?.slice(-2000));
+          }
+
+          // Report command result to relay (best-effort)
+          reportCommandResult(command.id, "completed");
         }).catch((error) => {
           // Clean up on failure too
           if (orchAttRefKeys && orchAttRefKeys.length > 0) {
@@ -1064,6 +1109,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
           console.log(`   ❌ Orchestration failed: ${error.message}`);
           addHistory("orchestrator", "task_failed", error.message);
+
+          // Mark orchestration task execution as failed
+          if (orchExecutionId) {
+            taskStateManager.failTask(orchExecutionId, error.message);
+          }
+
+          // Report command result to relay (best-effort)
+          reportCommandResult(command.id, "failed", { error: error.message });
         });
 
         return { success: true, message: "Orchestration started" };

@@ -93,6 +93,26 @@ export async function registerGateway(
     [gatewayId]
   );
 
+  // Reset orphaned 'processing' commands back to 'pending' for re-pickup.
+  // Exclude commands already tracked in task_executions (those will be recovered
+  // by taskStateManager via the interrupted task recovery flow).
+  const resetResult = await query<{ id: string }>(
+    `UPDATE relay_commands
+     SET status = 'pending'
+     WHERE gateway_id = $1 AND status = 'processing'
+       AND id NOT IN (
+         SELECT command_id FROM task_executions
+         WHERE command_id IS NOT NULL AND gateway_id = $1
+           AND status IN ('running', 'interrupted')
+       )
+     RETURNING id`,
+    [gatewayId]
+  );
+
+  if (resetResult.length > 0) {
+    console.log(`[relay] Reset ${resetResult.length} orphaned processing command(s) to pending for gateway ${gatewayId}`);
+  }
+
   return {
     id: result.id,
     connectedAt: result.connected_at,
@@ -787,6 +807,36 @@ export async function getQueueStats(): Promise<{
     totalGateways: inMemoryCommands.size,
     liveOutputEntries: liveOutputCache.size,
   };
+}
+
+// Recover stale 'processing' commands from disconnected gateways.
+// Commands stuck in 'processing' for >10 minutes on a disconnected gateway
+// are marked as 'failed' to prevent orphan accumulation.
+export async function recoverStaleProcessingCommands(): Promise<number> {
+  try {
+    const result = await query<{ id: string }>(
+      `UPDATE relay_commands
+       SET status = 'failed', result = '"stale_processing_timeout"', completed_at = NOW()
+       WHERE status = 'processing'
+         AND created_at < NOW() - INTERVAL '10 minutes'
+         AND gateway_id IN (
+           SELECT id FROM gateway_connections
+           WHERE last_heartbeat < NOW() - INTERVAL '30 seconds'
+         )
+       RETURNING id`,
+      []
+    );
+
+    if (result.length > 0) {
+      console.log(`[relay] Recovered ${result.length} stale processing command(s)`);
+    }
+    return result.length;
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      return 0;
+    }
+    throw error;
+  }
 }
 
 // Remove expired commands from in-memory queue
