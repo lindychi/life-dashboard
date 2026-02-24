@@ -8,6 +8,13 @@
 import { execFileSync, spawn, type ChildProcess } from "child_process";
 import { isTmuxAvailable, spawnInTmux, getProcessState } from "./tmux-manager";
 
+export interface ToolCall {
+  name: string;
+  input?: Record<string, unknown>;
+  result?: string;
+  timestamp: string;
+}
+
 export interface ExecutionResult {
   success: boolean;
   output?: string;
@@ -20,6 +27,7 @@ export interface ExecutionResult {
   fallbackUsed?: boolean;
   fallbackReason?: "rate_limit";
   retriesUsed?: number;
+  toolCalls?: ToolCall[];
 }
 
 // Safe tools whitelist: file operations + MCP tools, NO Bash execution
@@ -67,6 +75,7 @@ export interface ClaudeExecutorOptions {
   timeout?: number; // ms, 0 = no timeout (default)
   staleTimeout?: number; // ms, kill if no output for this long (default: 300000 = 5 min, 0 = disabled)
   onOutput?: (chunk: string) => void;
+  onToolCall?: (toolCall: ToolCall) => void; // Called for each tool_use with input/result details
   disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
   mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
   allowBash?: boolean; // If true, include Bash in allowed tools (use with caution)
@@ -122,7 +131,14 @@ interface StreamEvent {
   type: "system" | "assistant" | "user" | "result";
   subtype?: string;
   message?: {
-    content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>;
+    content?: Array<{
+      type: string;
+      text?: string;
+      name?: string;
+      input?: Record<string, unknown>;
+      tool_use_id?: string;
+      content?: string | Array<{ type: string; text?: string }>;
+    }>;
   };
   result?: string;
   total_cost_usd?: number;
@@ -130,10 +146,17 @@ interface StreamEvent {
   duration_ms?: number;
 }
 
+interface ParsedStreamResult {
+  events: StreamEvent[];
+  textChunks: string[];
+  toolCalls: ToolCall[];
+}
+
 function parseStreamEvents(
   rawChunk: string,
   buffer: { partial: string },
-): { events: StreamEvent[]; textChunks: string[] } {
+  toolCallTracker: Map<string, ToolCall>,
+): ParsedStreamResult {
   const combined = buffer.partial + rawChunk;
   const lines = combined.split("\n");
 
@@ -142,6 +165,7 @@ function parseStreamEvents(
 
   const events: StreamEvent[] = [];
   const textChunks: string[] = [];
+  const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -157,6 +181,33 @@ function parseStreamEvents(
           if (block.type === "text" && block.text) {
             textChunks.push(block.text);
           }
+          // Capture tool_use with input details
+          if (block.type === "tool_use" && block.name) {
+            const tc: ToolCall = {
+              name: block.name,
+              input: block.input,
+              timestamp: new Date().toISOString(),
+            };
+            if (block.tool_use_id) {
+              toolCallTracker.set(block.tool_use_id, tc);
+            }
+            toolCalls.push(tc);
+          }
+          // Capture tool_result and correlate with previous tool_use
+          if (block.type === "tool_result" && block.tool_use_id) {
+            const pending = toolCallTracker.get(block.tool_use_id);
+            const resultText = typeof block.content === "string"
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content.map(c => c.text || "").join("")
+                : "";
+            if (pending) {
+              // Truncate very long results to 2000 chars for storage
+              pending.result = resultText.length > 2000
+                ? resultText.slice(0, 2000) + "... (truncated)"
+                : resultText;
+            }
+          }
         }
       }
 
@@ -169,7 +220,7 @@ function parseStreamEvents(
     }
   }
 
-  return { events, textChunks };
+  return { events, textChunks, toolCalls };
 }
 
 /**
@@ -192,6 +243,90 @@ export function checkNetworkHealth(pid: number): boolean {
   }
 }
 
+/** Tool display info: emoji + short label */
+const TOOL_DISPLAY: Record<string, { emoji: string; label: string }> = {
+  Read: { emoji: "📖", label: "Read" },
+  Write: { emoji: "✏️", label: "Write" },
+  Edit: { emoji: "🔧", label: "Edit" },
+  Grep: { emoji: "🔍", label: "Grep" },
+  Glob: { emoji: "📂", label: "Glob" },
+  Bash: { emoji: "💻", label: "Bash" },
+  TodoWrite: { emoji: "📝", label: "TodoWrite" },
+  Task: { emoji: "🚀", label: "Task" },
+  WebFetch: { emoji: "🌐", label: "WebFetch" },
+  WebSearch: { emoji: "🔎", label: "WebSearch" },
+};
+
+/**
+ * Get display info for a tool (emoji + short name).
+ */
+function getToolDisplay(toolName: string): { emoji: string; label: string } {
+  if (TOOL_DISPLAY[toolName]) return TOOL_DISPLAY[toolName];
+  // MCP tools: extract the last segment
+  if (toolName.startsWith("mcp__")) {
+    const parts = toolName.split("__");
+    const shortName = parts[parts.length - 1] || toolName;
+    return { emoji: "🔌", label: shortName };
+  }
+  return { emoji: "🔧", label: toolName };
+}
+
+/**
+ * Summarize tool input into a concise one-line string for display in progress logs.
+ * Shows the most relevant parameter for each tool type.
+ */
+function summarizeToolInput(toolName: string, input: Record<string, unknown>): string {
+  try {
+    switch (toolName) {
+      case "Read":
+        return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+      case "Write":
+        return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+      case "Edit":
+        return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+      case "Grep":
+        return input.pattern ? `"${String(input.pattern).slice(0, 50)}"` : "";
+      case "Glob":
+        return input.pattern ? `"${String(input.pattern).slice(0, 50)}"` : "";
+      case "Bash":
+        return input.command ? String(input.command).slice(0, 60) : "";
+      case "TodoWrite":
+        if (Array.isArray(input.todos)) {
+          const inProgress = (input.todos as Array<{ status?: string; content?: string }>).find(t => t.status === "in_progress");
+          return inProgress?.content ? String(inProgress.content).slice(0, 50) : `${input.todos.length}개 항목`;
+        }
+        return "";
+      case "WebFetch":
+        return input.url ? String(input.url).slice(0, 60) : "";
+      case "WebSearch":
+        return input.query ? `"${String(input.query).slice(0, 50)}"` : "";
+      case "Task":
+        return input.description ? String(input.description).slice(0, 50) : "";
+      default:
+        // For MCP tools, show the first string parameter value
+        if (toolName.startsWith("mcp__")) {
+          const firstVal = Object.values(input).find(v => typeof v === "string");
+          return firstVal ? String(firstVal).slice(0, 50) : "";
+        }
+        return "";
+    }
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Format a tool call into a rich display line with emoji and details.
+ */
+function formatToolCallLine(toolName: string, input?: Record<string, unknown>): string {
+  const display = getToolDisplay(toolName);
+  const summary = input ? summarizeToolInput(toolName, input) : "";
+  if (summary) {
+    return `${display.emoji} ${display.label}: ${summary}`;
+  }
+  return `${display.emoji} ${display.label}`;
+}
+
 /**
  * Execute a task using Claude CLI
  *
@@ -201,7 +336,7 @@ export function checkNetworkHealth(pid: number): boolean {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, disableTools, mcpConfig, allowBash, enableTmux = false } = options;
+  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, allowBash, enableTmux = false } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
@@ -244,6 +379,8 @@ export function executeClaudeTask(
 
     const useStreamJson = !disableTools;
     const streamBuffer = { partial: "" };
+    const toolCallTracker = new Map<string, ToolCall>();
+    const allToolCalls: ToolCall[] = [];
     let finalResultText = "";
 
     let stdout = "";
@@ -265,23 +402,27 @@ export function executeClaudeTask(
           lastActivityTime = Date.now();
 
           if (useStreamJson) {
-            const { events, textChunks } = parseStreamEvents(chunk, streamBuffer);
+            const { events, textChunks, toolCalls } = parseStreamEvents(chunk, streamBuffer, toolCallTracker);
+
+            // Track and emit tool calls
+            for (const tc of toolCalls) {
+              allToolCalls.push(tc);
+              onToolCall?.(tc);
+              onOutput?.(`${formatToolCallLine(tc.name, tc.input)}\n`);
+            }
 
             for (const event of events) {
-              if (event.type === "assistant" && event.message?.content) {
-                for (const block of event.message.content) {
-                  if (block.type === "tool_use" && block.name) {
-                    onOutput?.(`[tool] ${block.name}\n`);
-                  }
-                }
-              }
               if (event.type === "result" && event.result) {
                 finalResultText = event.result;
               }
             }
 
+            // Accumulate and stream text output to onOutput
             if (textChunks.length > 0) {
-              stdout += textChunks.join("");
+              const joined = textChunks.join("");
+              stdout += joined;
+              // Stream text chunks so dashboard can show thinking/response progress
+              onOutput?.(`[text] ${joined}`);
             }
           } else {
             stdout += chunk;
@@ -300,6 +441,7 @@ export function executeClaudeTask(
               elapsedMs: Date.now() - startTime,
               provider: "claude",
               rateLimited: false,
+              toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
             });
           } else {
             const rateLimited = isRateLimitError(stdout);
@@ -311,6 +453,7 @@ export function executeClaudeTask(
               elapsedMs: Date.now() - startTime,
               provider: "claude",
               rateLimited,
+              toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
             });
           }
         },
@@ -334,27 +477,28 @@ export function executeClaudeTask(
         lastActivityTime = Date.now();
 
         if (useStreamJson) {
-          const { events, textChunks } = parseStreamEvents(raw, streamBuffer);
+          const { events, textChunks, toolCalls } = parseStreamEvents(raw, streamBuffer, toolCallTracker);
+
+          // Track and emit tool calls
+          for (const tc of toolCalls) {
+            allToolCalls.push(tc);
+            onToolCall?.(tc);
+            onOutput?.(`${formatToolCallLine(tc.name, tc.input)}\n`);
+          }
 
           for (const event of events) {
-            // Extract progress info for onOutput callback
-            if (event.type === "assistant" && event.message?.content) {
-              for (const block of event.message.content) {
-                if (block.type === "tool_use" && block.name) {
-                  onOutput?.(`[tool] ${block.name}\n`);
-                }
-              }
-            }
-
             // Capture final result
             if (event.type === "result" && event.result) {
               finalResultText = event.result;
             }
           }
 
-          // Accumulate text output
+          // Accumulate and stream text output to onOutput
           if (textChunks.length > 0) {
-            stdout += textChunks.join("");
+            const joined = textChunks.join("");
+            stdout += joined;
+            // Stream text chunks so dashboard can show thinking/response progress
+            onOutput?.(`[text] ${joined}`);
           }
         } else {
           // --print mode (no-tool tasks): raw text accumulation
@@ -544,6 +688,7 @@ export function executeClaudeTask(
             stderrOutput: stderr.trim() || undefined,
             provider: "claude",
             rateLimited: false,
+            toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
           });
         } else {
           const combinedOutput = `${stderr}\n${stdout}`.trim();
@@ -560,6 +705,7 @@ export function executeClaudeTask(
             stderrOutput: stderr.trim() || undefined,
             provider: "claude",
             rateLimited,
+            toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
           });
         }
       });
@@ -857,9 +1003,9 @@ export async function executeLlmTaskWithRetry(
     console.log(`🔄 Retry ${attempt + 1}/${maxRetries} for ${options.agentId}: ${reason}`);
     options.onOutput?.(`[retry] Attempt ${attempt + 2} starting after ${reason}...\n`);
 
-    // Increase stale timeout by 50% for hung retries
+    // Increase stale timeout by 100% for hung retries (5min→10min matches complex task level)
     if (result.exitCode === -2 && currentStaleTimeout) {
-      currentStaleTimeout = Math.round(currentStaleTimeout * 1.5);
+      currentStaleTimeout = Math.round(currentStaleTimeout * 2.0);
     }
 
     // Wait before retry

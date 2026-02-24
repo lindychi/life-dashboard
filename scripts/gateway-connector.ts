@@ -21,13 +21,14 @@
  */
 
 import * as os from "os";
+import * as fs from "fs";
 import * as http from "http";
 import * as https from "https";
 import * as path from "path";
 import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "..", ".env.local") });
 
-import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, formatDuration } from "./claude-executor";
+import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, formatDuration, type ToolCall } from "./claude-executor";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -43,6 +44,15 @@ interface RelayCommand {
   payload: Record<string, unknown>;
 }
 
+/** Structured progress event for real-time dashboard display */
+interface ProgressEventEntry {
+  type: "tool_use" | "text" | "health" | "warning" | "stderr";
+  timestamp: string;
+  tool?: string;
+  target?: string;
+  content?: string;
+}
+
 interface AgentStatus {
   id: string;
   name: string;
@@ -54,7 +64,85 @@ interface AgentStatus {
     totalChars: number;
     lastActivityAt: string;
     chunksReceived: number;
+    /** Recent structured progress events (newest first, max 20) */
+    recentEvents?: ProgressEventEntry[];
   };
+}
+
+const MAX_RECENT_EVENTS = 20;
+
+/**
+ * Parse an onOutput chunk into a structured ProgressEventEntry.
+ * Chunks from claude-executor are prefixed with [tool], [text], [stderr], [health], [warning].
+ */
+function parseOutputChunk(chunk: string): ProgressEventEntry | null {
+  const trimmed = chunk.trim();
+  if (!trimmed) return null;
+
+  const now = new Date().toISOString();
+
+  // [tool] 📖 Read: lib/auth.ts
+  if (trimmed.startsWith("[tool]") || /^[📖✏️🔧🔍📂💻📝🚀🌐🔎🔌]/.test(trimmed)) {
+    // Parse formatted tool line: "📖 Read: src/lib/auth.ts" or "[tool] 📖 Read: src/lib/auth.ts"
+    const content = trimmed.replace(/^\[tool\]\s*/, "");
+    // Extract tool name and target from formatted line: "emoji Label: target"
+    const match = content.match(/^.+?\s+(\S+?)(?::\s*(.+))?$/);
+    if (match) {
+      return { type: "tool_use", timestamp: now, tool: match[1], target: match[2] || undefined };
+    }
+    return { type: "tool_use", timestamp: now, content: content.slice(0, 200) };
+  }
+
+  // [text] Assistant's thinking/response text
+  if (trimmed.startsWith("[text] ")) {
+    const text = trimmed.slice(7);
+    return { type: "text", timestamp: now, content: text.slice(0, 500) };
+  }
+
+  // [stderr] ...
+  if (trimmed.startsWith("[stderr]")) {
+    return { type: "stderr", timestamp: now, content: trimmed.slice(9).trim().slice(0, 200) };
+  }
+
+  // [health] ...
+  if (trimmed.startsWith("[health]")) {
+    return { type: "health", timestamp: now, content: trimmed.slice(9).trim().slice(0, 200) };
+  }
+
+  // [warning] ...
+  if (trimmed.startsWith("[warning]")) {
+    return { type: "warning", timestamp: now, content: trimmed.slice(10).trim().slice(0, 200) };
+  }
+
+  // Untagged output (from --print mode)
+  return { type: "text", timestamp: now, content: trimmed.slice(0, 500) };
+}
+
+/**
+ * Summarize tool calls into a compact one-line string.
+ * e.g. "🔧 6개 도구 호출: 📖Read ×3, 🔍Grep ×2, ✏️Write ×1"
+ */
+function summarizeToolCalls(toolCalls: ToolCall[]): string {
+  if (toolCalls.length === 0) return "";
+  const TOOL_EMOJIS: Record<string, string> = {
+    Read: "📖", Write: "✏️", Edit: "🔧", Grep: "🔍", Glob: "📂",
+    Bash: "💻", TodoWrite: "📝", Task: "🚀", WebFetch: "🌐", WebSearch: "🔎",
+  };
+  const counts = new Map<string, number>();
+  for (const tc of toolCalls) {
+    counts.set(tc.name, (counts.get(tc.name) || 0) + 1);
+  }
+  const parts: string[] = [];
+  for (const [name, count] of counts) {
+    const emoji = name.startsWith("mcp__")
+      ? "🔌"
+      : (TOOL_EMOJIS[name] || "🔧");
+    const shortName = name.startsWith("mcp__")
+      ? (name.split("__").pop() || name)
+      : name;
+    parts.push(`${emoji}${shortName} ×${count}`);
+  }
+  return `🔧 ${toolCalls.length}개 도구 호출: ${parts.join(", ")}`;
 }
 
 // Self-restart: process.exit() triggers launchd auto-restart
@@ -67,6 +155,9 @@ function gracefulRestart(reason: string): void {
 // Dynamic agent status tracking (populated from relay commands)
 const agentStatusMap = new Map<string, AgentStatus>();
 
+// Track task start times per agent for execution time metrics
+const agentTaskStartTimes = new Map<string, number>();
+
 // Helper to get agents array for polling
 function getAgentsList(): AgentStatus[] {
   return Array.from(agentStatusMap.values());
@@ -78,11 +169,45 @@ const pendingHistoryEntries: Array<{
   type: string;
   content: string;
   metadata?: Record<string, unknown>;
+  requestGroupId?: string;
+  requestTitle?: string;
 }> = [];
 
 // Helper: Add history entry
-function addHistory(agentId: string, type: string, content: string, metadata?: Record<string, unknown>) {
-  pendingHistoryEntries.push({ agentId, type, content, metadata });
+function addHistory(
+  agentId: string,
+  type: string,
+  content: string,
+  metadata?: Record<string, unknown>,
+  requestGroup?: { requestGroupId?: string; requestTitle?: string }
+) {
+  pendingHistoryEntries.push({
+    agentId,
+    type,
+    content,
+    metadata,
+    requestGroupId: requestGroup?.requestGroupId,
+    requestTitle: requestGroup?.requestTitle,
+  });
+}
+
+// Helper: Update request group agent status via API (best-effort)
+async function updateRequestGroupAgent(
+  requestGroupId: string,
+  agentId: string,
+  agentStatus: string,
+  taskSummary?: string
+): Promise<void> {
+  try {
+    await apiCall(`/request-groups/${requestGroupId}`, "POST", {
+      action: agentStatus === "assigned" ? "add_agent" : "update_agent",
+      agentId,
+      agentStatus,
+      taskSummary,
+    });
+  } catch (error) {
+    console.error(`   ⚠️ Failed to update request group agent: ${error}`);
+  }
 }
 
 // Helper: Re-queue failed task for one more attempt
@@ -138,7 +263,7 @@ function apiCall(
           "x-relay-key": RELAY_API_KEY,
           ...(bodyStr ? { "Content-Length": Buffer.byteLength(bodyStr).toString() } : {}),
         },
-        timeout: 0, // No timeout
+        timeout: 30000, // 30s timeout — poll interval is 3s so this gives ample margin
       },
       (res) => {
         let data = "";
@@ -153,6 +278,11 @@ function apiCall(
       }
     );
 
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("Request timed out (30s)"));
+    });
+
     req.on("error", reject);
 
     if (bodyStr) {
@@ -160,6 +290,113 @@ function apiCall(
     }
     req.end();
   });
+}
+
+// Temp directory for downloaded attachments
+const ATTACHMENTS_TMP_DIR = path.join(os.tmpdir(), "ld-attachments");
+
+// Download attachment by ref_key from dashboard and save to temp file
+async function downloadAttachment(refKey: string): Promise<{ filePath: string; filename: string } | null> {
+  try {
+    // First, lookup attachment metadata by ref_key
+    const metaResult = await apiCall(`/attachments/by-ref/${refKey}`, "GET") as {
+      attachment?: { id: string; originalFilename: string; storageKey: string };
+    };
+
+    if (!metaResult?.attachment) {
+      console.log(`   ⚠️ Attachment not found for ref_key: ${refKey}`);
+      return null;
+    }
+
+    const { id, originalFilename } = metaResult.attachment;
+
+    // Download the file content
+    const url = `${RELAY_URL}/api/attachments/${id}`;
+    const urlObj = new URL(url);
+    const transport = urlObj.protocol === "https:" ? https : http;
+
+    return new Promise((resolve, reject) => {
+      const req = transport.request(
+        {
+          hostname: urlObj.hostname,
+          port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+          path: urlObj.pathname,
+          method: "GET",
+          headers: {
+            "x-relay-key": RELAY_API_KEY,
+          },
+          timeout: 30000,
+        },
+        (res) => {
+          if (res.statusCode !== 200) {
+            console.log(`   ⚠️ Failed to download attachment ${refKey}: HTTP ${res.statusCode}`);
+            res.resume();
+            resolve(null);
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("end", () => {
+            try {
+              const buffer = Buffer.concat(chunks);
+
+              // Ensure temp dir exists
+              const tmpDir = path.join(ATTACHMENTS_TMP_DIR, refKey);
+              fs.mkdirSync(tmpDir, { recursive: true });
+
+              const filePath = path.join(tmpDir, originalFilename);
+              fs.writeFileSync(filePath, buffer);
+
+              console.log(`   📎 Downloaded attachment: ${originalFilename} → ${filePath}`);
+              resolve({ filePath, filename: originalFilename });
+            } catch (err) {
+              console.error(`   ❌ Failed to save attachment ${refKey}:`, err);
+              resolve(null);
+            }
+          });
+        }
+      );
+
+      req.on("error", (err) => {
+        console.error(`   ❌ Download error for attachment ${refKey}:`, err);
+        resolve(null);
+      });
+
+      req.end();
+    });
+  } catch (error) {
+    console.error(`   ❌ Failed to download attachment ${refKey}:`, error);
+    return null;
+  }
+}
+
+// Download all attachments referenced in a command payload, return file paths
+async function resolveCommandAttachments(
+  refKeys: string[]
+): Promise<Array<{ refKey: string; filePath: string; filename: string }>> {
+  const results: Array<{ refKey: string; filePath: string; filename: string }> = [];
+
+  for (const refKey of refKeys) {
+    const downloaded = await downloadAttachment(refKey);
+    if (downloaded) {
+      results.push({ refKey, ...downloaded });
+    }
+  }
+
+  return results;
+}
+
+// Clean up temp attachment files after task completion
+function cleanupAttachmentFiles(refKeys: string[]): void {
+  for (const refKey of refKeys) {
+    const tmpDir = path.join(ATTACHMENTS_TMP_DIR, refKey);
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
 }
 
 // Register with relay
@@ -189,10 +426,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
   try {
     switch (command.type) {
       case "spawn": {
-        const { agentId, task, systemPrompt } = command.payload as {
+        const { agentId, task, systemPrompt, _attachmentRefKeys } = command.payload as {
           agentId: string;
           task: string;
           systemPrompt?: string;
+          _attachmentRefKeys?: string[];
         };
 
         // Update agent status to running
@@ -203,6 +441,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           currentTask: task,
         });
 
+        agentTaskStartTimes.set(agentId, Date.now());
         addHistory(agentId, "task_started", `Task started: ${task}`);
 
         // Check Claude CLI availability
@@ -217,43 +456,95 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           return { success: false, error: "Claude CLI not available" };
         }
 
+        // Download attachments if present
+        let attachmentFiles: Array<{ refKey: string; filePath: string; filename: string }> = [];
+        if (_attachmentRefKeys && _attachmentRefKeys.length > 0) {
+          console.log(`   📎 Downloading ${_attachmentRefKeys.length} attachment(s)...`);
+          attachmentFiles = await resolveCommandAttachments(_attachmentRefKeys);
+          if (attachmentFiles.length > 0) {
+            addHistory(agentId, "output", `📎 ${attachmentFiles.length}개 첨부파일 다운로드 완료: ${attachmentFiles.map(f => f.filename).join(", ")}`);
+          }
+        }
+
+        // Build final task with attachment file paths injected
+        let finalTask = task;
+        if (attachmentFiles.length > 0) {
+          const fileList = attachmentFiles
+            .map((f) => `- ${f.filename}: ${f.filePath}`)
+            .join("\n");
+          // Replace @file:refKey references with actual local paths
+          for (const f of attachmentFiles) {
+            finalTask = finalTask.replace(
+              new RegExp(`@file:${f.refKey}`, "g"),
+              f.filePath
+            );
+          }
+          // Also append file path summary if not already in the text
+          if (!finalTask.includes(attachmentFiles[0].filePath)) {
+            finalTask += `\n\n첨부파일 로컬 경로:\n${fileList}`;
+          }
+        }
+
         // Execute asynchronously (don't block the poll loop)
         console.log(`   🚀 Spawning Claude for agent: ${agentId}`);
-        console.log(`   📋 Task: ${task}`);
+        console.log(`   📋 Task: ${finalTask}`);
 
-        const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획/i.test(task);
-        const staleTimeout = isComplexTask ? 600000 : 300000; // 10 min for complex, 5 min for simple (stream-json has no heartbeat during thinking)
+        const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획|test|QA|테스트|PM|product|orchestrat|전체|comprehensive|deep|tdd|migration|마이그레이션/i.test(task);
+        // Agent-specific staleTimeout overrides (agents that inherently need more time)
+        const AGENT_STALE_OVERRIDES: Record<string, number> = {
+          qa: 600000,         // 10min — test execution + analysis
+          pm: 600000,         // 10min — analytical tasks
+          orchestrator: 900000, // 15min — multi-step orchestration
+          analyst: 600000,    // 10min — code analysis
+          learner: 600000,    // 10min — knowledge extraction
+        };
+        const staleTimeout = AGENT_STALE_OVERRIDES[agentId] || (isComplexTask ? 600000 : 300000); // agent override > complex 10min > simple 5min
 
         let totalChars = 0;
         let chunksReceived = 0;
         let outputBuffer = "";
         let lastHistoryUpdate = 0;
+        const taskToolCalls: ToolCall[] = [];
+        const recentEvents: ProgressEventEntry[] = [];
         const HISTORY_INTERVAL = 10000; // Send history entries every 10s
 
         executeLlmTaskWithRetry({
           agentId,
-          task,
+          task: finalTask,
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
           mcpConfig: MCP_CONFIG_PATH,
           staleTimeout,
           enableTmux: ENABLE_TMUX,
+          onToolCall: (tc: ToolCall) => {
+            taskToolCalls.push(tc);
+          },
           onOutput: (chunk: string) => {
-            // Log intermediate output for visibility
+            // Parse chunk into structured event
+            const event = parseOutputChunk(chunk);
+
+            // Log stderr/warning for visibility but don't skip — they become events too
             if (chunk.startsWith("[stderr]") || chunk.startsWith("[warning]")) {
               console.log(`   📡 ${agentId}: ${chunk.trim()}`);
-              return;
             }
 
             totalChars += chunk.length;
             chunksReceived++;
 
-            // Keep last 500 chars as preview
+            // Keep last 500 chars as text preview (include all types for context)
             outputBuffer += chunk;
             if (outputBuffer.length > 500) {
               outputBuffer = outputBuffer.slice(-500);
             }
 
-            // Update agent status with live output
+            // Append structured event to recent events ring buffer
+            if (event) {
+              recentEvents.unshift(event); // newest first
+              if (recentEvents.length > MAX_RECENT_EVENTS) {
+                recentEvents.length = MAX_RECENT_EVENTS;
+              }
+            }
+
+            // Update agent status with live output + structured events
             const current = agentStatusMap.get(agentId);
             if (current) {
               agentStatusMap.set(agentId, {
@@ -263,6 +554,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
                   totalChars,
                   lastActivityAt: new Date().toISOString(),
                   chunksReceived,
+                  recentEvents: [...recentEvents],
                 },
               });
             }
@@ -271,19 +563,40 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             const now = Date.now();
             if (now - lastHistoryUpdate >= HISTORY_INTERVAL) {
               lastHistoryUpdate = now;
+              // Build tool call summary
+              const toolSummary = summarizeToolCalls(taskToolCalls);
               const preview = outputBuffer.length > 200 ? "..." + outputBuffer.slice(-200) : outputBuffer;
-              addHistory(agentId, "output", `⏳ ${agentId} 진행 중...\n${preview}`);
+              addHistory(agentId, "output", `⏳ ${agentId} 진행 중...${toolSummary ? `\n${toolSummary}` : ""}\n${preview}`);
             }
           },
         }).then((result) => {
+          // Clean up downloaded attachment temp files
+          if (_attachmentRefKeys && _attachmentRefKeys.length > 0) {
+            cleanupAttachmentFiles(_attachmentRefKeys);
+          }
+
           if (result.fallbackUsed && result.provider === "codex") {
             console.log(`   🔁 Claude limit reached — Codex fallback used for ${agentId}`);
           }
 
+          // Merge tool calls from result and from onToolCall tracking
+          const finalToolCalls = result.toolCalls || taskToolCalls;
+
+          // Calculate execution time metrics
+          const taskStartTime = agentTaskStartTimes.get(agentId);
+          const taskElapsedMs = taskStartTime ? Date.now() - taskStartTime : result.elapsedMs;
+          agentTaskStartTimes.delete(agentId);
+
           if (result.success) {
             console.log(`   ✅ Task completed for ${agentId}`);
             const prefix = result.fallbackUsed ? "🔁 Codex fallback\n" : "";
-            addHistory(agentId, "task_completed", `${prefix}${result.output || "Task completed"}`);
+            addHistory(agentId, "task_completed", `${prefix}${result.output || "Task completed"}`, {
+              ...(finalToolCalls.length > 0 ? { toolCalls: finalToolCalls } : {}),
+              elapsedMs: taskElapsedMs,
+              isComplex: isComplexTask,
+              retryCount: (result as { retriesUsed?: number }).retriesUsed || 0,
+              provider: result.provider,
+            });
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
@@ -296,7 +609,14 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               : result.error || "Task failed";
 
             console.log(`   ❌ Task ${isHung ? 'hung' : 'failed'} for ${agentId}: ${errorMsg}`);
-            addHistory(agentId, "task_failed", errorMsg);
+            addHistory(agentId, "task_failed", errorMsg, {
+              ...(finalToolCalls.length > 0 ? { toolCalls: finalToolCalls } : {}),
+              elapsedMs: taskElapsedMs,
+              isComplex: isComplexTask,
+              retryCount: (result as { retriesUsed?: number }).retriesUsed || 0,
+              exitCode: result.exitCode,
+              isHung,
+            });
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
@@ -362,7 +682,29 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
       }
 
       case "orchestrate": {
-        const { task } = command.payload as { task: string };
+        const { task, _attachmentRefKeys: orchAttRefKeys } = command.payload as {
+          task: string;
+          _attachmentRefKeys?: string[];
+        };
+
+        // Download attachments for orchestrate command
+        let orchAttachmentFiles: Array<{ refKey: string; filePath: string; filename: string }> = [];
+        if (orchAttRefKeys && orchAttRefKeys.length > 0) {
+          console.log(`   📎 Downloading ${orchAttRefKeys.length} attachment(s) for orchestration...`);
+          orchAttachmentFiles = await resolveCommandAttachments(orchAttRefKeys);
+        }
+
+        // Build final task with attachment paths
+        let orchFinalTask = task;
+        if (orchAttachmentFiles.length > 0) {
+          const fileList = orchAttachmentFiles.map((f) => `- ${f.filename}: ${f.filePath}`).join("\n");
+          for (const f of orchAttachmentFiles) {
+            orchFinalTask = orchFinalTask.replace(new RegExp(`@file:${f.refKey}`, "g"), f.filePath);
+          }
+          if (!orchFinalTask.includes(orchAttachmentFiles[0].filePath)) {
+            orchFinalTask += `\n\n첨부파일 로컬 경로:\n${fileList}`;
+          }
+        }
 
         // Import orchestrate function and ProgressEvent type
         const { orchestrate } = await import("./orchestrator");
@@ -447,9 +789,15 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           let streamBuffer = "";
           let totalChars = 0;
           let chunksReceived = 0;
+          const orchToolCalls: ToolCall[] = [];
+          const orchRecentEvents: ProgressEventEntry[] = [];
 
-          const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획/i.test(taskStr);
-          const taskStaleTimeout = isComplexTask ? 600000 : 300000; // 10 min for complex, 5 min for simple (stream-json has no heartbeat during thinking)
+          const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획|test|QA|테스트|PM|product|orchestrat|전체|comprehensive|deep|tdd|migration|마이그레이션/i.test(taskStr);
+          // Agent-specific staleTimeout overrides
+          const ORCH_AGENT_STALE_OVERRIDES: Record<string, number> = {
+            qa: 600000, pm: 600000, orchestrator: 900000, analyst: 600000, learner: 600000,
+          };
+          const taskStaleTimeout = ORCH_AGENT_STALE_OVERRIDES[agentId] || (isComplexTask ? 600000 : 300000); // agent override > complex 10min > simple 5min
 
           const result = await executeLlmTaskWithRetry({
             agentId,
@@ -458,11 +806,16 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             mcpConfig: MCP_CONFIG_PATH,
             staleTimeout: taskStaleTimeout,
             enableTmux: ENABLE_TMUX,
+            onToolCall: (tc: ToolCall) => {
+              orchToolCalls.push(tc);
+            },
             onOutput: (chunk: string) => {
-              // Log stderr and warnings from executor for visibility
+              // Parse into structured event
+              const event = parseOutputChunk(chunk);
+
+              // Log stderr and warnings for visibility
               if (chunk.startsWith("[stderr]") || chunk.startsWith("[warning]")) {
                 console.log(`   📡 ${agentName}: ${chunk.trim()}`);
-                return; // Don't add to streamBuffer
               }
 
               totalChars += chunk.length;
@@ -474,7 +827,15 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
                 streamBuffer = streamBuffer.slice(-500);
               }
 
-              // Update agent status with live output
+              // Append structured event
+              if (event) {
+                orchRecentEvents.unshift(event);
+                if (orchRecentEvents.length > MAX_RECENT_EVENTS) {
+                  orchRecentEvents.length = MAX_RECENT_EVENTS;
+                }
+              }
+
+              // Update agent status with live output + structured events
               const current = agentStatusMap.get(agentId);
               if (current) {
                 agentStatusMap.set(agentId, {
@@ -484,6 +845,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
                     totalChars,
                     lastActivityAt: new Date().toISOString(),
                     chunksReceived,
+                    recentEvents: [...orchRecentEvents],
                   },
                 });
               }
@@ -493,24 +855,28 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               if (now - lastStreamUpdate >= STREAM_INTERVAL) {
                 lastStreamUpdate = now;
                 // Show last 200 chars of accumulated output as progress
+                const toolSummary = summarizeToolCalls(orchToolCalls);
                 const preview = streamBuffer.length > 200
                   ? "..." + streamBuffer.slice(-200)
                   : streamBuffer;
-                addHistory(agentId, "output", `⏳ ${agentName} 진행 중...\n${preview}`);
+                addHistory(agentId, "output", `⏳ ${agentName} 진행 중...${toolSummary ? `\n${toolSummary}` : ""}\n${preview}`);
               }
             },
           });
 
           const elapsed = result.elapsedMs ? ` (${formatDuration(result.elapsedMs)})` : "";
+          const finalOrchToolCalls = result.toolCalls || orchToolCalls;
 
           if (result.success) {
             const prefix = result.fallbackUsed ? "🔁 Codex fallback\n" : "";
-            addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${prefix}${result.output || "완료"}`);
+            addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${prefix}${result.output || "완료"}`,
+              finalOrchToolCalls.length > 0 ? { toolCalls: finalOrchToolCalls } : undefined);
             agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "idle" });
           } else {
             const isHung = result.exitCode === -2;
             const label = isHung ? "⏰ 응답 없음 자동 종료" : "⚠️ 오류";
-            addHistory(agentId, "output", `${label}${elapsed}:\n${result.error || "실패"}`);
+            addHistory(agentId, "output", `${label}${elapsed}:\n${result.error || "실패"}`,
+              finalOrchToolCalls.length > 0 ? { toolCalls: finalOrchToolCalls } : undefined);
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentName,
@@ -527,11 +893,21 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         };
 
         // Execute orchestration (don't block poll loop)
-        orchestrate(task, agents, executor, onProgress).then((result) => {
+        orchestrate(orchFinalTask, agents, executor, onProgress).then((result) => {
+          // Clean up downloaded attachment temp files
+          if (orchAttRefKeys && orchAttRefKeys.length > 0) {
+            cleanupAttachmentFiles(orchAttRefKeys);
+          }
+
           const elapsed = formatDuration(result.totalTime);
           console.log(`   ✅ Orchestration completed: ${result.results.length} subtasks (${elapsed})`);
           addHistory("orchestrator", "task_completed", `🏁 오케스트레이션 완료 — ⏱️ 총 ${elapsed} 소요\n\n${result.summary}`);
         }).catch((error) => {
+          // Clean up on failure too
+          if (orchAttRefKeys && orchAttRefKeys.length > 0) {
+            cleanupAttachmentFiles(orchAttRefKeys);
+          }
+
           console.log(`   ❌ Orchestration failed: ${error.message}`);
           addHistory("orchestrator", "task_failed", error.message);
         });
@@ -548,9 +924,42 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
   }
 }
 
+// Track when agents entered error state for auto-recovery
+const agentErrorTimestamps = new Map<string, number>();
+const AUTO_RECOVERY_MS = 300000; // 5 minutes in error state → auto-recover to idle
+
+// Auto-recover stuck agents (error state > 5 minutes → idle)
+function recoverStuckAgents(): void {
+  const now = Date.now();
+  for (const [agentId, agent] of agentStatusMap.entries()) {
+    if (agent.status === "error") {
+      if (!agentErrorTimestamps.has(agentId)) {
+        agentErrorTimestamps.set(agentId, now);
+      }
+      const errorDuration = now - (agentErrorTimestamps.get(agentId) || now);
+      if (errorDuration > AUTO_RECOVERY_MS) {
+        console.log(`   🔄 Auto-recovering stuck agent: ${agentId} (error for ${Math.round(errorDuration / 60000)}min)`);
+        agentStatusMap.set(agentId, {
+          id: agent.id,
+          name: agent.name,
+          status: "idle",
+        });
+        agentErrorTimestamps.delete(agentId);
+        addHistory(agentId, "status_change", `🔄 자동 복구: error 상태 ${Math.round(errorDuration / 60000)}분 경과로 idle 리셋`);
+      }
+    } else {
+      // Agent is no longer in error, clear the timestamp
+      agentErrorTimestamps.delete(agentId);
+    }
+  }
+}
+
 // Main polling loop
 async function pollLoop(): Promise<void> {
   try {
+    // Auto-recover stuck agents before polling
+    recoverStuckAgents();
+
     // Snapshot entries to send (new entries may be added during command execution)
     const entriesToSend = [...pendingHistoryEntries];
     pendingHistoryEntries.length = 0;

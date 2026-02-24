@@ -3,6 +3,10 @@ import { Pool } from "pg";
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || "postgresql://localhost:5432/life_dashboard",
   connectionTimeoutMillis: 5000,
+  max: 20,                    // Max connections (default 10 → 20 for concurrent agent polling)
+  min: 2,                     // Keep 2 warm connections ready
+  idleTimeoutMillis: 30000,   // Return idle connections after 30s (default 10s)
+  statement_timeout: 10000,   // 10s query timeout safety net
 });
 
 export async function query<T = Record<string, unknown>>(
