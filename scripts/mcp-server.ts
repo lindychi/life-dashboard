@@ -479,7 +479,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "dashboard_deploy",
-        description: "Full deploy pipeline: optionally commit files, run build/test, push to main, and trigger Railway deployment. Returns structured results for each pipeline step.",
+        description: "Full deploy pipeline: optionally commit files, run build/test, push to main, and trigger Railway deployment. Returns structured results for each pipeline step. On failure, includes build/deploy logs for diagnosis.",
         inputSchema: {
           type: "object",
           properties: {
@@ -842,38 +842,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Step 5: Wait for deployment to complete (poll status)
         if (deploymentId) {
-          const maxWait = 180_000; // 3 minutes max
-          const pollInterval = 10_000; // check every 10 seconds
+          const maxWait = 240_000; // 4 minutes max
           const startWait = Date.now();
           let finalStatus = "UNKNOWN";
 
           while (Date.now() - startWait < maxWait) {
             try {
               const listOut = runCommand("railway", ["deployment", "list", "--limit", "1", "--json"], { cwd: PROJECT_ROOT });
-              const deployments = JSON.parse(listOut) as Array<{ id: string; status: string }>;
+              const deployments = JSON.parse(listOut) as Array<{ id: string; status: string; createdAt: string }>;
               const latest = deployments[0];
               if (latest?.id === deploymentId) {
                 finalStatus = latest.status;
                 if (finalStatus === "SUCCESS") {
-                  pipeline.push({ step: "railway_status", success: true, output: `Deployment ${deploymentId.slice(0, 8)} completed: ${finalStatus}` });
+                  pipeline.push({ step: "railway_status", success: true, output: `Deployment ${deploymentId.slice(0, 8)} completed: SUCCESS` });
                   break;
                 }
                 if (finalStatus === "FAILED" || finalStatus === "CRASHED" || finalStatus === "REMOVED") {
-                  pipeline.push({ step: "railway_status", success: false, output: `Deployment ${deploymentId.slice(0, 8)} failed: ${finalStatus}` });
+                  // Fetch failure logs for diagnosis
+                  let failureLogs = "";
+                  try {
+                    const buildLogs = runCommand("railway", ["logs", "--build", deploymentId, "--lines", "50"], { cwd: PROJECT_ROOT });
+                    failureLogs += `\n--- Build Logs (last 50 lines) ---\n${buildLogs.slice(-2000)}`;
+                  } catch { /* build logs may not be available */ }
+                  try {
+                    const deployLogs = runCommand("railway", ["logs", deploymentId, "--lines", "30"], { cwd: PROJECT_ROOT });
+                    failureLogs += `\n--- Deploy Logs (last 30 lines) ---\n${deployLogs.slice(-1500)}`;
+                  } catch { /* deploy logs may not be available */ }
+
+                  pipeline.push({
+                    step: "railway_status",
+                    success: false,
+                    output: `Deployment ${deploymentId.slice(0, 8)} failed: ${finalStatus}${failureLogs}`,
+                  });
                   break;
                 }
-                // Still in progress (BUILDING, DEPLOYING, etc.) — continue polling
               }
             } catch {
-              // railway CLI error — skip polling
               break;
             }
-            // Sleep between polls
             execFileSync("sleep", ["10"]);
           }
 
-          if (finalStatus !== "SUCCESS" && finalStatus !== "FAILED" && finalStatus !== "CRASHED" && finalStatus !== "REMOVED") {
-            pipeline.push({ step: "railway_status", success: true, output: `Deployment ${deploymentId?.slice(0, 8) ?? "?"} still in progress after ${Math.round((Date.now() - startWait) / 1000)}s (status: ${finalStatus}). Check Railway dashboard.` });
+          if (!["SUCCESS", "FAILED", "CRASHED", "REMOVED"].includes(finalStatus)) {
+            pipeline.push({
+              step: "railway_status",
+              success: true,
+              output: `Deployment ${deploymentId.slice(0, 8)} still in progress after ${Math.round((Date.now() - startWait) / 1000)}s (status: ${finalStatus}). Check Railway dashboard.`,
+            });
           }
         }
 
