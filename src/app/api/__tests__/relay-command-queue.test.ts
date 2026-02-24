@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@/lib/relay", () => ({
   queueCommand: vi.fn(),
-  getConnectedGateways: vi.fn().mockResolvedValue([{ id: "gw-1" }]),
+  getConnectedGateways: vi.fn().mockResolvedValue([{ id: "gw-1", status: "connected" }]),
   validateRelayKey: vi.fn().mockReturnValue(false),
   isDbAvailable: vi.fn().mockReturnValue(true),
   queueInstruction: vi.fn().mockResolvedValue({ id: "inst-1", position: 1 }),

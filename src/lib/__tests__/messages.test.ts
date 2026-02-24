@@ -41,33 +41,26 @@ vi.mock("@/lib/db", () => {
       return [msg];
     }
 
-    // SELECT messages for getMessages (to_id = $1 OR to_id = 'broadcast')
+    // SELECT messages for getMessages (uses LEFT JOIN message_read_status)
     if (
       sql.includes("SELECT") &&
       sql.includes("FROM messages") &&
-      sql.includes("to_id = $1 OR to_id = 'broadcast'") &&
-      !sql.includes("COUNT")
+      sql.includes("LEFT JOIN message_read_status") &&
+      !sql.includes("COUNT") &&
+      !sql.includes("unnest")
     ) {
       const [agentId] = params as string[];
       let results = mockStorage.messages.filter(
         (m) => m.to_id === agentId || m.to_id === "broadcast"
       );
 
-      // Handle unreadOnly filter
-      if (sql.includes("AND read = FALSE")) {
+      // Handle unreadOnly filter (CASE WHEN logic in SQL)
+      if (sql.includes("mrs.message_id IS NULL")) {
+        // Unread only mode
         results = results.filter((m) => !m.read);
       }
 
-      // Handle ORDER BY created_at DESC LIMIT 1 (for latest in overview)
-      if (sql.includes("ORDER BY created_at DESC") && sql.includes("LIMIT 1")) {
-        results.sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-        return results.slice(0, 1);
-      }
-
-      // Normal ASC ordering
+      // Normal ASC ordering (getMessages default)
       results.sort(
         (a, b) =>
           new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -75,8 +68,8 @@ vi.mock("@/lib/db", () => {
       return results;
     }
 
-    // COUNT for getUnreadCount
-    if (sql.includes("COUNT(*)") && sql.includes("read = FALSE")) {
+    // COUNT for getUnreadCount (uses LEFT JOIN message_read_status)
+    if (sql.includes("COUNT(*)") && sql.includes("LEFT JOIN message_read_status") && !sql.includes("unnest")) {
       const [agentId] = params as string[];
       const count = mockStorage.messages.filter(
         (m) =>
@@ -85,19 +78,63 @@ vi.mock("@/lib/db", () => {
       return [{ count: String(count) }];
     }
 
-    // UPDATE messages SET read = TRUE (markAsRead)
+    // SELECT to_id for markAsRead (check message type)
+    if (sql.includes("SELECT to_id FROM messages WHERE id")) {
+      const [messageId] = params as string[];
+      const msg = mockStorage.messages.find((m) => m.id === messageId);
+      return msg ? [{ to_id: msg.to_id }] : [];
+    }
+
+    // INSERT INTO message_read_status (markAsRead for broadcast)
+    if (sql.includes("INSERT INTO message_read_status")) {
+      // Mock success - broadcasts use read status table
+      return [{ message_id: params[0] }];
+    }
+
+    // UPDATE messages SET read = TRUE (markAsRead for direct messages)
     if (sql.includes("UPDATE messages") && sql.includes("SET read = TRUE")) {
       const [messageId, agentId] = params as string[];
       const msg = mockStorage.messages.find(
-        (m) =>
-          m.id === messageId &&
-          (m.to_id === agentId || m.to_id === "broadcast")
+        (m) => m.id === messageId && m.to_id === agentId
       );
       if (msg) {
         msg.read = true;
         return [{ count: 1 }];
       }
       return [];
+    }
+
+    // getAllAgentsOverview: unnest + LATERAL query
+    if (sql.includes("unnest")) {
+      const agentIds = params[0] as string[];
+      return agentIds.map((agentId) => {
+        // Count unread: direct unread + broadcast unread
+        const unreadCount = mockStorage.messages.filter(
+          (m) =>
+            (m.to_id === agentId || m.to_id === "broadcast") && m.read === false
+        ).length;
+
+        // Latest message for this agent
+        const agentMessages = mockStorage.messages
+          .filter((m) => m.to_id === agentId || m.to_id === "broadcast")
+          .sort(
+            (a, b) =>
+              new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          );
+        const latest = agentMessages[0] || null;
+
+        return {
+          agent_id: agentId,
+          unread_count: String(unreadCount),
+          latest_id: latest?.id ?? null,
+          latest_from_id: latest?.from_id ?? null,
+          latest_to_id: latest?.to_id ?? null,
+          latest_content: latest?.content ?? null,
+          latest_type: latest?.type ?? null,
+          latest_read: latest?.read ?? null,
+          latest_created_at: latest?.created_at ?? null,
+        };
+      });
     }
 
     // SELECT for getConversation (between two agents)

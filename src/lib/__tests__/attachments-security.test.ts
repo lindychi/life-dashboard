@@ -37,16 +37,8 @@ vi.mock("../storage", () => ({
   MAX_FILE_SIZE: 10485760,
 }));
 
-// Partial mock for attachments — keep real implementations but allow vi.spyOn
-vi.mock("../attachments", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../attachments")>();
-  return {
-    ...actual,
-    // Allow these to be spied/mocked per-test
-    getAttachmentByRefKey: vi.fn(),
-    getAttachment: vi.fn(),
-  };
-});
+// No mock for ../attachments — use real implementation.
+// Tests that need to mock specific functions use vi.spyOn per-test.
 
 describe("Attachment Security", () => {
   beforeEach(() => {
