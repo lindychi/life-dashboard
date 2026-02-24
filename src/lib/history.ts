@@ -1,6 +1,6 @@
 // Agent별 이벤트 타임라인 저장 (PostgreSQL)
 
-import { query } from "./db";
+import { query, queryOne } from "./db";
 
 export interface HistoryEntry {
   id: string;
@@ -137,7 +137,7 @@ export async function getGroupedHistory(
          COUNT(*) as total_count,
          COUNT(*) FILTER (WHERE type = 'task_completed') as completed_count,
          COUNT(*) FILTER (WHERE type = 'task_failed') as failed_count,
-         COUNT(*) FILTER (WHERE type = 'task_started') as in_progress_count,
+         GREATEST(0, COUNT(*) FILTER (WHERE type = 'task_started') - COUNT(*) FILTER (WHERE type = 'task_completed') - COUNT(*) FILTER (WHERE type = 'task_failed')) as in_progress_count,
          MIN(created_at) as group_started_at,
          MAX(created_at) as group_last_activity_at
        FROM agent_history
@@ -193,6 +193,110 @@ export async function getGroupedHistory(
 }
 
 /**
+ * 특정 히스토리 항목의 상세 정보 조회 (전체 output 포함)
+ */
+export interface HistoryDetailResponse {
+  entry: HistoryEntry;
+  /** content가 잘린 경우 전체 길이 */
+  contentTotalLength: number;
+  /** 현재 반환된 content의 시작 offset */
+  contentOffset: number;
+  /** 더 읽을 content가 남아있는지 */
+  hasMoreContent: boolean;
+  /** 같은 request group 내의 이웃 항목들 (context) */
+  neighbors: HistoryEntry[];
+}
+
+export async function getHistoryDetail(
+  entryId: string,
+  options?: {
+    /** content 시작 offset (characters). 기본값 0 */
+    contentOffset?: number;
+    /** content 최대 길이 (characters). 기본값 전체, 0이면 전체 */
+    contentLimit?: number;
+    /** 같은 request group의 이웃 항목 포함 여부. 기본값 true */
+    includeNeighbors?: boolean;
+  }
+): Promise<HistoryDetailResponse | null> {
+  const contentOffset = options?.contentOffset ?? 0;
+  const contentLimit = options?.contentLimit ?? 0; // 0 = 전체
+  const includeNeighbors = options?.includeNeighbors ?? true;
+
+  // content를 SUBSTRING으로 잘라서 반환 + 전체 길이 포함
+  const useSubstring = contentLimit > 0;
+
+  const row = useSubstring
+    ? await queryOne<HistoryEntry & { content_total_length: string }>(
+        `SELECT id, agent_id as "agentId", type,
+                SUBSTRING(content FROM $2 FOR $3) as content,
+                metadata, created_at as timestamp,
+                request_group_id as "requestGroupId",
+                request_title as "requestTitle",
+                LENGTH(content) as content_total_length
+         FROM agent_history
+         WHERE id = $1`,
+        [entryId, contentOffset + 1, contentLimit]
+      )
+    : await queryOne<HistoryEntry & { content_total_length: string }>(
+        `SELECT id, agent_id as "agentId", type, content, metadata,
+                created_at as timestamp,
+                request_group_id as "requestGroupId",
+                request_title as "requestTitle",
+                LENGTH(content) as content_total_length
+         FROM agent_history
+         WHERE id = $1`,
+        [entryId]
+      );
+
+  if (!row) return null;
+
+  const contentTotalLength = parseInt(row.content_total_length, 10);
+  const returnedContentLength = row.content?.length ?? 0;
+  const hasMoreContent = useSubstring
+    ? contentOffset + returnedContentLength < contentTotalLength
+    : false;
+
+  // 같은 request group의 이웃 항목 조회 (현재 항목 제외, output 타입은 content 잘라서)
+  let neighbors: HistoryEntry[] = [];
+  if (includeNeighbors && row.requestGroupId) {
+    neighbors = await query<HistoryEntry>(
+      `SELECT id, agent_id as "agentId", type,
+              CASE WHEN LENGTH(content) > 500
+                   THEN SUBSTRING(content FROM 1 FOR 500) || '...[truncated]'
+                   ELSE content
+              END as content,
+              metadata, created_at as timestamp,
+              request_group_id as "requestGroupId",
+              request_title as "requestTitle"
+       FROM agent_history
+       WHERE request_group_id = $1 AND id != $2
+       ORDER BY created_at ASC
+       LIMIT 50`,
+      [row.requestGroupId, entryId]
+    );
+  }
+
+  const entry: HistoryEntry = {
+    id: row.id,
+    agentId: row.agentId,
+    type: row.type as HistoryEntry["type"],
+    content: row.content,
+    metadata: row.metadata,
+    timestamp: row.timestamp,
+    requestGroupId: row.requestGroupId,
+    requestTitle: row.requestTitle,
+  };
+
+  return {
+    entry,
+    contentTotalLength,
+    contentOffset,
+    hasMoreContent,
+    neighbors,
+  };
+}
+
+/**
  * 필터링 + 커서 기반 페이지네이션을 지원하는 타임라인 히스토리 조회
  */
 export interface TimelineFilters {
@@ -202,6 +306,7 @@ export interface TimelineFilters {
   dateFrom?: string;  // ISO string
   dateTo?: string;    // ISO string
   excludeTypes?: string[];  // 기본 숨김 타입 (예: output)
+  requestGroupId?: string;  // 특정 요청 그룹 필터링
   cursor?: string;    // ISO timestamp cursor for pagination
   limit?: number;
 }
@@ -241,6 +346,11 @@ export async function getFilteredHistory(
     params.push(`%${filters.search}%`);
   }
 
+  if (filters.requestGroupId) {
+    conditions.push(`request_group_id = $${paramIndex++}`);
+    params.push(filters.requestGroupId);
+  }
+
   if (filters.dateFrom) {
     conditions.push(`created_at >= $${paramIndex++}`);
     params.push(filters.dateFrom);
@@ -251,16 +361,28 @@ export async function getFilteredHistory(
     params.push(filters.dateTo);
   }
 
+  // Save count query params before adding cursor condition
+  const countConditions = [...conditions];
+  const countParams = [...params];
+
+  // Add cursor condition (excluded from count query)
   if (filters.cursor) {
-    conditions.push(`created_at < $${paramIndex++}`);
-    params.push(filters.cursor);
+    // Composite cursor: "timestamp|id" for stable pagination with duplicate timestamps
+    const [cursorTimestamp, cursorId] = filters.cursor.includes("|")
+      ? filters.cursor.split("|", 2)
+      : [filters.cursor, null];
+
+    if (cursorId) {
+      conditions.push(`(created_at, id) < ($${paramIndex++}, $${paramIndex++})`);
+      params.push(cursorTimestamp, cursorId);
+    } else {
+      // Backward compatible: plain timestamp cursor
+      conditions.push(`created_at < $${paramIndex++}`);
+      params.push(cursorTimestamp);
+    }
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  // 총 개수 조회 (cursor 무시)
-  const countConditions = conditions.filter(c => !c.includes('created_at <'));
-  const countParams = params.slice(0, countConditions.length);
   const countWhere = countConditions.length > 0 ? `WHERE ${countConditions.join(' AND ')}` : '';
 
   const [countResult, entries] = await Promise.all([
@@ -273,7 +395,7 @@ export async function getFilteredHistory(
               request_group_id as "requestGroupId", request_title as "requestTitle"
        FROM agent_history
        ${whereClause}
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT $${paramIndex}`,
       [...params, limit + 1]
     ),
@@ -282,7 +404,8 @@ export async function getFilteredHistory(
   const totalCount = parseInt(countResult[0]?.count || '0', 10);
   const hasMore = entries.length > limit;
   const resultEntries = hasMore ? entries.slice(0, limit) : entries;
-  const nextCursor = hasMore ? resultEntries[resultEntries.length - 1].timestamp : null;
+  const lastEntry = resultEntries[resultEntries.length - 1];
+  const nextCursor = hasMore && lastEntry ? `${lastEntry.timestamp}|${lastEntry.id}` : null;
 
   return {
     entries: resultEntries,

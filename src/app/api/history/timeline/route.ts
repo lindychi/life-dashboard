@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
       search: searchParams.get("search") || undefined,
       dateFrom: searchParams.get("dateFrom") || undefined,
       dateTo: searchParams.get("dateTo") || undefined,
+      requestGroupId: searchParams.get("requestGroupId") || undefined,
       cursor: searchParams.get("cursor") || undefined,
       limit: searchParams.get("limit") ? parseInt(searchParams.get("limit")!, 10) : undefined,
     };
