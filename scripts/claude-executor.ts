@@ -202,9 +202,9 @@ function parseStreamEvents(
                 ? block.content.map(c => c.text || "").join("")
                 : "";
             if (pending) {
-              // Truncate very long results to 2000 chars for storage
-              pending.result = resultText.length > 2000
-                ? resultText.slice(0, 2000) + "... (truncated)"
+              // Truncate very long results to 10000 chars for storage
+              pending.result = resultText.length > 10000
+                ? resultText.slice(0, 10000) + "... (truncated)"
                 : resultText;
             }
           }

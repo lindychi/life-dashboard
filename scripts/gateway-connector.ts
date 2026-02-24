@@ -191,16 +191,58 @@ function addHistory(
   });
 }
 
+// Helper: Generic API call (any path under RELAY_URL)
+function dashboardApiCall(
+  fullPath: string,
+  method: "GET" | "POST" | "PATCH" = "POST",
+  body?: unknown
+): Promise<unknown> {
+  const url = `${RELAY_URL}${fullPath}`;
+  const urlObj = new URL(url);
+  const transport = urlObj.protocol === "https:" ? https : http;
+  const bodyStr = body ? JSON.stringify(body) : undefined;
+
+  return new Promise((resolve, reject) => {
+    const req = transport.request(
+      {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "x-relay-key": RELAY_API_KEY,
+          ...(bodyStr ? { "Content-Length": Buffer.byteLength(bodyStr).toString() } : {}),
+        },
+        timeout: 10000, // 10s — request group updates are secondary
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: string) => (data += chunk));
+        res.on("end", () => {
+          try { resolve(JSON.parse(data)); }
+          catch { resolve({ error: "Invalid JSON", raw: data }); }
+        });
+      }
+    );
+    req.on("timeout", () => { req.destroy(); reject(new Error("Request timed out")); });
+    req.on("error", reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
 // Helper: Update request group agent status via API (best-effort)
 async function updateRequestGroupAgent(
   requestGroupId: string,
   agentId: string,
+  action: "add_agent" | "update_agent",
   agentStatus: string,
   taskSummary?: string
 ): Promise<void> {
   try {
-    await apiCall(`/request-groups/${requestGroupId}`, "POST", {
-      action: agentStatus === "assigned" ? "add_agent" : "update_agent",
+    await dashboardApiCall(`/api/request-groups/${requestGroupId}`, "PATCH", {
+      action,
       agentId,
       agentStatus,
       taskSummary,
@@ -426,12 +468,17 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
   try {
     switch (command.type) {
       case "spawn": {
-        const { agentId, task, systemPrompt, _attachmentRefKeys } = command.payload as {
+        const { agentId, task, systemPrompt, _attachmentRefKeys, requestGroupId, requestTitle } = command.payload as {
           agentId: string;
           task: string;
           systemPrompt?: string;
           _attachmentRefKeys?: string[];
+          requestGroupId?: string;
+          requestTitle?: string;
         };
+
+        // Request group context for history entries
+        const reqGroup = requestGroupId ? { requestGroupId, requestTitle } : undefined;
 
         // Update agent status to running
         agentStatusMap.set(agentId, {
@@ -442,7 +489,13 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         });
 
         agentTaskStartTimes.set(agentId, Date.now());
-        addHistory(agentId, "task_started", `Task started: ${task}`);
+        addHistory(agentId, "task_started", `Task started: ${task}`, undefined, reqGroup);
+
+        // Register agent in request group (best-effort, non-blocking)
+        if (requestGroupId) {
+          const taskPreview = task.length > 100 ? task.substring(0, 100) + "..." : task;
+          updateRequestGroupAgent(requestGroupId, agentId, "add_agent", "running", taskPreview);
+        }
 
         // Check Claude CLI availability
         if (!isClaudeAvailable()) {
@@ -452,7 +505,10 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             name: agentId,
             status: "idle",
           });
-          addHistory(agentId, "task_failed", "Claude CLI not available");
+          addHistory(agentId, "task_failed", "Claude CLI not available", undefined, reqGroup);
+          if (requestGroupId) {
+            updateRequestGroupAgent(requestGroupId, agentId, "update_agent", "failed");
+          }
           return { success: false, error: "Claude CLI not available" };
         }
 
@@ -462,7 +518,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           console.log(`   📎 Downloading ${_attachmentRefKeys.length} attachment(s)...`);
           attachmentFiles = await resolveCommandAttachments(_attachmentRefKeys);
           if (attachmentFiles.length > 0) {
-            addHistory(agentId, "output", `📎 ${attachmentFiles.length}개 첨부파일 다운로드 완료: ${attachmentFiles.map(f => f.filename).join(", ")}`);
+            addHistory(agentId, "output", `📎 ${attachmentFiles.length}개 첨부파일 다운로드 완료: ${attachmentFiles.map(f => f.filename).join(", ")}`, undefined, reqGroup);
           }
         }
 
@@ -566,7 +622,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               // Build tool call summary
               const toolSummary = summarizeToolCalls(taskToolCalls);
               const preview = outputBuffer.length > 200 ? "..." + outputBuffer.slice(-200) : outputBuffer;
-              addHistory(agentId, "output", `⏳ ${agentId} 진행 중...${toolSummary ? `\n${toolSummary}` : ""}\n${preview}`);
+              addHistory(agentId, "output", `⏳ ${agentId} 진행 중...${toolSummary ? `\n${toolSummary}` : ""}\n${preview}`, undefined, reqGroup);
             }
           },
         }).then((result) => {
@@ -590,18 +646,28 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           if (result.success) {
             console.log(`   ✅ Task completed for ${agentId}`);
             const prefix = result.fallbackUsed ? "🔁 Codex fallback\n" : "";
-            addHistory(agentId, "task_completed", `${prefix}${result.output || "Task completed"}`, {
+            const fullOutput = result.output || "Task completed";
+            const truncatedOutput = fullOutput.length > 5000
+              ? fullOutput.slice(0, 5000) + "\n...(truncated)"
+              : fullOutput;
+            addHistory(agentId, "task_completed", `${prefix}${truncatedOutput}`, {
               ...(finalToolCalls.length > 0 ? { toolCalls: finalToolCalls } : {}),
               elapsedMs: taskElapsedMs,
               isComplex: isComplexTask,
               retryCount: (result as { retriesUsed?: number }).retriesUsed || 0,
               provider: result.provider,
-            });
+              ...(fullOutput.length > 5000 ? { fullResponseLength: fullOutput.length } : {}),
+            }, reqGroup);
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
               status: "idle",
             });
+
+            // Update request group agent status to completed
+            if (requestGroupId) {
+              updateRequestGroupAgent(requestGroupId, agentId, "update_agent", "completed");
+            }
           } else {
             const isHung = result.exitCode === -2;
             const errorMsg = isHung
@@ -616,7 +682,12 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               retryCount: (result as { retriesUsed?: number }).retriesUsed || 0,
               exitCode: result.exitCode,
               isHung,
-            });
+            }, reqGroup);
+
+            // Update request group agent status to failed
+            if (requestGroupId) {
+              updateRequestGroupAgent(requestGroupId, agentId, "update_agent", "failed");
+            }
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
@@ -752,7 +823,16 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             }
             case "subtask_completed": {
               const agentName = getAgentName(event.agentId || "unknown");
-              addHistory(event.agentId || "unknown", "task_completed", `✅ ${agentName} → Orchestrator: 완료`);
+              // Include actual agent response in task_completed history (truncated to 10000 chars, full length in metadata)
+              const completedDetail = event.detail || "";
+              const truncatedDetail = completedDetail.length > 10000
+                ? completedDetail.slice(0, 10000) + "\n...(truncated)"
+                : completedDetail;
+              const completedContent = truncatedDetail
+                ? `✅ ${agentName} → Orchestrator 보고:\n${truncatedDetail}`
+                : `✅ ${agentName} → Orchestrator: 완료`;
+              addHistory(event.agentId || "unknown", "task_completed", completedContent,
+                completedDetail.length > 10000 ? { fullResponseLength: completedDetail.length } : undefined);
               break;
             }
             case "subtask_failed": {
