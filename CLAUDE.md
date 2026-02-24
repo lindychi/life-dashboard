@@ -11,6 +11,13 @@ pnpm lint         # ESLint (eslint-config-next with core-web-vitals + typescript
 pnpm start        # Start production server
 pnpm test         # Run vitest tests
 pnpm monitor      # Tmux agent session monitor (list/attach/peek/kill)
+
+# Gateway Connector (launchd)
+pnpm gateway:install    # Install as launchd service (auto-restart on crash/reboot)
+pnpm gateway:uninstall  # Remove launchd service
+pnpm gateway:restart    # Restart the service
+pnpm gateway:status     # Check if running
+pnpm gateway:logs       # Tail live logs
 ```
 
 ## Architecture
@@ -53,9 +60,23 @@ psql life_dashboard < sql/002_attachments.sql
 A command relay for remotely controlling AI agents from the dashboard. Data persisted in PostgreSQL.
 
 - `src/lib/relay.ts` — Gateway connections, command queue, agent statuses (all async, PostgreSQL-backed). Gateways authenticate via `x-relay-key` header
-- `scripts/gateway-connector.ts` — Client-side script that runs on a local machine, registers with the relay, polls for commands, and executes them via Claude CLI
-- `scripts/claude-executor.ts` — Claude/Codex CLI executor with hung detection (stale timeout), retry, and optional tmux integration
+- `scripts/gateway-connector.ts` — Client-side script that runs on a local machine, registers with the relay, polls for commands, and executes them via Claude CLI. Supports `restart` command for remote self-restart
+- `scripts/claude-executor.ts` — Claude/Codex CLI executor with multi-signal hung detection (stale timeout + `lsof` network health check + tmux CPU check), retry, and optional tmux integration. Appends tool availability constraint to agent system prompts to prevent permission hangs
 - API routes under `/api/relay/`: `register` (gateway connects), `poll` (gateway fetches commands + sends heartbeat), `command` (dashboard sends commands to gateway), `status` (dashboard reads current state)
+
+**Gateway Connector Auto-Restart (launchd):**
+- `scripts/gateway-connector.plist` — macOS launchd service definition (`KeepAlive`, `RunAtLoad`, 5s throttle)
+- `scripts/gateway-setup.sh` — Install/uninstall/restart/status/logs helper script
+- On crash or `process.exit()`: launchd auto-restarts within ~5 seconds
+- On system reboot: auto-starts on login
+- Remote restart: send `type: "restart"` command via relay → `gracefulRestart()` → `process.exit(0)` → launchd restarts with new code
+- Install: `pnpm gateway:install` (copies plist to `~/Library/LaunchAgents/`)
+
+**Hung Detection (3-layer system):**
+- Layer 1: stdout/stderr silence tracking (concern threshold at 60% of staleTimeout)
+- Layer 2: `lsof -i -a -p <pid>` checks for ESTABLISHED TCP connections to Anthropic API — if active connection exists, process is waiting for API response (not hung), timer resets
+- Layer 3: Kill only when silence + no active connections + no CPU activity. Absolute max cap at 3x staleTimeout
+- Stale timeouts: 5 min (simple tasks), 10 min (complex tasks matching `/분석|analyze|refactor|review|security|architect|debug|plan/i`)
 
 ### Tmux Agent Monitoring
 
