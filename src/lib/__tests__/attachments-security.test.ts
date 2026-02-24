@@ -194,6 +194,9 @@ describe("Attachment Security", () => {
     let getCurrentUserMock: ReturnType<typeof vi.fn>;
 
     beforeEach(async () => {
+      // Reset module cache so route modules get fresh mocked dependencies
+      vi.resetModules();
+
       vi.doMock("@/lib/auth", () => ({
         getCurrentUser: vi.fn(),
       }));
@@ -212,6 +215,14 @@ describe("Attachment Security", () => {
       const relay = await import("@/lib/relay");
       validateRelayKeyMock = relay.validateRelayKey as ReturnType<typeof vi.fn>;
       getCurrentUserMock = auth.getCurrentUser as ReturnType<typeof vi.fn>;
+    });
+
+    afterEach(() => {
+      // Remove doMock registrations from mock registry (resetModules only clears cache, not registry)
+      vi.doUnmock("@/lib/auth");
+      vi.doUnmock("@/lib/relay");
+      vi.doUnmock("@/lib/attachments");
+      vi.resetModules();
     });
 
     it("should reject unauthenticated upload requests", async () => {
@@ -278,8 +289,7 @@ describe("Attachment Security", () => {
       expect(res.status).toBe(401);
     });
 
-    // TODO: fix mock wiring — getAttachmentByRefKey is not mocked via vi.mock
-    it.skip("should allow relay-key authenticated requests", async () => {
+    it("should allow relay-key authenticated requests", async () => {
       validateRelayKeyMock.mockReturnValue(true);
       const attachments = await import("@/lib/attachments");
       (attachments.getAttachmentByRefKey as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -304,8 +314,7 @@ describe("Attachment Security", () => {
   });
 
   describe("MIME Type Handling", () => {
-    // TODO: fix mock wiring — saveAttachment dynamic import doesn't connect to queryOneMock
-    it.skip("should store the provided MIME type without modification", async () => {
+    it("should store the provided MIME type without modification", async () => {
       const { saveAttachment } = await import("../attachments");
 
       queryOneMock.mockResolvedValueOnce(null);
@@ -330,8 +339,7 @@ describe("Attachment Security", () => {
       expect(result.mimeType).toBe("application/javascript");
     });
 
-    // TODO: fix mock wiring — saveAttachment dynamic import doesn't connect to queryOneMock
-    it.skip("should handle binary files correctly", async () => {
+    it("should handle binary files correctly", async () => {
       const { saveAttachment } = await import("../attachments");
 
       queryOneMock.mockResolvedValueOnce(null);
