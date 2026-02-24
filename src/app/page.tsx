@@ -203,26 +203,102 @@ function MessagesPanel({
   const [messageType, setMessageType] = useState<Message["type"]>("text");
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastFetchTimestampRef = useRef<string | null>(null);
 
-  // Fetch conversation when agent is selected
-  const fetchConversation = useCallback(async (agentId: string) => {
+  // Full conversation fetch (initial load or agent switch)
+  const fetchFullConversation = useCallback(async (agentId: string) => {
     try {
       const res = await fetch(`/api/messages/${agentId}?with=user`);
       const data = await res.json();
       if (data.messages) {
-        setConversation(data.messages);
+        const msgs = data.messages as Message[];
+        // Optimistic markAsRead: 즉시 read=true로 표시
+        const unreadIds = new Set(
+          msgs.filter((m) => !m.read && m.to === agentId).map((m) => m.id)
+        );
+        const markedMsgs = unreadIds.size > 0
+          ? msgs.map((m) => unreadIds.has(m.id) ? { ...m, read: true } : m)
+          : msgs;
+        setConversation(markedMsgs);
+        // Track latest timestamp for incremental fetches
+        if (msgs.length > 0) {
+          lastFetchTimestampRef.current = msgs[msgs.length - 1].timestamp;
+        }
+        // Fire-and-forget API calls for markAsRead
+        if (unreadIds.size > 0) {
+          for (const msgId of unreadIds) {
+            fetch(`/api/messages/${agentId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ messageId: msgId }),
+            }).catch(() => {});
+          }
+          onRefreshOverview();
+        }
       }
     } catch (err) {
       console.error("Failed to fetch conversation:", err);
     }
-  }, []);
+  }, [onRefreshOverview]);
 
+  // Incremental fetch: only get messages since last known timestamp
+  const fetchNewMessages = useCallback(async (agentId: string) => {
+    if (!lastFetchTimestampRef.current) {
+      // No previous fetch, do full load
+      return fetchFullConversation(agentId);
+    }
+    try {
+      const since = encodeURIComponent(lastFetchTimestampRef.current);
+      const res = await fetch(`/api/messages/${agentId}?with=user&since=${since}`);
+      const data = await res.json();
+      if (data.messages && (data.messages as Message[]).length > 0) {
+        const newMsgs = data.messages as Message[];
+        // Optimistic markAsRead: 즉시 read=true로 표시
+        const unreadIds = new Set(
+          newMsgs.filter((m) => !m.read && m.to === agentId).map((m) => m.id)
+        );
+        const markedNewMsgs = unreadIds.size > 0
+          ? newMsgs.map((m) => unreadIds.has(m.id) ? { ...m, read: true } : m)
+          : newMsgs;
+
+        setConversation((prev) => {
+          // Deduplicate: filter out messages already in state (including optimistic ones)
+          const existingIds = new Set(prev.map((m) => m.id));
+          const uniqueNew = markedNewMsgs.filter((m) => !existingIds.has(m.id));
+          return uniqueNew.length > 0 ? [...prev, ...uniqueNew] : prev;
+        });
+        // Update latest timestamp
+        lastFetchTimestampRef.current = newMsgs[newMsgs.length - 1].timestamp;
+        // Fire-and-forget API calls for markAsRead
+        if (unreadIds.size > 0) {
+          for (const msgId of unreadIds) {
+            fetch(`/api/messages/${agentId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ messageId: msgId }),
+            }).catch(() => {});
+          }
+          onRefreshOverview();
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch new messages:", err);
+    }
+  }, [onRefreshOverview, fetchFullConversation]);
+
+  // On agent switch: full fetch + reset timestamp
   useEffect(() => {
     if (!selectedAgent) return;
-    fetchConversation(selectedAgent);
-    const interval = setInterval(() => fetchConversation(selectedAgent), 3000);
+    lastFetchTimestampRef.current = null;
+    fetchFullConversation(selectedAgent);
+  }, [selectedAgent, fetchFullConversation]);
+
+  // Polling: incremental fetch every 1.5s
+  useEffect(() => {
+    if (!selectedAgent) return;
+    const interval = setInterval(() => fetchNewMessages(selectedAgent), 1500);
     return () => clearInterval(interval);
-  }, [selectedAgent, fetchConversation]);
+  }, [selectedAgent, fetchNewMessages]);
 
   // Scroll to bottom when conversation updates
   useEffect(() => {
@@ -233,24 +309,48 @@ function MessagesPanel({
     e.preventDefault();
     if (!messageInput.trim() || !selectedAgent || sending) return;
 
+    const content = messageInput.trim();
+    const type = messageType;
+
+    // Optimistic update: 즉시 UI에 반영
+    const optimisticMsg: Message = {
+      id: `optimistic-${Date.now()}`,
+      from: "user",
+      to: selectedAgent,
+      content,
+      type,
+      read: true,
+      timestamp: new Date().toISOString(),
+    };
+    setConversation((prev) => [...prev, optimisticMsg]);
+    setMessageInput("");
+
     setSending(true);
     try {
-      await fetch("/api/messages", {
+      const res = await fetch("/api/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           from: "user",
           to: selectedAgent,
-          content: messageInput.trim(),
-          type: messageType,
+          content,
+          type,
         }),
       });
-      setMessageInput("");
-      // Refresh conversation and overview
-      await fetchConversation(selectedAgent);
+      const data = await res.json();
+      // Replace optimistic message with real one from server
+      if (data.message) {
+        setConversation((prev) =>
+          prev.map((m) => (m.id === optimisticMsg.id ? data.message : m))
+        );
+      }
       onRefreshOverview();
     } catch (err) {
       console.error("Failed to send message:", err);
+      // Rollback optimistic message on failure
+      setConversation((prev) =>
+        prev.filter((m) => m.id !== optimisticMsg.id)
+      );
     } finally {
       setSending(false);
     }
@@ -623,7 +723,7 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [isOrchestrating]);
 
-  // Fetch message overview (polling every 3s)
+  // Fetch message overview (polling every 2s)
   const fetchMessageOverview = useCallback(() => {
     fetch("/api/messages")
       .then((res) => res.json())
@@ -642,7 +742,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchMessageOverview();
-    const interval = setInterval(fetchMessageOverview, 3000);
+    const interval = setInterval(fetchMessageOverview, 2000);
     return () => clearInterval(interval);
   }, [fetchMessageOverview]);
 

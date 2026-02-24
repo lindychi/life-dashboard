@@ -336,7 +336,7 @@ describe("GET /api/messages/[agentId]", () => {
     );
     const res = await GET(req, { params: Promise.resolve({ agentId: "dev" }) });
 
-    expect(getConversation).toHaveBeenCalledWith("dev", "pm");
+    expect(getConversation).toHaveBeenCalledWith("dev", "pm", 50, undefined);
     const json = await res.json();
     expect(json.messages[0].content).toBe("conversation msg");
   });

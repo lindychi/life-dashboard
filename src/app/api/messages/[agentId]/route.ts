@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { getMessages, getConversation, markAsRead } from "@/lib/messages";
 import { isDbConnectionError } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 interface RouteContext {
   params: Promise<{ agentId: string }>;
 }
@@ -12,6 +14,7 @@ interface RouteContext {
  * Query params:
  *   - unreadOnly=true: 읽지 않은 메시지만 조회
  *   - with=otherAgentId: 특정 에이전트와의 대화 조회
+ *   - since=ISO_TIMESTAMP: 이 시간 이후의 메시지만 조회 (증분 fetch)
  */
 export async function GET(req: NextRequest, context: RouteContext) {
   const user = await getCurrentUser();
@@ -24,12 +27,13 @@ export async function GET(req: NextRequest, context: RouteContext) {
     const { searchParams } = new URL(req.url);
     const unreadOnly = searchParams.get("unreadOnly") === "true";
     const withAgent = searchParams.get("with");
+    const since = searchParams.get("since") || undefined;
 
     let messages;
 
     if (withAgent) {
-      // 대화 조회 (두 에이전트 간)
-      messages = await getConversation(agentId, withAgent);
+      // 대화 조회 (두 에이전트 간), since 지원
+      messages = await getConversation(agentId, withAgent, 50, since);
     } else {
       // 일반 inbox 조회
       messages = await getMessages(agentId, unreadOnly);

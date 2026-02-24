@@ -160,23 +160,38 @@ export async function markAsRead(
  * @param agent1 첫 번째 에이전트 ID
  * @param agent2 두 번째 에이전트 ID
  * @param limit 최대 조회 개수 (기본값: 50)
+ * @param since ISO timestamp — 이 시간 이후의 메시지만 조회 (증분 fetch)
  */
 export async function getConversation(
   agent1: string,
   agent2: string,
-  limit: number = 50
+  limit: number = 50,
+  since?: string
 ): Promise<Message[]> {
-  const results = await query<MessageRow>(
-    `SELECT id, from_id, to_id, content, type, read, created_at
-     FROM messages
-     WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1)
-     ORDER BY created_at DESC
-     LIMIT $3`,
-    [agent1, agent2, limit]
-  );
+  let sql: string;
+  let params: (string | number)[];
 
-  // Reverse to get chronological order
-  const messages = results.reverse().map(toMessage);
+  if (since) {
+    sql = `SELECT id, from_id, to_id, content, type, read, created_at
+           FROM messages
+           WHERE ((from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))
+             AND created_at > $3
+           ORDER BY created_at ASC
+           LIMIT $4`;
+    params = [agent1, agent2, since, limit];
+  } else {
+    sql = `SELECT id, from_id, to_id, content, type, read, created_at
+           FROM messages
+           WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1)
+           ORDER BY created_at DESC
+           LIMIT $3`;
+    params = [agent1, agent2, limit];
+  }
+
+  const results = await query<MessageRow>(sql, params);
+
+  // since 쿼리는 이미 ASC, 전체 쿼리는 DESC이므로 reverse 필요
+  const messages = since ? results.map(toMessage) : results.reverse().map(toMessage);
 
   // Load attachments for messages that reference files (병렬 로딩)
   await Promise.all(
@@ -225,6 +240,7 @@ export async function getAllAgentsOverview(): Promise<
   const agentIds = getAgentIds();
 
   // Single query: for each agent, get unread count and latest message
+  // For broadcasts, compute per-agent read status via message_read_status
   const rows = await query<{
     agent_id: string;
     unread_count: string;
@@ -244,7 +260,10 @@ export async function getAllAgentsOverview(): Promise<
        lm.to_id as latest_to_id,
        lm.content as latest_content,
        lm.type as latest_type,
-       lm.read as latest_read,
+       CASE
+         WHEN lm.to_id = 'broadcast' THEN (lm_mrs.message_id IS NOT NULL)
+         ELSE COALESCE(lm.read, FALSE)
+       END as latest_read,
        lm.created_at as latest_created_at
      FROM unnest($1::text[]) AS a(agent_id)
      LEFT JOIN LATERAL (
@@ -264,7 +283,9 @@ export async function getAllAgentsOverview(): Promise<
        WHERE to_id = a.agent_id OR to_id = 'broadcast'
        ORDER BY created_at DESC
        LIMIT 1
-     ) lm ON true`,
+     ) lm ON true
+     LEFT JOIN message_read_status lm_mrs
+       ON lm.id = lm_mrs.message_id AND lm_mrs.agent_id = a.agent_id`,
     [agentIds]
   );
 
