@@ -544,6 +544,10 @@ export function executeClaudeTask(
     }
 
     // Hung process detection (no output timeout)
+    // Network/health-based resets are capped to prevent infinite deferral
+    // when a TCP connection appears ESTABLISHED but is actually half-open (network fault)
+    const MAX_HEALTH_RESETS = 6; // Max times health checks can reset the stale timer
+    let healthResetCount = 0;
     let staleTimer: ReturnType<typeof setInterval> | null = null;
     if (staleTimeout > 0) {
       let warnedStale = false;
@@ -555,31 +559,34 @@ export function executeClaudeTask(
         // Warning threshold: 60% of stale timeout with no activity at all
         if (!warnedStale && silentMs > staleTimeout * 0.6) {
           // In tmux mode, check process health before warning/killing
-          if (useTmux) {
+          if (useTmux && healthResetCount < MAX_HEALTH_RESETS) {
             const state = getProcessState(agentId);
 
             // If process is alive and actively working (CPU or child processes), it's legitimate
             if (state.alive && (state.cpuActive || state.childProcessCount > 0)) {
               // Reset the lastActivityTime to give it more time
               lastActivityTime = Date.now();
+              healthResetCount++;
               warnedStale = false;
-              const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}`;
+              const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}, resets: ${healthResetCount}/${MAX_HEALTH_RESETS}`;
               onOutput?.(`[health] Process alive and working (${detail}), resetting stale timer\n`);
               return; // Skip the kill/warn logic
             }
           }
 
-          // Non-tmux: check network health via lsof
+          // Non-tmux: check network health via lsof (capped resets)
           const pid = child.pid;
-          if (!useTmux && pid && checkNetworkHealth(pid)) {
+          if (!useTmux && pid && healthResetCount < MAX_HEALTH_RESETS && checkNetworkHealth(pid)) {
             lastActivityTime = Date.now();
+            healthResetCount++;
             warnedStale = false;
-            onOutput?.(`[health] Active API connection detected, resetting stale timer\n`);
+            onOutput?.(`[health] Active API connection detected (resets: ${healthResetCount}/${MAX_HEALTH_RESETS}), resetting stale timer\n`);
             return;
           }
 
           warnedStale = true;
-          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)})`;
+          const resetInfo = healthResetCount > 0 ? `, health resets exhausted: ${healthResetCount}/${MAX_HEALTH_RESETS}` : "";
+          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)}${resetInfo})`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
         }
@@ -597,7 +604,7 @@ export function executeClaudeTask(
             try { child.kill("SIGKILL"); } catch { /* already dead */ }
           }, 5000);
 
-          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}, health resets: ${healthResetCount}/${MAX_HEALTH_RESETS}`;
           safeResolve({
             success: false,
             error: `Process exceeded absolute timeout (${formatDuration(absoluteMaxMs)}) with no output. ${detail}`,
@@ -611,26 +618,28 @@ export function executeClaudeTask(
 
         // Kill: no activity (stdout OR stderr) for full stale timeout
         if (silentMs > staleTimeout) {
-          // In tmux mode, do one final health check before killing
-          if (useTmux) {
+          // In tmux mode, do one final health check before killing (only if resets remain)
+          if (useTmux && healthResetCount < MAX_HEALTH_RESETS) {
             const state = getProcessState(agentId);
 
             // Still working? Give it more time
             if (state.alive && (state.cpuActive || state.childProcessCount > 0)) {
               lastActivityTime = Date.now();
+              healthResetCount++;
               warnedStale = false;
-              const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}`;
+              const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}, resets: ${healthResetCount}/${MAX_HEALTH_RESETS}`;
               onOutput?.(`[health] Process still working at kill threshold (${detail}), extending timeout\n`);
               return;
             }
           }
 
-          // Non-tmux: final network health check before killing
+          // Non-tmux: final network health check before killing (only if resets remain)
           const killPid = child.pid;
-          if (!useTmux && killPid && checkNetworkHealth(killPid)) {
+          if (!useTmux && killPid && healthResetCount < MAX_HEALTH_RESETS && checkNetworkHealth(killPid)) {
             lastActivityTime = Date.now();
+            healthResetCount++;
             warnedStale = false;
-            onOutput?.(`[health] Active API connection at kill threshold, extending timeout\n`);
+            onOutput?.(`[health] Active API connection at kill threshold (resets: ${healthResetCount}/${MAX_HEALTH_RESETS}), extending timeout\n`);
             return;
           }
 
@@ -644,7 +653,7 @@ export function executeClaudeTask(
             try { child.kill("SIGKILL"); } catch { /* already dead */ }
           }, 5000);
 
-          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}, health resets: ${healthResetCount}/${MAX_HEALTH_RESETS}`;
           safeResolve({
             success: false,
             error: `Process hung (no activity for ${formatDuration(staleTimeout)}). ${detail}`,
@@ -654,8 +663,9 @@ export function executeClaudeTask(
             rateLimited: false,
           });
         } else if (warnedStale && silentMs < staleTimeout * 0.3) {
-          // Reset warning if activity resumes
+          // Reset warning if activity resumes (real output resets healthResetCount too)
           warnedStale = false;
+          healthResetCount = 0;
         }
       }, 15000); // Check every 15 seconds (was 30s, now more responsive)
     }
@@ -806,6 +816,9 @@ export async function executeCodexTask(
       }, timeout);
     }
 
+    // Codex stale detection — same capped health-reset pattern as Claude executor
+    const MAX_CODEX_HEALTH_RESETS = 6;
+    let codexHealthResetCount = 0;
     let staleTimer: ReturnType<typeof setInterval> | null = null;
     if (staleTimeout > 0) {
       let warnedStale = false;
@@ -815,8 +828,18 @@ export async function executeCodexTask(
         const stdoutSilentMs = now - lastOutputTime;
 
         if (!warnedStale && silentMs > staleTimeout * 0.6) {
+          // Check network health before warning (capped resets)
+          const pid = child.pid;
+          if (pid && codexHealthResetCount < MAX_CODEX_HEALTH_RESETS && checkNetworkHealth(pid)) {
+            lastActivityTime = Date.now();
+            codexHealthResetCount++;
+            onOutput?.(`[health] Codex: active API connection (resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}), resetting stale timer\n`);
+            return;
+          }
+
           warnedStale = true;
-          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)})`;
+          const resetInfo = codexHealthResetCount > 0 ? `, health resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}` : "";
+          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)}${resetInfo})`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
         }
@@ -838,7 +861,7 @@ export async function executeCodexTask(
             }
           }, 5000);
 
-          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}, health resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}`;
           safeResolve({
             success: false,
             error: `Process exceeded absolute timeout (${formatDuration(absoluteMaxMs)}) with no output. ${detail}`,
@@ -851,6 +874,15 @@ export async function executeCodexTask(
         }
 
         if (silentMs > staleTimeout) {
+          // Final network health check (only if resets remain)
+          const killPid = child.pid;
+          if (killPid && codexHealthResetCount < MAX_CODEX_HEALTH_RESETS && checkNetworkHealth(killPid)) {
+            lastActivityTime = Date.now();
+            codexHealthResetCount++;
+            onOutput?.(`[health] Codex: active API connection at kill threshold (resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}), extending timeout\n`);
+            return;
+          }
+
           if (timer) clearTimeout(timer);
           timer = null;
           if (staleTimer) clearInterval(staleTimer);
@@ -865,7 +897,7 @@ export async function executeCodexTask(
             }
           }, 5000);
 
-          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}, health resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}`;
           safeResolve({
             success: false,
             error: `Process hung (no activity for ${formatDuration(staleTimeout)}). ${detail}`,
@@ -876,6 +908,7 @@ export async function executeCodexTask(
           });
         } else if (warnedStale && silentMs < staleTimeout * 0.3) {
           warnedStale = false;
+          codexHealthResetCount = 0;
         }
       }, 15000);
     }

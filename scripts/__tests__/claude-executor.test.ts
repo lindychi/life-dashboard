@@ -604,7 +604,7 @@ describe("claude-executor", () => {
 
       // Should have detected active connection and NOT warned
       expect(onOutput).toHaveBeenCalledWith(
-        expect.stringContaining("[health] Active API connection detected, resetting stale timer")
+        expect.stringContaining("[health] Active API connection detected")
       );
 
       // Process should NOT be killed
@@ -661,7 +661,7 @@ describe("claude-executor", () => {
 
       // Should have detected active connection at kill threshold
       expect(onOutput).toHaveBeenCalledWith(
-        expect.stringContaining("[health] Active API connection at kill threshold, extending timeout")
+        expect.stringContaining("[health] Active API connection at kill threshold")
       );
 
       // Process should NOT be killed
