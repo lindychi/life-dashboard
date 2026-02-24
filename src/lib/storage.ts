@@ -2,6 +2,14 @@
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+} from "@aws-sdk/client-s3";
+import type { Readable } from "stream";
 
 // ===== Configuration =====
 
@@ -65,86 +73,133 @@ class LocalStorageDriver implements StorageDriver {
   }
 }
 
-// ===== S3-Compatible Driver =====
+// ===== S3-Compatible Driver (AWS SDK v3) =====
+
+function createS3Client(): S3Client {
+  return new S3Client({
+    region: S3_CONFIG.region,
+    credentials: {
+      accessKeyId: S3_CONFIG.accessKey,
+      secretAccessKey: S3_CONFIG.secretKey,
+    },
+    ...(S3_CONFIG.endpoint && { endpoint: S3_CONFIG.endpoint }),
+    forcePathStyle: true, // Required for MinIO and S3-compatible storage
+  });
+}
+
+async function streamToBuffer(stream: Readable | ReadableStream | Blob): Promise<Buffer> {
+  // Handle Node.js Readable stream
+  if ("pipe" in stream && typeof (stream as Readable).pipe === "function") {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of stream as Readable) {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+  // Handle Web ReadableStream
+  if ("getReader" in stream) {
+    const reader = (stream as ReadableStream).getReader();
+    const chunks: Uint8Array[] = [];
+    let done = false;
+    while (!done) {
+      const result = await reader.read();
+      done = result.done;
+      if (result.value) chunks.push(result.value);
+    }
+    return Buffer.concat(chunks);
+  }
+  // Handle Blob
+  if ("arrayBuffer" in stream) {
+    const arrayBuffer = await (stream as Blob).arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+  throw new Error("Unsupported S3 response body type");
+}
 
 class S3StorageDriver implements StorageDriver {
-  private getHeaders(method: string, key: string, contentType?: string): Record<string, string> {
-    // Minimal S3 signature - for production, use @aws-sdk/client-s3
-    const date = new Date().toUTCString();
-    const headers: Record<string, string> = {
-      Date: date,
-      Host: this.getHost(),
-    };
-    if (contentType) {
-      headers["Content-Type"] = contentType;
-    }
-    return headers;
-  }
+  private client: S3Client;
 
-  private getHost(): string {
-    if (S3_CONFIG.endpoint) {
-      return new URL(S3_CONFIG.endpoint).host;
-    }
-    return `${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com`;
-  }
-
-  private getBaseUrl(): string {
-    if (S3_CONFIG.endpoint) {
-      return `${S3_CONFIG.endpoint}/${S3_CONFIG.bucket}`;
-    }
-    return `https://${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com`;
+  constructor() {
+    this.client = createS3Client();
   }
 
   async save(key: string, buffer: Buffer): Promise<void> {
-    const url = `${this.getBaseUrl()}/${key}`;
-    const response = await fetch(url, {
-      method: "PUT",
-      body: new Uint8Array(buffer),
-      headers: {
-        ...this.getHeaders("PUT", key, "application/octet-stream"),
-        "Content-Length": buffer.length.toString(),
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`S3 upload failed: ${response.status} ${response.statusText}`);
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: S3_CONFIG.bucket,
+          Key: key,
+          Body: new Uint8Array(buffer),
+          ContentType: "application/octet-stream",
+          ContentLength: buffer.length,
+        })
+      );
+    } catch (err) {
+      throw new Error(
+        `S3 upload failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 
   async read(key: string): Promise<Buffer> {
-    const url = `${this.getBaseUrl()}/${key}`;
-    const response = await fetch(url, {
-      method: "GET",
-      headers: this.getHeaders("GET", key),
-    });
-    if (!response.ok) {
-      throw new Error(`S3 read failed: ${response.status} ${response.statusText}`);
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({
+          Bucket: S3_CONFIG.bucket,
+          Key: key,
+        })
+      );
+      if (!response.Body) {
+        throw new Error("S3 read returned empty body");
+      }
+      return streamToBuffer(response.Body as Readable | ReadableStream | Blob);
+    } catch (err) {
+      throw new Error(
+        `S3 read failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
   }
 
   async delete(key: string): Promise<void> {
-    const url = `${this.getBaseUrl()}/${key}`;
-    const response = await fetch(url, {
-      method: "DELETE",
-      headers: this.getHeaders("DELETE", key),
-    });
-    if (!response.ok && response.status !== 404) {
-      throw new Error(`S3 delete failed: ${response.status} ${response.statusText}`);
+    try {
+      await this.client.send(
+        new DeleteObjectCommand({
+          Bucket: S3_CONFIG.bucket,
+          Key: key,
+        })
+      );
+    } catch (err) {
+      // S3 DeleteObject is idempotent, but catch unexpected errors
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("NotFound") && !message.includes("NoSuchKey")) {
+        throw new Error(`S3 delete failed: ${message}`);
+      }
     }
   }
 
   async exists(key: string): Promise<boolean> {
-    const url = `${this.getBaseUrl()}/${key}`;
-    const response = await fetch(url, {
-      method: "HEAD",
-      headers: this.getHeaders("HEAD", key),
-    });
-    return response.ok;
+    try {
+      await this.client.send(
+        new HeadObjectCommand({
+          Bucket: S3_CONFIG.bucket,
+          Key: key,
+        })
+      );
+      return true;
+    } catch (err) {
+      // HeadObject throws NotFound/NoSuchKey when object doesn't exist
+      const name = (err as { name?: string })?.name || "";
+      if (name === "NotFound" || name === "NoSuchKey" || name === "404") {
+        return false;
+      }
+      throw new Error(
+        `S3 exists check failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   getUrl(key: string): string {
-    // For S3, we still proxy through our API for auth
+    // Proxy through our API for auth
     return `/api/attachments/file/${encodeURIComponent(key)}`;
   }
 }
