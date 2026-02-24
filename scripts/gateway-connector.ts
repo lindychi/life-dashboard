@@ -29,6 +29,7 @@ import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "..", ".env.local") });
 
 import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, formatDuration, type ToolCall } from "./claude-executor";
+import { TaskStateManager } from "./task-state-manager";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -37,6 +38,13 @@ const GATEWAY_ID = process.env.GATEWAY_ID || os.hostname();
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
 const MCP_CONFIG_PATH = path.resolve(__dirname, "..", ".mcp.json");
 const ENABLE_TMUX = process.env.ENABLE_TMUX === "true";
+
+// Task state persistence for recovery after restart
+const taskStateManager = new TaskStateManager({
+  relayUrl: RELAY_URL,
+  relayApiKey: RELAY_API_KEY,
+  gatewayId: GATEWAY_ID,
+});
 
 interface RelayCommand {
   id: string;
@@ -69,7 +77,7 @@ interface AgentStatus {
   };
 }
 
-const MAX_RECENT_EVENTS = 20;
+const MAX_RECENT_EVENTS = 50;
 
 /**
  * Parse an onOutput chunk into a structured ProgressEventEntry.
@@ -145,9 +153,34 @@ function summarizeToolCalls(toolCalls: ToolCall[]): string {
   return `🔧 ${toolCalls.length}개 도구 호출: ${parts.join(", ")}`;
 }
 
+// Graceful shutdown: persist task states before exit
+async function gracefulShutdown(signal: string): Promise<void> {
+  console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+
+  try {
+    // Flush pending updates and mark active tasks as interrupted
+    await taskStateManager.shutdown();
+    console.log("✅ Task states persisted successfully");
+  } catch (error) {
+    console.error("⚠️ Failed to persist task states:", error);
+  }
+
+  process.exit(0);
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
 // Self-restart: process.exit() triggers launchd auto-restart
-function gracefulRestart(reason: string): void {
+async function gracefulRestart(reason: string): Promise<void> {
   console.log(`\n🔄 Restarting gateway connector: ${reason}`);
+  console.log("   Persisting task states before restart...");
+  try {
+    await taskStateManager.shutdown();
+    console.log("   ✅ Task states persisted");
+  } catch (error) {
+    console.error("   ⚠️ Failed to persist task states:", error);
+  }
   console.log("   launchd will auto-restart in ~5 seconds...");
   process.exit(0);
 }
@@ -541,6 +574,20 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           }
         }
 
+        // Track task in persistent state for recovery
+        const executionId = await taskStateManager.startTask({
+          agentId,
+          commandId: command.id,
+          commandType: "spawn",
+          task: finalTask,
+          systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
+          requestGroupId,
+          requestTitle,
+          attachmentRefKeys: _attachmentRefKeys,
+          attemptNumber: (command.payload as { _requeueAttempt?: number })?._requeueAttempt || 1,
+          maxAttempts: 3,
+        });
+
         // Execute asynchronously (don't block the poll loop)
         console.log(`   🚀 Spawning Claude for agent: ${agentId}`);
         console.log(`   📋 Task: ${finalTask}`);
@@ -598,6 +645,15 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               if (recentEvents.length > MAX_RECENT_EVENTS) {
                 recentEvents.length = MAX_RECENT_EVENTS;
               }
+            }
+
+            // Update task execution state (batched)
+            if (executionId) {
+              taskStateManager.updateProgress(executionId, {
+                lastOutput: outputBuffer,
+                toolCallsCount: taskToolCalls.length,
+                totalOutputChars: totalChars,
+              });
             }
 
             // Update agent status with live output + structured events
@@ -658,6 +714,12 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               provider: result.provider,
               ...(fullOutput.length > 5000 ? { fullResponseLength: fullOutput.length } : {}),
             }, reqGroup);
+
+            // Mark task execution as completed
+            if (executionId) {
+              taskStateManager.completeTask(executionId, result.output?.slice(-2000));
+            }
+
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentId,
@@ -683,6 +745,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
               exitCode: result.exitCode,
               isHung,
             }, reqGroup);
+
+            // Mark task execution as failed
+            if (executionId) {
+              taskStateManager.failTask(executionId, errorMsg);
+            }
 
             // Update request group agent status to failed
             if (requestGroupId) {
@@ -1063,7 +1130,7 @@ async function pollLoop(): Promise<void> {
 // Main
 async function main(): Promise<void> {
   console.log("╔════════════════════════════════════════╗");
-  console.log("║     🔌 Gateway Connector v1.0          ║");
+  console.log("║     🔌 Gateway Connector v1.1          ║");
   console.log("╚════════════════════════════════════════╝");
   console.log(`\n📡 Relay URL: ${RELAY_URL}`);
   console.log(`🔑 Gateway ID: ${GATEWAY_ID}`);
@@ -1091,6 +1158,45 @@ async function main(): Promise<void> {
   }
 
   console.log("\n🔄 Starting poll loop... (Ctrl+C to stop)\n");
+
+  // Task recovery: mark any previously-running tasks as interrupted & attempt recovery
+  const interruptedCount = await taskStateManager.markAllRunningAsInterrupted("gateway_restart");
+  if (interruptedCount > 0) {
+    console.log(`🔄 ${interruptedCount} interrupted task(s) found from previous run`);
+    addHistory("system", "status_change", `🔄 게이트웨이 재시작: ${interruptedCount}개 중단된 태스크 발견`);
+
+    // Fetch interrupted tasks for potential recovery
+    const interrupted = await taskStateManager.getInterruptedTasks();
+    for (const task of interrupted) {
+      // Only recover tasks under max attempts
+      if (task.attemptNumber < task.maxAttempts) {
+        console.log(`   🔄 Recovering task for ${task.agentId}: ${task.task.slice(0, 80)}...`);
+        addHistory(task.agentId, "output", `🔄 중단된 태스크 복구 시도 (시도 ${task.attemptNumber + 1}/${task.maxAttempts})`);
+
+        // Re-queue via relay command
+        try {
+          await apiCall("/command", "POST", {
+            gatewayId: GATEWAY_ID,
+            type: task.commandType,
+            payload: {
+              agentId: task.agentId,
+              task: `[복구 시도 ${task.attemptNumber + 1}/${task.maxAttempts}] 이전 작업이 게이트웨이 재시작으로 중단되었습니다. 이전 진행 상태를 참고하여 작업을 이어서 완료해주세요.\n\n이전 출력 (마지막 부분):\n${task.lastOutput || "(없음)"}\n\n원래 작업:\n${task.task}`,
+              systemPrompt: task.systemPrompt,
+              _attachmentRefKeys: task.attachmentRefKeys,
+              requestGroupId: task.requestGroupId,
+              requestTitle: task.requestTitle,
+              _requeueAttempt: task.attemptNumber,
+            },
+          });
+        } catch (err) {
+          console.error(`   ❌ Failed to recover task for ${task.agentId}:`, err);
+        }
+      } else {
+        console.log(`   ⛔ Task for ${task.agentId} exceeded max attempts (${task.maxAttempts}), marking as failed`);
+        addHistory(task.agentId, "task_failed", `⛔ 최대 재시도 횟수 초과 (${task.maxAttempts}회), 복구 포기: ${task.task.slice(0, 100)}`);
+      }
+    }
+  }
 
   // Poll loop
   setInterval(pollLoop, POLL_INTERVAL);

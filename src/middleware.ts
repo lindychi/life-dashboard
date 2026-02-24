@@ -14,6 +14,7 @@ const publicPaths = [
   "/api/auth/verify",
   "/api/relay/",
   "/api/tasks/health",
+  "/api/task-executions",
 ];
 
 export async function middleware(request: NextRequest) {
