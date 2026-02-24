@@ -118,10 +118,64 @@ export function formatDuration(ms: number): string {
   return remainingMinutes > 0 ? `${hours}시간 ${remainingMinutes}분` : `${hours}시간`;
 }
 
+interface StreamEvent {
+  type: "system" | "assistant" | "user" | "result";
+  subtype?: string;
+  message?: {
+    content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>;
+  };
+  result?: string;
+  total_cost_usd?: number;
+  num_turns?: number;
+  duration_ms?: number;
+}
+
+function parseStreamEvents(
+  rawChunk: string,
+  buffer: { partial: string },
+): { events: StreamEvent[]; textChunks: string[] } {
+  const combined = buffer.partial + rawChunk;
+  const lines = combined.split("\n");
+
+  // Last line might be incomplete — save it
+  buffer.partial = lines.pop() || "";
+
+  const events: StreamEvent[] = [];
+  const textChunks: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    try {
+      const event = JSON.parse(trimmed) as StreamEvent;
+      events.push(event);
+
+      // Extract text from assistant messages
+      if (event.type === "assistant" && event.message?.content) {
+        for (const block of event.message.content) {
+          if (block.type === "text" && block.text) {
+            textChunks.push(block.text);
+          }
+        }
+      }
+
+      // Extract final result text
+      if (event.type === "result" && event.result) {
+        textChunks.push(event.result);
+      }
+    } catch {
+      // Not valid JSON — could be a partial line or non-JSON output
+    }
+  }
+
+  return { events, textChunks };
+}
+
 /**
  * Execute a task using Claude CLI
  *
- * Spawns `claude` with --print flag for non-interactive output.
+ * Spawns `claude` with --print flag (no-tool tasks) or --output-format stream-json (tool tasks).
  * Uses --system-prompt to set agent personality.
  */
 export function executeClaudeTask(
@@ -140,13 +194,17 @@ export function executeClaudeTask(
       resolve(result);
     };
 
-    const args = ["--print"];
+    const args: string[] = [];
 
     // Security: use --allowedTools whitelist instead of --dangerously-skip-permissions
     // This prevents arbitrary Bash execution if the relay server is compromised
     if (disableTools) {
+      // No-tool tasks (planner, summarizer): single API call, use --print for simplicity
+      args.push("--print");
       args.push("--tools", "");
     } else {
+      // Tool-using tasks: use stream-json for real-time heartbeats (prevents false hung detection)
+      args.push("--print", "--output-format", "stream-json", "--verbose");
       const tools = allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS;
       args.push("--allowedTools", tools);
 
@@ -157,6 +215,10 @@ export function executeClaudeTask(
     }
 
     args.push("--no-session-persistence", "--system-prompt", systemPrompt, task);
+
+    const useStreamJson = !disableTools;
+    const streamBuffer = { partial: "" };
+    let finalResultText = "";
 
     let stdout = "";
     let stderr = "";
@@ -173,18 +235,41 @@ export function executeClaudeTask(
         cwd: workDir || process.cwd(),
         agentId,
         onStdout: (chunk: string) => {
-          stdout += chunk;
           lastOutputTime = Date.now();
           lastActivityTime = Date.now();
-          onOutput?.(chunk);
+
+          if (useStreamJson) {
+            const { events, textChunks } = parseStreamEvents(chunk, streamBuffer);
+
+            for (const event of events) {
+              if (event.type === "assistant" && event.message?.content) {
+                for (const block of event.message.content) {
+                  if (block.type === "tool_use" && block.name) {
+                    onOutput?.(`[tool] ${block.name}\n`);
+                  }
+                }
+              }
+              if (event.type === "result" && event.result) {
+                finalResultText = event.result;
+              }
+            }
+
+            if (textChunks.length > 0) {
+              stdout += textChunks.join("");
+            }
+          } else {
+            stdout += chunk;
+            onOutput?.(chunk);
+          }
         },
         onExit: (code: number | null) => {
           if (timer) clearTimeout(timer);
           if (staleTimer) clearInterval(staleTimer);
           if (code === 0) {
+            const outputText = finalResultText || stdout.trim();
             safeResolve({
               success: true,
-              output: stdout.trim(),
+              output: outputText,
               exitCode: 0,
               elapsedMs: Date.now() - startTime,
               provider: "claude",
@@ -218,10 +303,38 @@ export function executeClaudeTask(
       });
 
       child.stdout?.on("data", (data: Buffer) => {
-        stdout += data.toString();
+        const raw = data.toString();
         lastOutputTime = Date.now();
         lastActivityTime = Date.now();
-        onOutput?.(data.toString());
+
+        if (useStreamJson) {
+          const { events, textChunks } = parseStreamEvents(raw, streamBuffer);
+
+          for (const event of events) {
+            // Extract progress info for onOutput callback
+            if (event.type === "assistant" && event.message?.content) {
+              for (const block of event.message.content) {
+                if (block.type === "tool_use" && block.name) {
+                  onOutput?.(`[tool] ${block.name}\n`);
+                }
+              }
+            }
+
+            // Capture final result
+            if (event.type === "result" && event.result) {
+              finalResultText = event.result;
+            }
+          }
+
+          // Accumulate text output
+          if (textChunks.length > 0) {
+            stdout += textChunks.join("");
+          }
+        } else {
+          // --print mode (no-tool tasks): raw text accumulation
+          stdout += raw;
+          onOutput?.(raw);
+        }
       });
 
       child.stderr?.on("data", (data: Buffer) => {
@@ -292,8 +405,8 @@ export function executeClaudeTask(
           onOutput?.(`[warning] ${msg}\n`);
         }
 
-        // Absolute maximum cap: 3x stale timeout regardless of CPU state
-        const absoluteMaxMs = staleTimeout * 3;
+        // Absolute maximum cap: 2x stale timeout regardless of CPU state
+        const absoluteMaxMs = staleTimeout * 2;
         if (silentMs > absoluteMaxMs) {
           if (timer) clearTimeout(timer);
           timer = null;
@@ -378,9 +491,10 @@ export function executeClaudeTask(
         if (timer) clearTimeout(timer);
         if (staleTimer) clearInterval(staleTimer);
         if (code === 0) {
+          const outputText = finalResultText || stdout.trim();
           safeResolve({
             success: true,
-            output: stdout.trim(),
+            output: outputText,
             exitCode: 0,
             elapsedMs: Date.now() - startTime,
             stderrOutput: stderr.trim() || undefined,

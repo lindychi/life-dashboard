@@ -60,22 +60,54 @@ describe("claude-executor", () => {
 
       const promise = executeClaudeTask(options);
 
-      // Verify spawn was called with correct args
+      // Verify spawn was called with stream-json args (tool-enabled mode)
       expect(spawn).toHaveBeenCalledWith(
         "claude",
-        ["--print", "--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
+        ["--print", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
         expect.objectContaining({
           stdio: ["ignore", "pipe", "pipe"],
         })
       );
 
-      // Simulate successful completion
-      mockProc.stdout!.emit("data", Buffer.from("Task completed successfully"));
+      // Simulate stream-json output: result event with final text
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"result","result":"Task completed successfully"}\n'));
       mockProc.emit("close", 0);
 
       const result = await promise;
       expect(result.success).toBe(true);
       expect(result.output).toBe("Task completed successfully");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should spawn claude with --print only when disableTools is true", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const options: ClaudeExecutorOptions = {
+        agentId: "pm",
+        task: "Plan something",
+        systemPrompt: "You are the PM agent.",
+        disableTools: true,
+      };
+
+      const promise = executeClaudeTask(options);
+
+      // Verify spawn was called with --print only (no stream-json)
+      expect(spawn).toHaveBeenCalledWith(
+        "claude",
+        ["--print", "--tools", "", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Plan something"],
+        expect.objectContaining({
+          stdio: ["ignore", "pipe", "pipe"],
+        })
+      );
+
+      // Simulate raw text output (--print mode)
+      mockProc.stdout!.emit("data", Buffer.from("Plan completed"));
+      mockProc.emit("close", 0);
+
+      const result = await promise;
+      expect(result.success).toBe(true);
+      expect(result.output).toBe("Plan completed");
       expect(result.exitCode).toBe(0);
     });
 
@@ -89,14 +121,15 @@ describe("claude-executor", () => {
         systemPrompt: "You are the Dev agent.",
       });
 
-      mockProc.stdout!.emit("data", Buffer.from("Line 1\n"));
-      mockProc.stdout!.emit("data", Buffer.from("Line 2\n"));
-      mockProc.stdout!.emit("data", Buffer.from("Done"));
+      // In stream-json mode, output comes as NDJSON events
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Line 1\\nLine 2\\n"}]}}\n'));
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"result","result":"Done"}\n'));
       mockProc.emit("close", 0);
 
       const result = await promise;
       expect(result.success).toBe(true);
-      expect(result.output).toBe("Line 1\nLine 2\nDone");
+      // finalResultText ("Done") takes precedence over accumulated stdout
+      expect(result.output).toBe("Done");
     });
 
     it("should return error on non-zero exit code", async () => {
@@ -382,24 +415,24 @@ describe("claude-executor", () => {
         staleTimeout: 120000, // 2 minutes
       });
 
-      // Initial output
-      mockProc.stdout!.emit("data", Buffer.from("Starting...\n"));
+      // Initial output (stream-json events)
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Starting..."}]}}\n'));
 
       // Advance time and emit output every 60 seconds
       await vi.advanceTimersByTimeAsync(60000);
-      mockProc.stdout!.emit("data", Buffer.from("Working...\n"));
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Working..."}]}}\n'));
 
       await vi.advanceTimersByTimeAsync(60000);
-      mockProc.stdout!.emit("data", Buffer.from("Still working...\n"));
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Still working..."}]}}\n'));
 
       await vi.advanceTimersByTimeAsync(60000);
-      mockProc.stdout!.emit("data", Buffer.from("Almost done...\n"));
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Almost done..."}]}}\n'));
 
       // Process should NOT be killed
       expect(mockProc.kill).not.toHaveBeenCalled();
 
       // Complete normally
-      mockProc.stdout!.emit("data", Buffer.from("Done!"));
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"result","result":"Done!"}\n'));
       mockProc.emit("close", 0);
 
       const result = await promise;
@@ -456,9 +489,14 @@ describe("claude-executor", () => {
         systemPrompt: "Prompt",
       });
 
+      // Emit Claude rate limit error and close
       claudeProc.stderr!.emit("data", Buffer.from("Rate limit exceeded"));
       claudeProc.emit("close", 1);
 
+      // Wait a tick for executeLlmTask to process Claude result and spawn Codex
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Now emit Codex output (handlers are registered after Codex spawn)
       codexProc.stdout!.emit("data", Buffer.from("Codex output"));
       codexProc.emit("close", 0);
 
