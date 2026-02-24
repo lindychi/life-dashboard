@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { agentId, type, content, metadata } = await request.json();
+    const { agentId, type, content, metadata, requestGroupId, requestTitle } = await request.json();
 
     if (!agentId || !type || !content) {
       return NextResponse.json(
@@ -54,6 +54,8 @@ export async function POST(request: NextRequest) {
       type,
       content,
       metadata,
+      requestGroupId,
+      requestTitle,
     });
 
     return NextResponse.json({ success: true, entry });

@@ -8,7 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "monitor": "npx tsx scripts/tmux-monitor.ts",
+    "predeploy": "npx tsx scripts/pre-deploy-check.ts",
+    "predeploy:quick": "npx tsx scripts/pre-deploy-check.ts --skip-build --skip-tests"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

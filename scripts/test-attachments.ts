@@ -48,7 +48,7 @@ async function testDbSchema() {
        WHERE table_name = 'attachments'
        ORDER BY ordinal_position`
     );
-    const cols = colResult.rows.map((r: any) => r.column_name);
+    const cols = colResult.rows.map((r: { column_name: string }) => r.column_name);
     const expected = ["id", "message_id", "original_filename", "mime_type", "size_bytes", "storage_key", "ref_key", "created_at"];
     const missing = expected.filter(c => !cols.includes(c));
     if (missing.length === 0) {
@@ -61,7 +61,7 @@ async function testDbSchema() {
     const idxResult = await pool.query(
       `SELECT indexname FROM pg_indexes WHERE tablename = 'attachments'`
     );
-    const indexes = idxResult.rows.map((r: any) => r.indexname);
+    const indexes = idxResult.rows.map((r: { indexname: string }) => r.indexname);
     if (indexes.some((i: string) => i.includes("message"))) {
       ok("Index on message_id exists");
     } else {
@@ -188,7 +188,7 @@ async function testSaveAndRead() {
   const filename = "test-verify.txt";
   const mimeType = "text/plain";
 
-  let savedAttachment: any;
+  let savedAttachment: { id: string; refKey: string; storageKey: string };
 
   // Save
   try {
@@ -261,8 +261,8 @@ async function testSaveAndRead() {
   try {
     await saveAttachment(buffer, filename, mimeType, savedAttachment.refKey);
     fail("Duplicate ref_key should have thrown");
-  } catch (err: any) {
-    if (err.message.includes("already exists")) {
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message.includes("already exists")) {
       ok("Duplicate ref_key correctly rejected");
     } else {
       fail("Unexpected error for duplicate ref_key", err.message);
@@ -306,7 +306,7 @@ async function testAutoLinking() {
 
   // Create a test attachment
   const buffer = Buffer.from("link test content");
-  let attachment: any;
+  let attachment: { id: string; refKey: string };
   try {
     attachment = await saveAttachment(buffer, "link-test.txt", "text/plain");
     ok(`Created test attachment: refKey="${attachment.refKey}"`);

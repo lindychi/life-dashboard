@@ -63,4 +63,16 @@ export interface HistoryEntry {
   content: string;
   metadata?: Record<string, unknown>;
   timestamp: string;
+  requestGroupId?: string;
+  requestTitle?: string;
+}
+
+/**
+ * Timeline API response structure for cursor-based pagination.
+ */
+export interface TimelineResponse {
+  entries: HistoryEntry[];
+  nextCursor: string | null;
+  totalCount: number;
+  hasMore: boolean;
 }

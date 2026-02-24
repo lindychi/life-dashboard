@@ -35,6 +35,7 @@ const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
 const GATEWAY_ID = process.env.GATEWAY_ID || os.hostname();
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
 const MCP_CONFIG_PATH = path.resolve(__dirname, "..", ".mcp.json");
+const ENABLE_TMUX = process.env.ENABLE_TMUX === "true";
 
 interface RelayCommand {
   id: string;
@@ -228,6 +229,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
           mcpConfig: MCP_CONFIG_PATH,
           staleTimeout,
+          enableTmux: ENABLE_TMUX,
           onOutput: (chunk: string) => {
             // Log intermediate output for visibility
             if (chunk.startsWith("[stderr]") || chunk.startsWith("[warning]")) {
@@ -296,7 +298,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
             // Re-queue hung tasks for another attempt
             if (isHung) {
-              const currentAttempt = (command.payload as any)?._requeueAttempt || 0;
+              const currentAttempt = (command.payload as { _requeueAttempt?: number })?._requeueAttempt || 0;
               requeueFailedTask(agentId, task, command.id, currentAttempt);
             }
           }
@@ -330,7 +332,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
       }
 
       case "message": {
-        const { from, to, content, type: msgType } = command.payload as {
+        const { from, to, content } = command.payload as {
           from: string;
           to: string;
           content: string;
@@ -355,10 +357,16 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         const fs = await import("fs");
         const path = await import("path");
         const agentsJsonPath = path.join(__dirname, "..", "agents.json");
-        const agentsData = JSON.parse(fs.readFileSync(agentsJsonPath, "utf-8"));
+        const agentsData = JSON.parse(fs.readFileSync(agentsJsonPath, "utf-8")) as Array<{
+          id: string;
+          name: string;
+          role: string;
+          systemPrompt: string;
+          enabled: boolean;
+        }>;
         const agents = agentsData
-          .filter((a: any) => a.enabled)
-          .map((a: any) => ({
+          .filter((a) => a.enabled)
+          .map((a) => ({
             id: a.id,
             name: a.name,
             role: a.role,
@@ -367,7 +375,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
         // Build an agent name map
         const agentNameMap: Record<string, string> = {};
-        agents.forEach((a: any) => { agentNameMap[a.id] = a.name; });
+        agents.forEach((a) => { agentNameMap[a.id] = a.name; });
         const getAgentName = (id: string) => agentNameMap[id] || id;
 
         // Progress callback for real-time visibility
@@ -434,6 +442,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
             mcpConfig: MCP_CONFIG_PATH,
             staleTimeout: taskStaleTimeout,
+            enableTmux: ENABLE_TMUX,
             onOutput: (chunk: string) => {
               // Log stderr and warnings from executor for visibility
               if (chunk.startsWith("[stderr]") || chunk.startsWith("[warning]")) {
@@ -494,8 +503,8 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             });
 
             // Add retry info if retries were used
-            if (result.exitCode === -2 && (result as any).retriesUsed) {
-              addHistory(agentId, "output", `🔄 ${agentName}: ${(result as any).retriesUsed}회 재시도 후에도 실패`);
+            if (result.exitCode === -2 && "retriesUsed" in result) {
+              addHistory(agentId, "output", `🔄 ${agentName}: ${(result as { retriesUsed: number }).retriesUsed}회 재시도 후에도 실패`);
             }
           }
 

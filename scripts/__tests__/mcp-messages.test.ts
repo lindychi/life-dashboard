@@ -308,9 +308,9 @@ describe("MCP dashboard_get_messages: Error Handling", () => {
 });
 
 describe("MCP dashboard_get_messages: Zod Schema Validation", () => {
-  it("should require agentId parameter", () => {
+  it("should require agentId parameter", async () => {
     // Simulate Zod validation from the MCP server
-    const { z } = require("zod");
+    const { z } = await import("zod");
     const GetMessagesSchema = z.object({
       agentId: z.string(),
       unreadOnly: z.boolean().optional(),
@@ -321,8 +321,8 @@ describe("MCP dashboard_get_messages: Zod Schema Validation", () => {
     expect(() => GetMessagesSchema.parse({ unreadOnly: true })).toThrow();
   });
 
-  it("should accept valid parameters", () => {
-    const { z } = require("zod");
+  it("should accept valid parameters", async () => {
+    const { z } = await import("zod");
     const GetMessagesSchema = z.object({
       agentId: z.string(),
       unreadOnly: z.boolean().optional(),
@@ -333,8 +333,8 @@ describe("MCP dashboard_get_messages: Zod Schema Validation", () => {
     expect(result.unreadOnly).toBeUndefined();
   });
 
-  it("should accept agentId with unreadOnly", () => {
-    const { z } = require("zod");
+  it("should accept agentId with unreadOnly", async () => {
+    const { z } = await import("zod");
     const GetMessagesSchema = z.object({
       agentId: z.string(),
       unreadOnly: z.boolean().optional(),
@@ -348,8 +348,8 @@ describe("MCP dashboard_get_messages: Zod Schema Validation", () => {
     expect(result.unreadOnly).toBe(true);
   });
 
-  it("should reject non-string agentId", () => {
-    const { z } = require("zod");
+  it("should reject non-string agentId", async () => {
+    const { z } = await import("zod");
     const GetMessagesSchema = z.object({
       agentId: z.string(),
       unreadOnly: z.boolean().optional(),

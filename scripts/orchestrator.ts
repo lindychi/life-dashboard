@@ -232,7 +232,7 @@ export async function executePlan(
           const isHung =
             result.error?.includes("hung") ||
             result.error?.includes("응답 없음") ||
-            (result as any).exitCode === -2;
+            (result as { exitCode?: number }).exitCode === -2;
 
           if (!isHung || attempt === maxSubtaskRetries) {
             onProgress?.({

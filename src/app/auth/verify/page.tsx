@@ -14,13 +14,13 @@ function VerifyContent() {
   useEffect(() => {
     const token = searchParams.get("token");
 
-    if (!token) {
-      setStatus("error");
-      setError("토큰이 없습니다");
-      return;
-    }
-
     const verify = async () => {
+      if (!token) {
+        setStatus("error");
+        setError("토큰이 없습니다");
+        return;
+      }
+
       try {
         const res = await fetch(`/api/auth/verify?token=${token}`);
         const data = await res.json();

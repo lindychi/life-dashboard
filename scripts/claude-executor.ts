@@ -6,6 +6,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from "child_process";
+import { isTmuxAvailable, spawnInTmux, getProcessState } from "./tmux-manager";
 
 export interface ExecutionResult {
   success: boolean;
@@ -71,6 +72,7 @@ export interface ClaudeExecutorOptions {
   allowBash?: boolean; // If true, include Bash in allowed tools (use with caution)
   maxRetries?: number; // Max retry attempts for hung/rate-limited failures (default 2)
   retryDelayMs?: number; // Delay between retries in ms (default 3000)
+  enableTmux?: boolean; // Run Claude inside tmux for live terminal monitoring (default: false)
 }
 
 /**
@@ -125,11 +127,12 @@ export function formatDuration(ms: number): string {
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, disableTools, mcpConfig, allowBash } = options;
+  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, disableTools, mcpConfig, allowBash, enableTmux = false } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
     let resolved = false;
+    let tmuxCleanup: (() => void) | null = null;
 
     const safeResolve = (result: ExecutionResult) => {
       if (resolved) return;
@@ -155,33 +158,89 @@ export function executeClaudeTask(
 
     args.push("--no-session-persistence", "--system-prompt", systemPrompt, task);
 
-    const child: ChildProcess = spawn("claude", args, {
-      cwd: workDir || process.cwd(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
     let stdout = "";
     let stderr = "";
     let lastOutputTime = Date.now();
     let lastStderrTime = Date.now();
     let lastActivityTime = Date.now(); // max(stdout, stderr)
 
-    child.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
-      lastOutputTime = Date.now();
-      lastActivityTime = Date.now();
-      onOutput?.(data.toString());
-    });
+    const useTmux = enableTmux && isTmuxAvailable();
+    let child: ChildProcess;
 
-    child.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-      lastStderrTime = Date.now();
-      lastActivityTime = Date.now();
-      // Log stderr activity so gateway can see work in progress
-      if (onOutput && data.toString().trim()) {
-        onOutput(`[stderr] ${data.toString().trim().slice(0, 200)}\n`);
+    if (useTmux) {
+      // Tmux mode: run Claude inside a tmux session for live monitoring
+      const tmuxResult = spawnInTmux("claude", args, {
+        cwd: workDir || process.cwd(),
+        agentId,
+        onStdout: (chunk: string) => {
+          stdout += chunk;
+          lastOutputTime = Date.now();
+          lastActivityTime = Date.now();
+          onOutput?.(chunk);
+        },
+        onExit: (code: number | null) => {
+          if (timer) clearTimeout(timer);
+          if (staleTimer) clearInterval(staleTimer);
+          if (code === 0) {
+            safeResolve({
+              success: true,
+              output: stdout.trim(),
+              exitCode: 0,
+              elapsedMs: Date.now() - startTime,
+              provider: "claude",
+              rateLimited: false,
+            });
+          } else {
+            const rateLimited = isRateLimitError(stdout);
+            safeResolve({
+              success: false,
+              output: stdout.trim(),
+              error: `Process exited with code ${code}`,
+              exitCode: code ?? -1,
+              elapsedMs: Date.now() - startTime,
+              provider: "claude",
+              rateLimited,
+            });
+          }
+        },
+      });
+      tmuxCleanup = tmuxResult.cleanup;
+      console.log(`   📺 Tmux session: ${tmuxResult.sessionName} (attach with: tmux attach -t ${tmuxResult.sessionName})`);
+
+      // Create a dummy child process for the timeout/stale logic
+      // The actual process lifecycle is managed by tmux
+      child = spawn("sleep", ["infinity"], { stdio: "ignore" });
+    } else {
+      // Standard mode: direct spawn with pipe capture
+      child = spawn("claude", args, {
+        cwd: workDir || process.cwd(),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      child.stdout?.on("data", (data: Buffer) => {
+        stdout += data.toString();
+        lastOutputTime = Date.now();
+        lastActivityTime = Date.now();
+        onOutput?.(data.toString());
+      });
+
+      child.stderr?.on("data", (data: Buffer) => {
+        stderr += data.toString();
+        lastStderrTime = Date.now();
+        lastActivityTime = Date.now();
+        // Log stderr activity so gateway can see work in progress
+        if (onOutput && data.toString().trim()) {
+          onOutput(`[stderr] ${data.toString().trim().slice(0, 200)}\n`);
+        }
+      });
+    }
+
+    const killProcess = () => {
+      if (tmuxCleanup) {
+        tmuxCleanup();
       }
-    });
+      try { child.kill("SIGTERM"); } catch { /* already dead */ }
+    };
 
     // Wall-clock timeout
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -189,7 +248,7 @@ export function executeClaudeTask(
       timer = setTimeout(() => {
         if (staleTimer) clearInterval(staleTimer);
         staleTimer = null;
-        child.kill("SIGTERM");
+        killProcess();
         safeResolve({
           success: false,
           error: `Timeout after ${formatDuration(timeout)}`,
@@ -210,28 +269,78 @@ export function executeClaudeTask(
         const silentMs = now - lastActivityTime;
         const stdoutSilentMs = now - lastOutputTime;
 
-        // Warning: 60% of stale timeout with no activity at all
+        // Warning threshold: 60% of stale timeout with no activity at all
         if (!warnedStale && silentMs > staleTimeout * 0.6) {
+          // In tmux mode, check process health before warning/killing
+          if (useTmux) {
+            const state = getProcessState(agentId);
+
+            // If process is alive and actively working (CPU or child processes), it's legitimate
+            if (state.alive && (state.cpuActive || state.childProcessCount > 0)) {
+              // Reset the lastActivityTime to give it more time
+              lastActivityTime = Date.now();
+              warnedStale = false;
+              const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}`;
+              onOutput?.(`[health] Process alive and working (${detail}), resetting stale timer\n`);
+              return; // Skip the kill/warn logic
+            }
+          }
+
           warnedStale = true;
           const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)})`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
         }
 
-        // Kill: no activity (stdout OR stderr) for full stale timeout
-        if (silentMs > staleTimeout) {
+        // Absolute maximum cap: 3x stale timeout regardless of CPU state
+        const absoluteMaxMs = staleTimeout * 3;
+        if (silentMs > absoluteMaxMs) {
           if (timer) clearTimeout(timer);
           timer = null;
           if (staleTimer) clearInterval(staleTimer);
           staleTimer = null;
 
-          child.kill("SIGTERM");
+          killProcess();
           setTimeout(() => {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // Process may already be dead
+            try { child.kill("SIGKILL"); } catch { /* already dead */ }
+          }, 5000);
+
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
+          safeResolve({
+            success: false,
+            error: `Process exceeded absolute timeout (${formatDuration(absoluteMaxMs)}) with no output. ${detail}`,
+            exitCode: -2,
+            elapsedMs: now - startTime,
+            provider: "claude",
+            rateLimited: false,
+          });
+          return;
+        }
+
+        // Kill: no activity (stdout OR stderr) for full stale timeout
+        if (silentMs > staleTimeout) {
+          // In tmux mode, do one final health check before killing
+          if (useTmux) {
+            const state = getProcessState(agentId);
+
+            // Still working? Give it more time
+            if (state.alive && (state.cpuActive || state.childProcessCount > 0)) {
+              lastActivityTime = Date.now();
+              warnedStale = false;
+              const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}`;
+              onOutput?.(`[health] Process still working at kill threshold (${detail}), extending timeout\n`);
+              return;
             }
+          }
+
+          if (timer) clearTimeout(timer);
+          timer = null;
+          if (staleTimer) clearInterval(staleTimer);
+          staleTimer = null;
+
+          killProcess();
+          setTimeout(() => {
+            try { child.kill("SIGKILL"); } catch { /* already dead */ }
           }, 5000);
 
           const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
@@ -250,50 +359,53 @@ export function executeClaudeTask(
       }, 15000); // Check every 15 seconds (was 30s, now more responsive)
     }
 
-    child.on("error", (err) => {
-      if (timer) clearTimeout(timer);
-      if (staleTimer) clearInterval(staleTimer);
-      safeResolve({
-        success: false,
-        error: err.message,
-        exitCode: -1,
-        elapsedMs: Date.now() - startTime,
-        provider: "claude",
-        rateLimited: false,
-      });
-    });
-
-    child.on("close", (code) => {
-      if (timer) clearTimeout(timer);
-      if (staleTimer) clearInterval(staleTimer);
-      if (code === 0) {
+    // In tmux mode, exit is handled by the onExit callback above
+    if (!useTmux) {
+      child.on("error", (err) => {
+        if (timer) clearTimeout(timer);
+        if (staleTimer) clearInterval(staleTimer);
         safeResolve({
-          success: true,
-          output: stdout.trim(),
-          exitCode: 0,
+          success: false,
+          error: err.message,
+          exitCode: -1,
           elapsedMs: Date.now() - startTime,
-          stderrOutput: stderr.trim() || undefined,
           provider: "claude",
           rateLimited: false,
         });
-      } else {
-        const combinedOutput = `${stderr}\n${stdout}`.trim();
-        const rateLimited = isRateLimitError(combinedOutput);
-        const baseError = stderr.trim() || `Process exited with code ${code}`;
-        const errorMessage = rateLimited ? `Claude rate limit exceeded: ${baseError}` : baseError;
+      });
 
-        safeResolve({
-          success: false,
-          output: stdout.trim(),
-          error: errorMessage,
-          exitCode: code ?? -1,
-          elapsedMs: Date.now() - startTime,
-          stderrOutput: stderr.trim() || undefined,
-          provider: "claude",
-          rateLimited,
-        });
-      }
-    });
+      child.on("close", (code) => {
+        if (timer) clearTimeout(timer);
+        if (staleTimer) clearInterval(staleTimer);
+        if (code === 0) {
+          safeResolve({
+            success: true,
+            output: stdout.trim(),
+            exitCode: 0,
+            elapsedMs: Date.now() - startTime,
+            stderrOutput: stderr.trim() || undefined,
+            provider: "claude",
+            rateLimited: false,
+          });
+        } else {
+          const combinedOutput = `${stderr}\n${stdout}`.trim();
+          const rateLimited = isRateLimitError(combinedOutput);
+          const baseError = stderr.trim() || `Process exited with code ${code}`;
+          const errorMessage = rateLimited ? `Claude rate limit exceeded: ${baseError}` : baseError;
+
+          safeResolve({
+            success: false,
+            output: stdout.trim(),
+            error: errorMessage,
+            exitCode: code ?? -1,
+            elapsedMs: Date.now() - startTime,
+            stderrOutput: stderr.trim() || undefined,
+            provider: "claude",
+            rateLimited,
+          });
+        }
+      });
+    }
   });
 }
 
@@ -403,6 +515,35 @@ export async function executeCodexTask(
           const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)})`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
+        }
+
+        // Absolute maximum cap: 3x stale timeout regardless of CPU state
+        const absoluteMaxMs = staleTimeout * 3;
+        if (silentMs > absoluteMaxMs) {
+          if (timer) clearTimeout(timer);
+          timer = null;
+          if (staleTimer) clearInterval(staleTimer);
+          staleTimer = null;
+
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // Process may already be dead
+            }
+          }, 5000);
+
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}`;
+          safeResolve({
+            success: false,
+            error: `Process exceeded absolute timeout (${formatDuration(absoluteMaxMs)}) with no output. ${detail}`,
+            exitCode: -2,
+            elapsedMs: now - startTime,
+            provider: "codex",
+            rateLimited: false,
+          });
+          return;
         }
 
         if (silentMs > staleTimeout) {

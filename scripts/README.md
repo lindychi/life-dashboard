@@ -94,3 +94,81 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```
 
 Restart Claude Desktop and the tools will be available.
+
+## MCP Health Check
+
+**File:** `scripts/mcp-healthcheck.ts`
+
+Validates the MCP server configuration and connectivity before deployments.
+
+### Usage
+
+```bash
+# Run full health check (includes API connectivity)
+npx tsx scripts/mcp-healthcheck.ts
+
+# Run offline checks only (skip API connectivity)
+npx tsx scripts/mcp-healthcheck.ts --offline
+```
+
+### Checks Performed
+
+1. **Config Check**: `.mcp.json` exists and has valid JSON with `life-dashboard` server entry
+2. **Env Check**: `.env.local` exists with valid `DASHBOARD_URL` (starts with `http`) and `RELAY_API_KEY`
+3. **File Check**: `scripts/mcp-server.ts` is readable
+4. **Dependencies Check**: Required npm packages are installed (`@modelcontextprotocol/sdk`, `zod`)
+5. **API Connectivity Check** (unless `--offline`): Hits `${DASHBOARD_URL}/api/relay/status` and verifies 200 response
+6. **Tool Registration Check**: Verifies all 9 expected tools are registered in the MCP server
+
+### Exit Codes
+
+- `0` - All checks passed
+- `1` - One or more checks failed
+
+### Example Output
+
+```
+🔍 MCP Health Check
+─────────────────────
+✅ .mcp.json — valid config
+✅ .env.local — DASHBOARD_URL set (https://...)
+✅ .env.local — RELAY_API_KEY set
+✅ mcp-server.ts — file readable
+✅ Dependencies — @modelcontextprotocol/sdk installed
+✅ Dependencies — zod installed
+✅ API connectivity — /api/relay/status 200 OK
+✅ Tool count — 9 tools registered
+─────────────────────
+✅ All 8 checks passed
+```
+
+### Programmatic Usage
+
+```typescript
+import { runHealthChecks } from './scripts/mcp-healthcheck';
+
+const report = await runHealthChecks({ offline: true });
+console.log(`${report.passed} passed, ${report.failed} failed`);
+
+for (const result of report.results) {
+  console.log(`${result.name}: ${result.passed ? 'PASS' : 'FAIL'}`);
+  if (result.detail) {
+    console.log(`  ${result.detail}`);
+  }
+}
+```
+
+### Testing
+
+```bash
+pnpm test scripts/__tests__/mcp-healthcheck.test.ts
+```
+
+The test suite covers:
+- Valid and invalid config scenarios
+- Missing environment variables
+- Valid and invalid DASHBOARD_URL formats
+- Dependency checking (installed vs missing)
+- Offline mode behavior
+- API connectivity (success, failure, timeout)
+- Tool registration validation

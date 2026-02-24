@@ -16,7 +16,7 @@
 
 import * as path from "path";
 import { config } from "dotenv";
-config({ path: path.resolve(__dirname, "..", ".env.local") });
+config({ path: path.resolve(__dirname, "..", ".env.local"), override: true });
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -29,8 +29,12 @@ import {
 import { z } from "zod";
 import { sendMessageWithAttachments, uploadAttachment } from "./mcp-attachments";
 
-// Configuration
-const DASHBOARD_URL = process.env.DASHBOARD_URL || "http://localhost:3000";
+// Configuration — validate URL is not a literal unexpanded variable
+const rawUrl = process.env.DASHBOARD_URL || "http://localhost:3000";
+const DASHBOARD_URL = rawUrl.startsWith("http") ? rawUrl : "http://localhost:3000";
+if (!rawUrl.startsWith("http")) {
+  console.error(`Warning: DASHBOARD_URL="${rawUrl}" is not a valid URL, falling back to localhost`);
+}
 const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
 
 // Helper function for API calls
@@ -67,6 +71,7 @@ async function apiCall(
 const GetHistorySchema = z.object({
   agentId: z.string().optional().describe("Agent ID to filter by (omit for all agents)"),
   limit: z.number().default(20).describe("Maximum number of entries to return"),
+  excludeTypes: z.array(z.string()).optional().describe("Exclude event types from results (e.g., ['output'])"),
 });
 
 const GetAgentsSchema = z.object({
@@ -90,6 +95,8 @@ const AddHistorySchema = z.object({
   ]).describe("Type of history entry"),
   content: z.string().describe("Content of the history entry"),
   metadata: z.record(z.string(), z.unknown()).optional().describe("Additional metadata"),
+  requestGroupId: z.string().uuid().optional().describe("UUID to group related history entries together"),
+  requestTitle: z.string().max(200).optional().describe("Human-readable title for the request group"),
 });
 
 const SendMessageSchema = z.object({
@@ -117,6 +124,17 @@ const SearchHistorySchema = z.object({
   query: z.string().describe("Search query"),
   agentId: z.string().optional().describe("Filter by agent ID"),
   limit: z.number().default(20).describe("Maximum number of results"),
+});
+
+const GetTimelineSchema = z.object({
+  agentId: z.string().optional().describe("Filter by agent ID"),
+  types: z.array(z.string()).optional().describe("Filter by event types (e.g., ['task_started', 'task_completed'])"),
+  excludeTypes: z.array(z.string()).optional().describe("Exclude event types (e.g., ['output'] to hide noise)"),
+  search: z.string().optional().describe("Search text in content (case-insensitive)"),
+  dateFrom: z.string().optional().describe("Filter entries after this ISO date"),
+  dateTo: z.string().optional().describe("Filter entries before this ISO date"),
+  cursor: z.string().optional().describe("Cursor for pagination (ISO timestamp from previous response)"),
+  limit: z.number().default(50).describe("Maximum number of entries to return"),
 });
 
 // Create MCP server
@@ -150,6 +168,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "number",
               description: "Maximum number of entries to return",
               default: 20,
+            },
+            excludeTypes: {
+              type: "array",
+              items: { type: "string" },
+              description: "Exclude event types from results (e.g., ['output'])",
             },
           },
         },
@@ -226,6 +249,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             metadata: {
               type: "object",
               description: "Additional metadata",
+            },
+            requestGroupId: {
+              type: "string",
+              description: "UUID to group related history entries together",
+            },
+            requestTitle: {
+              type: "string",
+              description: "Human-readable title for the request group (max 200 chars)",
             },
           },
           required: ["agentId", "type", "content"],
@@ -334,6 +365,50 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ["filePath"],
+        },
+      },
+      {
+        name: "dashboard_get_timeline",
+        description: "Get filtered timeline history with cursor-based pagination. Supports filtering by agent, type, date range, and search text. Returns entries newest-first with a cursor for the next page.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: {
+              type: "string",
+              description: "Filter by agent ID",
+            },
+            types: {
+              type: "array",
+              items: { type: "string" },
+              description: "Filter by event types (e.g., ['task_started', 'task_completed'])",
+            },
+            excludeTypes: {
+              type: "array",
+              items: { type: "string" },
+              description: "Exclude event types (e.g., ['output'] to hide noise)",
+            },
+            search: {
+              type: "string",
+              description: "Search text in content (case-insensitive)",
+            },
+            dateFrom: {
+              type: "string",
+              description: "Filter entries after this ISO date",
+            },
+            dateTo: {
+              type: "string",
+              description: "Filter entries before this ISO date",
+            },
+            cursor: {
+              type: "string",
+              description: "Cursor for pagination (ISO timestamp from previous response)",
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of entries to return",
+              default: 50,
+            },
+          },
         },
       },
     ],
@@ -489,6 +564,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         queryParams.set("limit", params.limit.toString());
 
         const data = await apiCall(`/api/relay/history/search?${queryParams}`);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(data, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "dashboard_get_timeline": {
+        const params = GetTimelineSchema.parse(args);
+        const queryParams = new URLSearchParams();
+        if (params.agentId) queryParams.set("agentId", params.agentId);
+        if (params.types) queryParams.set("types", params.types.join(","));
+        if (params.excludeTypes) queryParams.set("excludeTypes", params.excludeTypes.join(","));
+        if (params.search) queryParams.set("search", params.search);
+        if (params.dateFrom) queryParams.set("dateFrom", params.dateFrom);
+        if (params.dateTo) queryParams.set("dateTo", params.dateTo);
+        if (params.cursor) queryParams.set("cursor", params.cursor);
+        queryParams.set("limit", params.limit.toString());
+
+        const data = await apiCall(`/api/history/timeline?${queryParams}`);
 
         return {
           content: [

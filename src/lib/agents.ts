@@ -13,7 +13,7 @@ export interface AgentConfig {
 }
 
 // In-memory store (agents.json에서 초기화, 런타임에 수정 가능)
-let agents: AgentConfig[] = [...(agentsConfig as AgentConfig[])];
+const agents: AgentConfig[] = [...(agentsConfig as AgentConfig[])];
 
 /**
  * 활성화된 에이전트 목록 반환

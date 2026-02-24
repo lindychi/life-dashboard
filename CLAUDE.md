@@ -10,6 +10,7 @@ pnpm build        # Production build (Next.js standalone output)
 pnpm lint         # ESLint (eslint-config-next with core-web-vitals + typescript)
 pnpm start        # Start production server
 pnpm test         # Run vitest tests
+pnpm monitor      # Tmux agent session monitor (list/attach/peek/kill)
 ```
 
 ## Architecture
@@ -53,7 +54,17 @@ A command relay for remotely controlling AI agents from the dashboard. Data pers
 
 - `src/lib/relay.ts` — Gateway connections, command queue, agent statuses (all async, PostgreSQL-backed). Gateways authenticate via `x-relay-key` header
 - `scripts/gateway-connector.ts` — Client-side script that runs on a local machine, registers with the relay, polls for commands, and executes them via Claude CLI
+- `scripts/claude-executor.ts` — Claude/Codex CLI executor with hung detection (stale timeout), retry, and optional tmux integration
 - API routes under `/api/relay/`: `register` (gateway connects), `poll` (gateway fetches commands + sends heartbeat), `command` (dashboard sends commands to gateway), `status` (dashboard reads current state)
+
+### Tmux Agent Monitoring
+
+Optional tmux integration for real-time agent output monitoring. Enable by setting `ENABLE_TMUX=true` in `.env.local`.
+
+- `scripts/tmux-manager.ts` — Tmux session lifecycle: create, capture, list, kill. Session naming: `ld-agent-{agentId}`
+- `scripts/tmux-monitor.ts` — Interactive CLI: `pnpm monitor` (list/attach/peek/kill agent sessions)
+- When enabled, each Claude CLI agent task runs inside a tmux session; attach with `tmux attach -t ld-agent-{agentId}`
+- Falls back to normal `child_process.spawn` when tmux is unavailable or disabled
 
 ### History & Messages
 
@@ -114,7 +125,7 @@ Single-page client component (`src/app/page.tsx`) with tabs: Agents, History, Me
 
 ### Environment Variables
 
-See `.env.example`: `JWT_SECRET`, `ALLOWED_EMAILS`, `RESEND_API_KEY`, `RELAY_API_KEY`, `DATABASE_URL`, `NEXT_PUBLIC_APP_URL`, `UPLOAD_MAX_SIZE`, `STORAGE_TYPE`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_ENDPOINT`
+See `.env.example`: `JWT_SECRET`, `ALLOWED_EMAILS`, `RESEND_API_KEY`, `RELAY_API_KEY`, `DATABASE_URL`, `DASHBOARD_URL`, `NEXT_PUBLIC_APP_URL`, `UPLOAD_MAX_SIZE`, `STORAGE_TYPE`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_ENDPOINT`, `ENABLE_TMUX`
 
 ### Deployment
 
