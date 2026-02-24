@@ -173,6 +173,26 @@ function parseStreamEvents(
 }
 
 /**
+ * Check if a process has active network connections (ESTABLISHED TCP sockets).
+ * Used to determine if Claude CLI is still waiting for API response vs truly hung.
+ * Returns true if the process has at least one ESTABLISHED connection.
+ */
+export function checkNetworkHealth(pid: number): boolean {
+  try {
+    const output = execFileSync("lsof", ["-i", "-a", "-p", String(pid), "-n", "-P"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    // Look for ESTABLISHED connections (process is waiting for API response)
+    return output.includes("ESTABLISHED");
+  } catch {
+    // lsof may fail if process already exited or permission denied
+    return false;
+  }
+}
+
+/**
  * Execute a task using Claude CLI
  *
  * Spawns `claude` with --print flag (no-tool tasks) or --output-format stream-json (tool tasks).
@@ -203,7 +223,8 @@ export function executeClaudeTask(
       args.push("--print");
       args.push("--tools", "");
     } else {
-      // Tool-using tasks: use stream-json for real-time heartbeats (prevents false hung detection)
+      // Tool-using tasks: use stream-json for structured event output
+      // Note: stream-json only emits events on actual output (tool calls, text), NOT during thinking/inference
       args.push("--print", "--output-format", "stream-json", "--verbose");
       const tools = allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS;
       args.push("--allowedTools", tools);
@@ -404,14 +425,23 @@ export function executeClaudeTask(
             }
           }
 
+          // Non-tmux: check network health via lsof
+          const pid = child.pid;
+          if (!useTmux && pid && checkNetworkHealth(pid)) {
+            lastActivityTime = Date.now();
+            warnedStale = false;
+            onOutput?.(`[health] Active API connection detected, resetting stale timer\n`);
+            return;
+          }
+
           warnedStale = true;
           const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)})`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
         }
 
-        // Absolute maximum cap: 2x stale timeout regardless of CPU state
-        const absoluteMaxMs = staleTimeout * 2;
+        // Absolute maximum cap: 3x stale timeout regardless of network/CPU state
+        const absoluteMaxMs = staleTimeout * 3;
         if (silentMs > absoluteMaxMs) {
           if (timer) clearTimeout(timer);
           timer = null;
@@ -449,6 +479,15 @@ export function executeClaudeTask(
               onOutput?.(`[health] Process still working at kill threshold (${detail}), extending timeout\n`);
               return;
             }
+          }
+
+          // Non-tmux: final network health check before killing
+          const killPid = child.pid;
+          if (!useTmux && killPid && checkNetworkHealth(killPid)) {
+            lastActivityTime = Date.now();
+            warnedStale = false;
+            onOutput?.(`[health] Active API connection at kill threshold, extending timeout\n`);
+            return;
           }
 
           if (timer) clearTimeout(timer);

@@ -214,8 +214,8 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         console.log(`   🚀 Spawning Claude for agent: ${agentId}`);
         console.log(`   📋 Task: ${task}`);
 
-        const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그/i.test(task);
-        const staleTimeout = isComplexTask ? 300000 : 120000; // 5 min for complex, 2 min for simple (stream-json provides heartbeats)
+        const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획/i.test(task);
+        const staleTimeout = isComplexTask ? 600000 : 300000; // 10 min for complex, 5 min for simple (stream-json has no heartbeat during thinking)
 
         let totalChars = 0;
         let chunksReceived = 0;
@@ -434,7 +434,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           let chunksReceived = 0;
 
           const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획/i.test(taskStr);
-          const taskStaleTimeout = isComplexTask ? 300000 : 120000; // 5 min for complex, 2 min for simple (stream-json provides heartbeats)
+          const taskStaleTimeout = isComplexTask ? 600000 : 300000; // 10 min for complex, 5 min for simple (stream-json has no heartbeat during thinking)
 
           const result = await executeLlmTaskWithRetry({
             agentId,

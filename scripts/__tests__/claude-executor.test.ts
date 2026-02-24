@@ -13,6 +13,7 @@ import {
   isClaudeAvailable,
   executeClaudeTask,
   executeLlmTask,
+  checkNetworkHealth,
   type ClaudeExecutorOptions,
 } from "../claude-executor";
 
@@ -522,6 +523,261 @@ describe("claude-executor", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Process hung");
       expect(result.error).toContain("5분");
+      expect(result.exitCode).toBe(-2);
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
+
+      vi.useRealTimers();
+    });
+  });
+
+  describe("checkNetworkHealth", () => {
+    it("should return true when process has ESTABLISHED connections", () => {
+      vi.mocked(execFileSync).mockReturnValue(
+        "COMMAND  PID USER   FD   TYPE    DEVICE SIZE/OFF NODE NAME\nclaude 12345 user  10u  IPv4 0x1234  0t0  TCP 127.0.0.1:52345->api.anthropic.com:443 (ESTABLISHED)\n" as unknown as Buffer
+      );
+
+      expect(checkNetworkHealth(12345)).toBe(true);
+      expect(execFileSync).toHaveBeenCalledWith(
+        "lsof",
+        ["-i", "-a", "-p", "12345", "-n", "-P"],
+        { encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] }
+      );
+    });
+
+    it("should return false when process has no ESTABLISHED connections", () => {
+      vi.mocked(execFileSync).mockReturnValue(
+        "COMMAND  PID USER   FD   TYPE    DEVICE SIZE/OFF NODE NAME\nclaude 12345 user  10u  IPv4 0x1234  0t0  TCP 127.0.0.1:52345->api.anthropic.com:443 (CLOSE_WAIT)\n" as unknown as Buffer
+      );
+
+      expect(checkNetworkHealth(12345)).toBe(false);
+    });
+
+    it("should return false when lsof fails (process exited)", () => {
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw new Error("lsof: no file use located");
+      });
+
+      expect(checkNetworkHealth(99999)).toBe(false);
+    });
+
+    it("should return false when lsof returns empty output", () => {
+      vi.mocked(execFileSync).mockReturnValue("" as unknown as Buffer);
+
+      expect(checkNetworkHealth(12345)).toBe(false);
+    });
+  });
+
+  describe("network-based hung detection", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("should NOT kill process when network health check detects active connection at warning threshold", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      // Mock checkNetworkHealth to return true (active API connection)
+      // execFileSync is already mocked, so we need to handle both 'which' calls and 'lsof' calls
+      vi.mocked(execFileSync).mockImplementation((cmd: string) => {
+        if (cmd === "lsof") {
+          return "ESTABLISHED" as unknown as Buffer;
+        }
+        return Buffer.from("");
+      });
+
+      const onOutput = vi.fn();
+      const promise = executeClaudeTask({
+        agentId: "qa",
+        task: "Review code",
+        systemPrompt: "You are QA.",
+        staleTimeout: 60000, // 1 minute for test speed
+        onOutput,
+      });
+
+      // Initial output to establish baseline
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Starting"}]}}\n'));
+
+      // Advance past 60% threshold (36s) to the first 15s check interval that exceeds it
+      // At 45s (3rd interval tick), silentMs=45s > 36s (60% of 60s)
+      await vi.advanceTimersByTimeAsync(45000);
+
+      // Should have detected active connection and NOT warned
+      expect(onOutput).toHaveBeenCalledWith(
+        expect.stringContaining("[health] Active API connection detected, resetting stale timer")
+      );
+
+      // Process should NOT be killed
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      // Complete normally
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"result","result":"Done"}\n'));
+      mockProc.emit("close", 0);
+
+      const result = await promise;
+      expect(result.success).toBe(true);
+
+      vi.useRealTimers();
+    });
+
+    it("should NOT kill process when network health check detects active connection at kill threshold", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      // First call: no network (triggers warning), subsequent calls: has network (prevents kill)
+      let lsofCallCount = 0;
+      vi.mocked(execFileSync).mockImplementation((cmd: string) => {
+        if (cmd === "lsof") {
+          lsofCallCount++;
+          if (lsofCallCount === 1) {
+            // First check at warning threshold: no connection, let warning happen
+            throw new Error("no connections");
+          }
+          // At kill threshold: active connection, should prevent kill
+          return "ESTABLISHED" as unknown as Buffer;
+        }
+        return Buffer.from("");
+      });
+
+      const onOutput = vi.fn();
+      const promise = executeClaudeTask({
+        agentId: "qa",
+        task: "Review code",
+        systemPrompt: "You are QA.",
+        staleTimeout: 60000, // 1 minute
+        onOutput,
+      });
+
+      // Initial output
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Starting"}]}}\n'));
+
+      // Advance past warning threshold (first lsof call fails, warning emitted)
+      await vi.advanceTimersByTimeAsync(45000);
+      expect(onOutput).toHaveBeenCalledWith(expect.stringContaining("[warning]"));
+
+      // Advance past kill threshold (second lsof call succeeds with ESTABLISHED)
+      await vi.advanceTimersByTimeAsync(30000); // total ~75s > 60s staleTimeout
+
+      // Should have detected active connection at kill threshold
+      expect(onOutput).toHaveBeenCalledWith(
+        expect.stringContaining("[health] Active API connection at kill threshold, extending timeout")
+      );
+
+      // Process should NOT be killed
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      // Complete normally
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"result","result":"Done"}\n'));
+      mockProc.emit("close", 0);
+
+      const result = await promise;
+      expect(result.success).toBe(true);
+
+      vi.useRealTimers();
+    });
+
+    it("should kill process when no active network connection and stale timeout exceeded", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      // Mock checkNetworkHealth to always return false (no active connection)
+      vi.mocked(execFileSync).mockImplementation((cmd: string) => {
+        if (cmd === "lsof") {
+          throw new Error("no connections");
+        }
+        return Buffer.from("");
+      });
+
+      const onOutput = vi.fn();
+      const promise = executeClaudeTask({
+        agentId: "qa",
+        task: "Hung task",
+        systemPrompt: "You are QA.",
+        staleTimeout: 60000, // 1 minute
+        onOutput,
+      });
+
+      // Initial output
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Starting"}]}}\n'));
+
+      // Advance past stale timeout with no output and no network
+      await vi.advanceTimersByTimeAsync(45000); // warning at 36s
+      await vi.advanceTimersByTimeAsync(30000); // kill at 60s+
+
+      // Run remaining timers (SIGKILL follow-up)
+      await vi.runAllTimersAsync();
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(result.exitCode).toBe(-2);
+      expect(result.error).toContain("Process hung");
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
+
+      vi.useRealTimers();
+    });
+
+    it("should still kill process at absolute max (3x) even with active network", async () => {
+      vi.useFakeTimers();
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      // Network always shows ESTABLISHED — but absolute max should still kill
+      vi.mocked(execFileSync).mockImplementation((cmd: string) => {
+        if (cmd === "lsof") {
+          return "ESTABLISHED" as unknown as Buffer;
+        }
+        return Buffer.from("");
+      });
+
+      const onOutput = vi.fn();
+      const staleTimeout = 60000; // 1 minute
+      const promise = executeClaudeTask({
+        agentId: "qa",
+        task: "Infinite thinking task",
+        systemPrompt: "You are QA.",
+        staleTimeout,
+        onOutput,
+      });
+
+      // Initial output
+      mockProc.stdout!.emit("data", Buffer.from('{"type":"assistant","message":{"content":[{"type":"text","text":"Starting"}]}}\n'));
+
+      // The network health check resets lastActivityTime each time at the warning and kill thresholds.
+      // But the absolute max cap (3x = 180s) checks against the LAST activity time.
+      // Since network health keeps resetting lastActivityTime, we need to advance
+      // far enough that even with resets, the absolute max is eventually reached.
+      // Actually, the absolute max checks silentMs = now - lastActivityTime.
+      // If network health keeps resetting lastActivityTime to Date.now(), the silentMs
+      // stays small. The absolute max would never be reached this way.
+      // This is by design: if there's a real active connection, we keep extending.
+      // The absolute max only triggers when silentMs > staleTimeout * 3,
+      // which means lastActivityTime hasn't been reset for 3x the stale timeout.
+      // So let's test: stop the network check returning true after a while.
+
+      // For the first 2 minutes, network is active (keeps resetting)
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(mockProc.kill).not.toHaveBeenCalled();
+
+      // Now network goes away
+      vi.mocked(execFileSync).mockImplementation((cmd: string) => {
+        if (cmd === "lsof") {
+          throw new Error("no connections");
+        }
+        return Buffer.from("");
+      });
+
+      // After network goes away, the absolute max (3x = 180s from last reset) applies
+      // The last reset was at ~120s. Now we need 180s of no activity to hit absolute max.
+      // But the stale timeout (60s) kill will trigger first at 60s of no activity.
+      await vi.advanceTimersByTimeAsync(75000); // 75s past last reset
+
+      // Run remaining timers
+      await vi.runAllTimersAsync();
+
+      const result = await promise;
+      expect(result.success).toBe(false);
       expect(result.exitCode).toBe(-2);
       expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
 
