@@ -892,6 +892,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
+        // Step 6: Auto-restart gateway if gateway-related files were changed
+        const gatewayPatterns = ["scripts/gateway-connector", "scripts/claude-executor", "scripts/mcp-server", "scripts/orchestrator", "scripts/tmux-manager", "agents.json", ".mcp.json"];
+        let gatewayChanged = false;
+        try {
+          // Check which files changed in the last commit
+          const diffFiles = runCommand("git", ["diff", "--name-only", "HEAD~1", "HEAD"]).trim();
+          gatewayChanged = gatewayPatterns.some((p) => diffFiles.includes(p));
+        } catch {
+          // If files were provided, check those directly
+          if (params.files) {
+            gatewayChanged = params.files.some((f) => gatewayPatterns.some((p) => f.includes(p)));
+          }
+        }
+
+        if (gatewayChanged) {
+          try {
+            const uid = runCommand("id", ["-u"]).trim();
+            runCommand("launchctl", ["kickstart", "-k", `gui/${uid}/com.lifedashboard.gateway-connector`]);
+            pipeline.push({ step: "gateway_restart", success: true, output: "Gateway connector restarted (gateway-related files changed)" });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pipeline.push({ step: "gateway_restart", success: false, output: `Gateway restart failed: ${msg}` });
+          }
+        }
+
         const allSuccess = pipeline.every((s) => s.success);
         return {
           content: [{ type: "text", text: JSON.stringify({ success: allSuccess, pipeline }, null, 2) }],
