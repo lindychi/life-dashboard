@@ -828,17 +828,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
-        // Step 4: Railway auto-deploys from git push, but try explicit deploy if available
+        // Step 4: Railway deploy + wait for completion
+        let deploymentId: string | undefined;
         try {
           const railwayOut = runCommand("railway", ["up", "--detach"], { cwd: PROJECT_ROOT });
-          pipeline.push({ step: "railway", success: true, output: railwayOut.trim() });
+          // Extract deployment ID from output (format: "...?id=<uuid>&")
+          const idMatch = railwayOut.match(/[?&]id=([a-f0-9-]+)/);
+          deploymentId = idMatch?.[1];
+          pipeline.push({ step: "railway_trigger", success: true, output: railwayOut.trim() });
         } catch {
-          // Railway CLI may not be available — auto-deploy from git push is the fallback
-          pipeline.push({ step: "railway", success: true, output: "Skipped explicit railway deploy (auto-deploy from git push)" });
+          pipeline.push({ step: "railway_trigger", success: true, output: "Skipped explicit deploy (auto-deploy from git push)" });
         }
 
+        // Step 5: Wait for deployment to complete (poll status)
+        if (deploymentId) {
+          const maxWait = 180_000; // 3 minutes max
+          const pollInterval = 10_000; // check every 10 seconds
+          const startWait = Date.now();
+          let finalStatus = "UNKNOWN";
+
+          while (Date.now() - startWait < maxWait) {
+            try {
+              const listOut = runCommand("railway", ["deployment", "list", "--limit", "1", "--json"], { cwd: PROJECT_ROOT });
+              const deployments = JSON.parse(listOut) as Array<{ id: string; status: string }>;
+              const latest = deployments[0];
+              if (latest?.id === deploymentId) {
+                finalStatus = latest.status;
+                if (finalStatus === "SUCCESS") {
+                  pipeline.push({ step: "railway_status", success: true, output: `Deployment ${deploymentId.slice(0, 8)} completed: ${finalStatus}` });
+                  break;
+                }
+                if (finalStatus === "FAILED" || finalStatus === "CRASHED" || finalStatus === "REMOVED") {
+                  pipeline.push({ step: "railway_status", success: false, output: `Deployment ${deploymentId.slice(0, 8)} failed: ${finalStatus}` });
+                  break;
+                }
+                // Still in progress (BUILDING, DEPLOYING, etc.) — continue polling
+              }
+            } catch {
+              // railway CLI error — skip polling
+              break;
+            }
+            // Sleep between polls
+            execFileSync("sleep", ["10"]);
+          }
+
+          if (finalStatus !== "SUCCESS" && finalStatus !== "FAILED" && finalStatus !== "CRASHED" && finalStatus !== "REMOVED") {
+            pipeline.push({ step: "railway_status", success: true, output: `Deployment ${deploymentId?.slice(0, 8) ?? "?"} still in progress after ${Math.round((Date.now() - startWait) / 1000)}s (status: ${finalStatus}). Check Railway dashboard.` });
+          }
+        }
+
+        const allSuccess = pipeline.every((s) => s.success);
         return {
-          content: [{ type: "text", text: JSON.stringify({ success: true, pipeline }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ success: allSuccess, pipeline }, null, 2) }],
+          ...(allSuccess ? {} : { isError: true }),
         };
       }
 
