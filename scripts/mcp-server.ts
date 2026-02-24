@@ -122,6 +122,10 @@ const UploadAttachmentSchema = z.object({
 const SendCommandSchema = z.object({
   type: z.enum(["spawn", "orchestrate", "status"]).describe("Command type"),
   payload: z.record(z.string(), z.unknown()).describe("Command payload"),
+  attachments: z.array(z.object({
+    filePath: z.string().describe("Local file path to attach"),
+    refKey: z.string().optional().describe("Custom ref_key"),
+  })).optional().describe("Files to upload and attach to the command. Each file is uploaded, assigned a ref_key, and the @file:ref_key reference is auto-injected into the task/instruction content."),
 });
 
 const SearchHistorySchema = z.object({
@@ -137,6 +141,7 @@ const GetTimelineSchema = z.object({
   search: z.string().optional().describe("Search text in content (case-insensitive)"),
   dateFrom: z.string().optional().describe("Filter entries after this ISO date"),
   dateTo: z.string().optional().describe("Filter entries before this ISO date"),
+  requestGroupId: z.string().uuid().optional().describe("Filter by request group UUID to see all entries in a specific request group"),
   cursor: z.string().optional().describe("Cursor for pagination (ISO timestamp from previous response)"),
   limit: z.number().default(50).describe("Maximum number of entries to return"),
 });
@@ -348,7 +353,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "dashboard_send_command",
-        description: "Send a command to the gateway (spawn task, orchestrate, etc)",
+        description: "Send a command to the gateway (spawn task, orchestrate, etc). Supports file attachments via the 'attachments' option - files are uploaded and their @file:ref_key references are appended to the task/instruction content.",
         inputSchema: {
           type: "object",
           properties: {
@@ -360,6 +365,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             payload: {
               type: "object",
               description: "Command payload",
+            },
+            attachments: {
+              type: "array",
+              description: "Files to upload and attach. Each file gets a ref_key auto-appended to task/instruction content.",
+              items: {
+                type: "object",
+                properties: {
+                  filePath: {
+                    type: "string",
+                    description: "Local file path to attach",
+                  },
+                  refKey: {
+                    type: "string",
+                    description: "Custom ref_key (auto-generated if omitted)",
+                  },
+                },
+                required: ["filePath"],
+              },
             },
           },
           required: ["type", "payload"],
@@ -437,6 +460,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             dateTo: {
               type: "string",
               description: "Filter entries before this ISO date",
+            },
+            requestGroupId: {
+              type: "string",
+              description: "Filter by request group UUID to see all entries in a specific request group",
             },
             cursor: {
               type: "string",
@@ -643,13 +670,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "dashboard_send_command": {
         const params = SendCommandSchema.parse(args);
-        const data = await apiCall("/api/relay/command", "POST", params);
+
+        // Upload attachments first, collect ref_keys
+        let attachmentRefs: Array<{ refKey: string }> | undefined;
+        if (params.attachments && params.attachments.length > 0) {
+          attachmentRefs = [];
+          for (const att of params.attachments) {
+            const result = await uploadAttachment({
+              dashboardUrl: DASHBOARD_URL,
+              relayApiKey: RELAY_API_KEY,
+              filePath: att.filePath,
+              refKey: att.refKey,
+            });
+            attachmentRefs.push({ refKey: result.refKey });
+          }
+        }
+
+        // Auto-create request group for spawn/orchestrate commands
+        let enrichedPayload = { ...params.payload } as Record<string, unknown>;
+        let requestGroupInfo: { requestGroupId: string; requestTitle: string } | undefined;
+
+        if (
+          (params.type === "spawn" || params.type === "orchestrate") &&
+          !enrichedPayload.requestGroupId
+        ) {
+          const taskContent =
+            (enrichedPayload.task as string) ||
+            (enrichedPayload.instruction as string) ||
+            "";
+
+          if (taskContent) {
+            try {
+              const groupResult = await apiCall("/api/request-groups", "POST", {
+                content: taskContent,
+              }) as { success?: boolean; group?: { id: string; title: string } };
+
+              if (groupResult?.success && groupResult.group) {
+                enrichedPayload.requestGroupId = groupResult.group.id;
+                enrichedPayload.requestTitle = groupResult.group.title;
+                requestGroupInfo = {
+                  requestGroupId: groupResult.group.id,
+                  requestTitle: groupResult.group.title,
+                };
+              }
+            } catch (err) {
+              // Request group creation is best-effort; don't block command
+              console.error("Failed to auto-create request group:", err);
+            }
+          }
+        }
+
+        const data = await apiCall("/api/relay/command", "POST", {
+          type: params.type,
+          payload: enrichedPayload,
+          ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
+        });
 
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(data, null, 2),
+              text: JSON.stringify({
+                ...(data as Record<string, unknown>),
+                ...(requestGroupInfo ? { requestGroup: requestGroupInfo } : {}),
+              }, null, 2),
             },
           ],
         };
@@ -683,6 +767,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (params.search) queryParams.set("search", params.search);
         if (params.dateFrom) queryParams.set("dateFrom", params.dateFrom);
         if (params.dateTo) queryParams.set("dateTo", params.dateTo);
+        if (params.requestGroupId) queryParams.set("requestGroupId", params.requestGroupId);
         if (params.cursor) queryParams.set("cursor", params.cursor);
         queryParams.set("limit", params.limit.toString());
 
