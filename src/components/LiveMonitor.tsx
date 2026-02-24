@@ -8,7 +8,7 @@ import { relativeTime } from "@/lib/format-utils";
 interface AgentStatusEntry {
   id: string;
   name: string;
-  status: "running" | "idle" | "waiting" | "error";
+  status: "running" | "idle" | "waiting" | "error" | "stale";
   currentTask?: string;
   updatedAt: string;
   liveOutput?: {
@@ -45,6 +45,7 @@ const STATUS_STYLES: Record<string, { bg: string; pulse: boolean; label: string 
   idle: { bg: "bg-gray-500", pulse: false, label: "대기" },
   waiting: { bg: "bg-yellow-500", pulse: true, label: "대기 중" },
   error: { bg: "bg-red-500", pulse: false, label: "에러" },
+  stale: { bg: "bg-amber-600", pulse: false, label: "비활성" },
 };
 
 /**
@@ -80,7 +81,8 @@ function LiveOutputLine({ line }: { line: string }) {
 
 export default function LiveMonitor({ agentStatuses, historyData, agentMap }: LiveMonitorProps) {
   const activeAgents = agentStatuses.filter((a) => a.status === "running");
-  const otherAgents = agentStatuses.filter((a) => a.status !== "running");
+  const staleAgents = agentStatuses.filter((a) => a.status === "stale");
+  const otherAgents = agentStatuses.filter((a) => a.status !== "running" && a.status !== "stale");
 
   // Get recent log entries for a specific agent (newest first, max 3)
   const getRecentLogs = useMemo(() => {
@@ -227,6 +229,33 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Stale agents - previously running but gateway disconnected */}
+      {staleAgents.length > 0 && (
+        <div className="mb-3">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <span className="text-[10px] text-amber-500 uppercase tracking-wider font-medium">
+              연결 끊김 ({staleAgents.length})
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {staleAgents.map((agent) => {
+              const display = getDisplay(agent.id);
+              return (
+                <div
+                  key={agent.id}
+                  className="flex items-center gap-1.5 bg-amber-900/20 rounded-lg px-2.5 py-1.5 border border-amber-700/30"
+                >
+                  <span className="text-sm opacity-60">{display.emoji}</span>
+                  <span className="text-xs text-amber-400/70">{display.name}</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-600" title="비활성" />
+                  <span className="text-[10px] text-gray-600">{relativeTime(agent.updatedAt)}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

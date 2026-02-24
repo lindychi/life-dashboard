@@ -16,7 +16,7 @@ interface AgentDashboardProps {
   liveAgentStatuses: Array<{
     id: string;
     name: string;
-    status: "running" | "idle" | "waiting" | "error";
+    status: "running" | "idle" | "waiting" | "error" | "stale";
     currentTask?: string;
     updatedAt: string;
     liveOutput?: {

@@ -32,7 +32,7 @@ export interface AgentConfig {
  */
 export interface AgentRuntime {
   config: AgentConfig;
-  status: "running" | "idle" | "waiting" | "error";
+  status: "running" | "idle" | "waiting" | "error" | "stale";
   currentTask?: string;
   sessionKey?: string;
   stack: TaskStack[];

@@ -22,6 +22,7 @@ const STATUS_STYLES: Record<AgentRuntime["status"], { class: string; label: stri
   idle: { class: "bg-gray-500/20 text-gray-400 border-gray-500/30", label: "⚫ 대기" },
   waiting: { class: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30", label: "🟡 대기중" },
   error: { class: "bg-red-500/20 text-red-400 border-red-500/30", label: "🔴 에러" },
+  stale: { class: "bg-amber-600/20 text-amber-400 border-amber-600/30", label: "🟠 비활성" },
 };
 
 const CATEGORY_STYLES: Record<AgentConfig["category"], string> = {

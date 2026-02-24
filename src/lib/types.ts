@@ -36,7 +36,7 @@ export interface RelayCommand {
 }
 
 /** Agent status values */
-export type AgentStatusValue = "running" | "idle" | "waiting" | "error";
+export type AgentStatusValue = "running" | "idle" | "waiting" | "error" | "stale";
 
 /** Structured progress event emitted during task execution */
 export interface ProgressEventEntry {

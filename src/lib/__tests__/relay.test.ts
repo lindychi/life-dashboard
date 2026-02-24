@@ -170,9 +170,23 @@ vi.mock("@/lib/db", () => {
       return mockStorage.agentStatuses.filter((a) => a.gateway_id === gatewayId);
     }
 
-    // SELECT agent_statuses (all gateways)
-    if (sql.includes("SELECT gateway_id, id, name, status")) {
-      return mockStorage.agentStatuses;
+    // SELECT agent_statuses (all gateways) - with gateway_connected JOIN
+    if (sql.includes("a.gateway_id") && sql.includes("agent_statuses a")) {
+      const now = Date.now();
+      return mockStorage.agentStatuses.map((a) => {
+        const gw = mockStorage.gatewayConnections.find((g) => g.id === a.gateway_id);
+        const gwConnected = gw ? (now - new Date(gw.last_heartbeat).getTime() <= 30000) : false;
+        return { ...a, gateway_connected: gwConnected };
+      });
+    }
+
+    // UPDATE agent_statuses to idle (registerGateway cleanup)
+    if (sql.includes("UPDATE agent_statuses") && sql.includes("status = 'idle'")) {
+      const [gatewayId] = params;
+      mockStorage.agentStatuses
+        .filter((a) => a.gateway_id === gatewayId && a.status === "running")
+        .forEach((a) => { a.status = "idle"; a.current_task = null; });
+      return [];
     }
 
     return [];

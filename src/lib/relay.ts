@@ -86,6 +86,13 @@ export async function registerGateway(
     throw new Error("Failed to register gateway");
   }
 
+  // Reset all previous agent statuses to 'idle' on re-registration
+  // This clears stale "running" statuses from previous sessions
+  await query(
+    `UPDATE agent_statuses SET status = 'idle', current_task = NULL WHERE gateway_id = $1 AND status = 'running'`,
+    [gatewayId]
+  );
+
   return {
     id: result.id,
     connectedAt: result.connected_at,
@@ -391,11 +398,15 @@ export async function getAllAgentStatuses(): Promise<
       current_task: string | null;
       session_key: string | null;
       updated_at: string;
+      gateway_connected: boolean;
     }>(
       `
-      SELECT gateway_id, id, name, status, current_task, session_key, updated_at
-      FROM agent_statuses
-      ORDER BY gateway_id, updated_at DESC
+      SELECT
+        a.gateway_id, a.id, a.name, a.status, a.current_task, a.session_key, a.updated_at,
+        (g.last_heartbeat > NOW() - INTERVAL '30 seconds') AS gateway_connected
+      FROM agent_statuses a
+      LEFT JOIN gateway_connections g ON g.id = a.gateway_id
+      ORDER BY a.gateway_id, a.updated_at DESC
     `,
       []
     );
@@ -411,10 +422,16 @@ export async function getAllAgentStatuses(): Promise<
       const cacheKey = `${r.gateway_id}:${r.id}`;
       const cachedLiveOutput = liveOutputCache.get(cacheKey);
 
+      // If gateway is disconnected and agent was "running", mark as "stale"
+      const effectiveStatus =
+        !r.gateway_connected && r.status === "running"
+          ? "stale"
+          : r.status;
+
       grouped[r.gateway_id].push({
         id: r.id,
         name: r.name,
-        status: r.status as AgentStatus["status"],
+        status: effectiveStatus as AgentStatus["status"],
         currentTask: r.current_task || undefined,
         sessionKey: r.session_key || undefined,
         updatedAt: r.updated_at,
