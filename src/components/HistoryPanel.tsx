@@ -20,7 +20,9 @@ interface HistoryPanelProps {
 }
 
 interface SwimlaneColumn {
-  agentId: string;
+  id: string;          // agentId, type name, or date bucket
+  label: string;       // Display label
+  emoji?: string;      // Optional emoji for the header
   entries: HistoryEntry[];
   lastActivity: number;
 }
@@ -100,6 +102,9 @@ export default function HistoryPanel({
   const [dateTo, setDateTo] = useState("");
   const [hideOutput, setHideOutput] = useState(true);
   const [viewMode, setViewMode] = useState<"unified" | "split" | "grouped">("unified");
+  const [splitAxis, setSplitAxis] = useState<"agent" | "type" | "date">("agent");
+  const [filterRequestGroupId, setFilterRequestGroupId] = useState<string | null>(null);
+  const [filterRequestGroupTitle, setFilterRequestGroupTitle] = useState<string | null>(null);
 
   // ----- Timeline data state -----
   const [timelineEntries, setTimelineEntries] = useState<HistoryEntry[]>([]);
@@ -188,6 +193,13 @@ export default function HistoryPanel({
     [agentMap]
   );
 
+  // ----- Handler for filtering by request group from entry card -----
+  const handleFilterByGroup = useCallback((requestGroupId: string, requestTitle: string) => {
+    setFilterRequestGroupId(requestGroupId);
+    setFilterRequestGroupTitle(requestTitle);
+    setViewMode("unified");
+  }, []);
+
   // ----- All available types (from prop data for dropdown) -----
   const allTypes = useMemo(() => {
     const types = new Set<string>();
@@ -234,8 +246,12 @@ export default function HistoryPanel({
           endOfDay.setHours(23, 59, 59, 999);
           params.set("dateTo", endOfDay.toISOString());
         }
-        if (hideOutput) {
+        if (hideOutput && !filterRequestGroupId) {
+          // requestGroupId 필터 시에는 output도 표시 (전체 맥락 보기 위해)
           params.set("excludeTypes", "output");
+        }
+        if (filterRequestGroupId) {
+          params.set("requestGroupId", filterRequestGroupId);
         }
         if (cursor) {
           params.set("cursor", cursor);
@@ -279,7 +295,7 @@ export default function HistoryPanel({
         setLoading(false);
       }
     },
-    [filterAgent, filterType, debouncedSearch, dateFrom, dateTo, hideOutput]
+    [filterAgent, filterType, debouncedSearch, dateFrom, dateTo, hideOutput, filterRequestGroupId]
   );
 
   // ----- Initial load and filter change handling -----
@@ -369,13 +385,129 @@ export default function HistoryPanel({
       const lastActivity = Math.max(
         ...entries.map((e) => new Date(e.timestamp).getTime())
       );
-      columns.push({ agentId, entries, lastActivity });
+      const display = getDisplay(agentId);
+      columns.push({
+        id: agentId,
+        label: display.name,
+        emoji: display.emoji,
+        entries,
+        lastActivity
+      });
     }
 
     // Sort by most recent activity (descending)
     columns.sort((a, b) => b.lastActivity - a.lastActivity);
     return columns;
   }, [timelineEntries]);
+
+  // ----- Split view: group entries by type -----
+  const splitByType = useMemo((): SwimlaneColumn[] => {
+    const typeEmojis: Record<string, string> = {
+      task_started: "🚀",
+      task_completed: "✅",
+      task_failed: "❌",
+      output: "📄",
+      status_change: "🔄",
+      message_sent: "💬",
+      message_received: "📥",
+      command_received: "📡",
+    };
+
+    const groupMap = new Map<string, HistoryEntry[]>();
+
+    for (const entry of timelineEntries) {
+      if (!groupMap.has(entry.type)) {
+        groupMap.set(entry.type, []);
+      }
+      groupMap.get(entry.type)!.push(entry);
+    }
+
+    const columns: SwimlaneColumn[] = [];
+    for (const [type, entries] of groupMap) {
+      const lastActivity = Math.max(
+        ...entries.map((e) => new Date(e.timestamp).getTime())
+      );
+      const typeLabel = HISTORY_TYPE_LABELS[type as keyof typeof HISTORY_TYPE_LABELS]?.label || type;
+      columns.push({
+        id: type,
+        label: typeLabel,
+        emoji: typeEmojis[type],
+        entries,
+        lastActivity
+      });
+    }
+
+    // Sort by most recent activity (descending)
+    columns.sort((a, b) => b.lastActivity - a.lastActivity);
+    return columns;
+  }, [timelineEntries]);
+
+  // ----- Split view: group entries by date -----
+  const splitByDate = useMemo((): SwimlaneColumn[] => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const thisWeek = new Date(today);
+    thisWeek.setDate(thisWeek.getDate() - 7);
+    const thisMonth = new Date(today);
+    thisMonth.setDate(thisMonth.getDate() - 30);
+
+    const buckets = {
+      today: [] as HistoryEntry[],
+      yesterday: [] as HistoryEntry[],
+      thisWeek: [] as HistoryEntry[],
+      thisMonth: [] as HistoryEntry[],
+      older: [] as HistoryEntry[],
+    };
+
+    for (const entry of timelineEntries) {
+      const entryDate = new Date(entry.timestamp);
+      if (entryDate >= today) {
+        buckets.today.push(entry);
+      } else if (entryDate >= yesterday) {
+        buckets.yesterday.push(entry);
+      } else if (entryDate >= thisWeek) {
+        buckets.thisWeek.push(entry);
+      } else if (entryDate >= thisMonth) {
+        buckets.thisMonth.push(entry);
+      } else {
+        buckets.older.push(entry);
+      }
+    }
+
+    const columns: SwimlaneColumn[] = [];
+    const bucketMeta = [
+      { key: "today", label: "오늘", emoji: "📅" },
+      { key: "yesterday", label: "어제", emoji: "📆" },
+      { key: "thisWeek", label: "이번 주", emoji: "📊" },
+      { key: "thisMonth", label: "이번 달", emoji: "🗓️" },
+      { key: "older", label: "그 이전", emoji: "📜" },
+    ];
+
+    for (const { key, label, emoji } of bucketMeta) {
+      const entries = buckets[key as keyof typeof buckets];
+      if (entries.length > 0) {
+        const lastActivity = Math.max(
+          ...entries.map((e) => new Date(e.timestamp).getTime())
+        );
+        columns.push({ id: key, label, emoji, entries, lastActivity });
+      }
+    }
+
+    // Date buckets are already in chronological order (most recent first)
+    return columns;
+  }, [timelineEntries]);
+
+  // ----- Active split columns based on splitAxis -----
+  const activeSplitColumns = useMemo(() => {
+    switch (splitAxis) {
+      case "agent": return splitByAgent;
+      case "type": return splitByType;
+      case "date": return splitByDate;
+      default: return splitByAgent;
+    }
+  }, [splitAxis, splitByAgent, splitByType, splitByDate]);
 
   // ----- Detect consecutive same-agent runs for connector lines -----
   const shouldShowConnector = useCallback(
@@ -549,7 +681,12 @@ export default function HistoryPanel({
               분할
             </button>
             <button
-              onClick={() => setViewMode("grouped")}
+              onClick={() => {
+                setViewMode("grouped");
+                // 요청별 뷰로 전환 시 그룹 필터 해제
+                setFilterRequestGroupId(null);
+                setFilterRequestGroupTitle(null);
+              }}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                 viewMode === "grouped"
                   ? "bg-blue-600 text-white"
@@ -566,7 +703,68 @@ export default function HistoryPanel({
             {totalCount > 0 && ` / ${totalCount}`}건
           </span>
         </div>
+
+        {/* Active requestGroupId filter banner */}
+        {filterRequestGroupId && (
+          <div className="flex items-center gap-2 px-1">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30">
+              <span>📋</span>
+              <span className="truncate max-w-[300px]">
+                {filterRequestGroupTitle || filterRequestGroupId.slice(0, 8)}
+              </span>
+              <button
+                onClick={() => {
+                  setFilterRequestGroupId(null);
+                  setFilterRequestGroupTitle(null);
+                }}
+                className="ml-1 hover:text-white transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                title="요청 그룹 필터 해제"
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
       </div>
+
+      {/* ===== Split Axis Selector (for split view mode only) ===== */}
+      {viewMode === "split" && (
+        <div className="flex items-center gap-2 px-1">
+          <span className="text-xs text-gray-500">분할 기준:</span>
+          <div className="inline-flex rounded-lg bg-gray-900/50 p-0.5 border border-gray-700/50">
+            <button
+              onClick={() => setSplitAxis("agent")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                splitAxis === "agent"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              에이전트
+            </button>
+            <button
+              onClick={() => setSplitAxis("type")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                splitAxis === "type"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              타입
+            </button>
+            <button
+              onClick={() => setSplitAxis("date")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                splitAxis === "date"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              날짜
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ===== Content Area ===== */}
       {initialLoading ? (
@@ -599,6 +797,7 @@ export default function HistoryPanel({
                   }
                   onCopy={handleCopy}
                   onReply={handleReply}
+                  onFilterByGroup={handleFilterByGroup}
                 />
               </div>
             </div>
@@ -659,8 +858,16 @@ export default function HistoryPanel({
           ) : (
             groupedData.map((group) => (
               <div key={group.requestGroupId} className="bg-gray-800/30 rounded-xl border border-gray-700/50 overflow-hidden">
-                {/* Group header */}
-                <div className="px-4 py-3 border-b border-gray-700/50 bg-gray-800/50">
+                {/* Group header - 클릭 시 통합 뷰로 전환 + requestGroupId 필터 */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFilterRequestGroupId(group.requestGroupId);
+                    setFilterRequestGroupTitle(group.requestTitle || "제목 없음");
+                    setViewMode("unified");
+                  }}
+                  className="w-full text-left px-4 py-3 border-b border-gray-700/50 bg-gray-800/50 hover:bg-gray-700/50 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                >
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-medium text-gray-200 truncate">
                       {group.requestTitle || "제목 없음"}
@@ -676,6 +883,7 @@ export default function HistoryPanel({
                         <span className="text-yellow-400">{group.inProgressCount} 진행중</span>
                       )}
                       <span>총 {group.totalCount}건</span>
+                      <span className="text-blue-400 ml-1">상세 →</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
@@ -683,7 +891,7 @@ export default function HistoryPanel({
                     <span>~</span>
                     <span>{new Date(group.lastActivityAt).toLocaleString("ko-KR")}</span>
                   </div>
-                </div>
+                </button>
 
                 {/* Group entries */}
                 <div className="p-2 space-y-1">
@@ -699,6 +907,7 @@ export default function HistoryPanel({
                       onToggleReply={(id) => setReplyingTo(replyingTo === id ? null : id)}
                       onCopy={handleCopy}
                       onReply={handleReply}
+                      onFilterByGroup={handleFilterByGroup}
                     />
                   ))}
                 </div>
@@ -711,20 +920,19 @@ export default function HistoryPanel({
         <div className="overflow-x-auto pb-2">
           <div
             className="flex gap-4"
-            style={{ minWidth: `${Math.max(splitByAgent.length * 320, 320)}px` }}
+            style={{ minWidth: `${Math.max(activeSplitColumns.length * 320, 320)}px` }}
           >
-            {splitByAgent.map((column) => {
-              const display = getDisplay(column.agentId);
+            {activeSplitColumns.map((column) => {
               return (
                 <div
-                  key={column.agentId}
+                  key={column.id}
                   className="flex-shrink-0 w-[300px] bg-gray-800/30 rounded-xl border border-gray-700/50 overflow-hidden"
                 >
                   {/* Column header */}
                   <div className="sticky top-0 z-10 bg-gray-800/80 backdrop-blur-sm px-3 py-2.5 border-b border-gray-700/50 flex items-center gap-2">
-                    <span className="text-lg">{display.emoji}</span>
+                    {column.emoji && <span className="text-lg">{column.emoji}</span>}
                     <span className="text-sm font-medium text-gray-200 truncate">
-                      {display.name}
+                      {column.label}
                     </span>
                     <span className="ml-auto text-xs text-gray-500">
                       {column.entries.length}건
@@ -737,7 +945,7 @@ export default function HistoryPanel({
                       <HistoryEntryCard
                         key={entry.id}
                         entry={entry}
-                        agentDisplay={display}
+                        agentDisplay={getDisplay(entry.agentId)}
                         isExpanded={expandedEntries.has(entry.id)}
                         isReplying={replyingTo === entry.id}
                         isCopied={copiedId === entry.id}
@@ -747,6 +955,7 @@ export default function HistoryPanel({
                         }
                         onCopy={handleCopy}
                         onReply={handleReply}
+                        onFilterByGroup={handleFilterByGroup}
                       />
                     ))}
                   </div>
@@ -754,9 +963,9 @@ export default function HistoryPanel({
               );
             })}
 
-            {splitByAgent.length === 0 && (
+            {activeSplitColumns.length === 0 && (
               <div className="w-full text-center py-8 text-gray-500 text-sm">
-                표시할 에이전트가 없습니다
+                표시할 데이터가 없습니다
               </div>
             )}
           </div>

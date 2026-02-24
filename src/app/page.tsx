@@ -7,6 +7,8 @@ import { relativeTime } from "@/lib/format-utils";
 import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 import AgentDashboard from "@/components/AgentDashboard";
 import CronJobsPanel from "@/components/CronJobsPanel";
+import { uploadFiles } from "@/components/FileAttachment";
+import type { AttachedFile, UploadedAttachment } from "@/components/FileAttachment";
 
 // ===== Types =====
 
@@ -559,6 +561,13 @@ export default function Home() {
         totalChars: number;
         lastActivityAt: string;
         chunksReceived: number;
+        recentEvents?: Array<{
+          type: "tool_use" | "text" | "health" | "warning" | "stderr";
+          timestamp: string;
+          tool?: string;
+          target?: string;
+          content?: string;
+        }>;
       };
     }>
   >([]);
@@ -571,6 +580,8 @@ export default function Home() {
   >({});
   const [queuedCommandsCount, setQueuedCommandsCount] = useState(0);
   const [queuedNotification, setQueuedNotification] = useState<string | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const router = useRouter();
 
   const today = new Date().toLocaleDateString("ko-KR", {
@@ -656,6 +667,13 @@ export default function Home() {
                 totalChars: number;
                 lastActivityAt: string;
                 chunksReceived: number;
+                recentEvents?: Array<{
+                  type: "tool_use" | "text" | "health" | "warning" | "stderr";
+                  timestamp: string;
+                  tool?: string;
+                  target?: string;
+                  content?: string;
+                }>;
               };
             }>>).flat();
             setLiveAgentStatuses(all);
@@ -867,17 +885,48 @@ export default function Home() {
     if (!orchestrateInput.trim()) return;
 
     const task = orchestrateInput.trim();
-    // Clear input immediately so user can type the next instruction
+    const filesToUpload = [...attachedFiles];
+
+    // Clear input and files immediately so user can type the next instruction
     setOrchestrateInput("");
+    setAttachedFiles([]);
 
     try {
+      // Upload attached files first if any
+      let uploadedAttachments: UploadedAttachment[] = [];
+      if (filesToUpload.length > 0) {
+        setUploadProgress({ current: 0, total: filesToUpload.length });
+        try {
+          uploadedAttachments = await uploadFiles(filesToUpload, (current, total) => {
+            setUploadProgress({ current, total });
+          });
+        } catch (uploadError) {
+          setUploadProgress(null);
+          // Restore input and files on upload error
+          setOrchestrateInput(task);
+          setAttachedFiles(filesToUpload);
+          alert(`파일 업로드 실패: ${uploadError instanceof Error ? uploadError.message : "알 수 없는 오류"}`);
+          return;
+        }
+        setUploadProgress(null);
+      }
+
+      // Build command body with attachment refs
+      const commandBody: Record<string, unknown> = {
+        type: "orchestrate",
+        payload: { task },
+      };
+
+      if (uploadedAttachments.length > 0) {
+        (commandBody as Record<string, unknown>).attachments = uploadedAttachments.map((a) => ({
+          refKey: a.refKey,
+        }));
+      }
+
       const response = await fetch("/api/relay/command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "orchestrate",
-          payload: { task },
-        }),
+        body: JSON.stringify(commandBody),
       });
 
       if (!response.ok) {
@@ -887,7 +936,11 @@ export default function Home() {
 
       // Show notification when agents are already busy
       if (isOrchestrating) {
-        setQueuedNotification("큐에 추가됨");
+        setQueuedNotification(
+          uploadedAttachments.length > 0
+            ? `큐에 추가됨 (파일 ${uploadedAttachments.length}개 첨부)`
+            : "큐에 추가됨"
+        );
         setTimeout(() => setQueuedNotification(null), 3000);
       }
       // Note: isOrchestrating is auto-detected from agent status polling.
@@ -896,6 +949,7 @@ export default function Home() {
       console.error("Orchestrate failed:", error);
       // Restore the input on error so user doesn't lose their text
       setOrchestrateInput(task);
+      setAttachedFiles(filesToUpload);
       alert(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
     }
   };
@@ -1075,8 +1129,11 @@ export default function Home() {
             queuedCommands={queuedCommands}
             queuedCommandsCount={queuedCommandsCount}
             queuedNotification={queuedNotification}
+            attachedFiles={attachedFiles}
+            uploadProgress={uploadProgress}
             onOrchestrateInputChange={setOrchestrateInput}
             onOrchestrate={handleOrchestrate}
+            onFilesChange={setAttachedFiles}
             onAddTask={handleAddTask}
             onStartTask={handleStartTask}
             onPendingReply={async (entry, replyText) => {

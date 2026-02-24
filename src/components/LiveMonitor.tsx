@@ -11,6 +11,19 @@ interface AgentStatusEntry {
   status: "running" | "idle" | "waiting" | "error";
   currentTask?: string;
   updatedAt: string;
+  liveOutput?: {
+    lastChunk: string;
+    totalChars: number;
+    lastActivityAt: string;
+    chunksReceived: number;
+    recentEvents?: Array<{
+      type: "tool_use" | "text" | "health" | "warning" | "stderr";
+      timestamp: string;
+      tool?: string;
+      target?: string;
+      content?: string;
+    }>;
+  };
 }
 
 interface HistoryEntry {
@@ -33,6 +46,37 @@ const STATUS_STYLES: Record<string, { bg: string; pulse: boolean; label: string 
   waiting: { bg: "bg-yellow-500", pulse: true, label: "대기 중" },
   error: { bg: "bg-red-500", pulse: false, label: "에러" },
 };
+
+/**
+ * Render a single line of live output with appropriate styling.
+ * Detects tool call lines (emoji-prefixed) and applies color coding.
+ */
+function LiveOutputLine({ line }: { line: string }) {
+  const isToolLine = /^[📖✏️🔧🔍📂💻📝🚀🌐🔎🔌]/.test(line);
+
+  if (isToolLine) {
+    const colonIdx = line.indexOf(":");
+    const toolPart = colonIdx > 0 ? line.slice(0, colonIdx) : line;
+    const detailPart = colonIdx > 0 ? line.slice(colonIdx + 1).trim() : "";
+    return (
+      <div className="flex items-baseline gap-1 text-blue-300 leading-tight">
+        <span className="flex-shrink-0">{toolPart}</span>
+        {detailPart && (
+          <>
+            <span className="text-gray-600">:</span>
+            <span className="text-gray-400 truncate">{detailPart}</span>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-green-400/80 leading-tight whitespace-pre-wrap break-words">
+      {line}
+    </div>
+  );
+}
 
 export default function LiveMonitor({ agentStatuses, historyData, agentMap }: LiveMonitorProps) {
   const activeAgents = agentStatuses.filter((a) => a.status === "running");
@@ -113,8 +157,53 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
                   </div>
                 )}
 
-                {/* Recent logs */}
-                {logs.length > 0 && (
+                {/* Live output (real-time) — takes priority over history logs */}
+                {agent.liveOutput && (agent.liveOutput.recentEvents?.length || agent.liveOutput.lastChunk) ? (
+                  <div className="bg-gray-800/80 rounded px-2 py-1.5 font-mono text-[11px]">
+                    <div className="max-h-28 overflow-y-auto space-y-0.5">
+                      {agent.liveOutput.recentEvents && agent.liveOutput.recentEvents.length > 0 ? (
+                        /* Structured events (newest first in data, reverse for chronological) */
+                        [...agent.liveOutput.recentEvents].reverse().slice(-8).map((evt, i) => {
+                          if (evt.type === "tool_use") {
+                            return (
+                              <div key={i} className="flex items-baseline gap-1 text-blue-300 leading-tight">
+                                <span className="flex-shrink-0 text-blue-400">🔧 {evt.tool || "tool"}</span>
+                                {evt.target && (
+                                  <>
+                                    <span className="text-gray-600">→</span>
+                                    <span className="text-gray-400 truncate">{evt.target}</span>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          }
+                          if (evt.type === "text") {
+                            return (
+                              <div key={i} className="text-green-400/80 leading-tight truncate">
+                                {(evt.content || "").slice(0, 120)}
+                              </div>
+                            );
+                          }
+                          return null;
+                        })
+                      ) : (
+                        /* Fallback: parse lastChunk text */
+                        agent.liveOutput.lastChunk
+                          .split("\n")
+                          .filter(Boolean)
+                          .slice(-8)
+                          .map((line, i) => (
+                            <LiveOutputLine key={i} line={line} />
+                          ))
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between mt-1 text-[10px] text-gray-600">
+                      <span>{agent.liveOutput.chunksReceived} chunks</span>
+                      <span>{relativeTime(agent.liveOutput.lastActivityAt)}</span>
+                    </div>
+                  </div>
+                ) : logs.length > 0 ? (
+                  /* Fallback to recent history logs */
                   <div className="space-y-1">
                     {logs.map((log) => (
                       <div
@@ -134,7 +223,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
                       </div>
                     ))}
                   </div>
-                )}
+                ) : null}
               </div>
             );
           })}

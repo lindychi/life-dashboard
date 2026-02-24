@@ -1,11 +1,246 @@
 "use client";
 
-import React, { useState, memo } from "react";
+import React, { useState, memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyToClipboard } from "@/lib/clipboard";
 import { relativeTime } from "@/lib/format-utils";
 import { HISTORY_TYPE_LABELS } from "@/lib/ui-constants";
+
+// ===== Tool Call Types & Display =====
+
+interface ToolCallData {
+  name: string;
+  input?: Record<string, unknown>;
+  result?: string;
+  timestamp?: string;
+}
+
+const TOOL_DISPLAY: Record<string, { emoji: string; color: string }> = {
+  Read: { emoji: "📖", color: "text-emerald-400" },
+  Write: { emoji: "✏️", color: "text-amber-400" },
+  Edit: { emoji: "🔧", color: "text-orange-400" },
+  Grep: { emoji: "🔍", color: "text-cyan-400" },
+  Glob: { emoji: "📂", color: "text-blue-400" },
+  Bash: { emoji: "💻", color: "text-purple-400" },
+  TodoWrite: { emoji: "📝", color: "text-yellow-400" },
+  Task: { emoji: "🚀", color: "text-pink-400" },
+  WebFetch: { emoji: "🌐", color: "text-teal-400" },
+  WebSearch: { emoji: "🔎", color: "text-indigo-400" },
+};
+
+function getToolDisplay(name: string): { emoji: string; color: string; shortName: string } {
+  if (TOOL_DISPLAY[name]) {
+    return { ...TOOL_DISPLAY[name], shortName: name };
+  }
+  if (name.startsWith("mcp__")) {
+    const parts = name.split("__");
+    return { emoji: "🔌", color: "text-violet-400", shortName: parts[parts.length - 1] || name };
+  }
+  return { emoji: "🔧", color: "text-gray-400", shortName: name };
+}
+
+function formatToolInputSummary(name: string, input: Record<string, unknown>): string {
+  try {
+    if (name === "Read" || name === "Write" || name === "Edit") {
+      return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+    }
+    if (name === "Grep") return input.pattern ? String(input.pattern).slice(0, 60) : "";
+    if (name === "Glob") return input.pattern ? String(input.pattern).slice(0, 60) : "";
+    if (name === "Bash") return input.command ? String(input.command).slice(0, 80) : "";
+    if (name.startsWith("mcp__")) {
+      const firstStr = Object.values(input).find(v => typeof v === "string");
+      return firstStr ? String(firstStr).slice(0, 60) : "";
+    }
+    return "";
+  } catch { return ""; }
+}
+
+// ===== Tool Call Item Component =====
+
+function ToolCallItem({ tc, index }: { tc: ToolCallData; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const display = getToolDisplay(tc.name);
+  const summary = tc.input ? formatToolInputSummary(tc.name, tc.input) : "";
+  const hasDetails = (tc.input && Object.keys(tc.input).length > 0) || tc.result;
+
+  return (
+    <div className="border-l-2 border-gray-700/50 pl-2 ml-1">
+      <button
+        type="button"
+        onClick={() => hasDetails && setExpanded(!expanded)}
+        className={`flex items-center gap-1.5 w-full text-left py-0.5 text-xs ${
+          hasDetails ? "cursor-pointer hover:bg-gray-700/30 rounded-r" : "cursor-default"
+        } transition-colors`}
+      >
+        <span className="text-gray-600 w-4 text-right font-mono">{index + 1}</span>
+        <span>{display.emoji}</span>
+        <span className={`font-medium ${display.color}`}>{display.shortName}</span>
+        {summary && (
+          <span className="text-gray-500 truncate flex-1 font-mono">{summary}</span>
+        )}
+        {hasDetails && (
+          <span className="text-gray-600 text-[10px] flex-shrink-0 ml-auto">
+            {expanded ? "▼" : "▶"}
+          </span>
+        )}
+      </button>
+
+      {expanded && hasDetails && (
+        <div className="ml-6 mt-1 mb-2 space-y-1.5">
+          {/* Input parameters */}
+          {tc.input && Object.keys(tc.input).length > 0 && (
+            <div>
+              <span className="text-[10px] uppercase tracking-wider text-gray-600 font-medium">Input</span>
+              <pre className="mt-0.5 text-[11px] text-gray-400 bg-gray-900/50 rounded px-2 py-1.5 overflow-x-auto max-h-[200px] overflow-y-auto border border-gray-800 whitespace-pre-wrap break-words">
+                {JSON.stringify(tc.input, null, 2)}
+              </pre>
+            </div>
+          )}
+
+          {/* Result output */}
+          {tc.result && (
+            <div>
+              <span className="text-[10px] uppercase tracking-wider text-gray-600 font-medium">Result</span>
+              <pre className="mt-0.5 text-[11px] text-gray-400 bg-gray-900/50 rounded px-2 py-1.5 overflow-x-auto max-h-[300px] overflow-y-auto border border-gray-800 whitespace-pre-wrap break-words">
+                {tc.result}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== Tool Calls Panel =====
+
+function ToolCallsPanel({ toolCalls }: { toolCalls: ToolCallData[] }) {
+  const [showAll, setShowAll] = useState(false);
+
+  if (toolCalls.length === 0) return null;
+
+  // Count by tool name
+  const toolCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const tc of toolCalls) {
+      counts.set(tc.name, (counts.get(tc.name) || 0) + 1);
+    }
+    return counts;
+  }, [toolCalls]);
+
+  // Summary badges
+  const summaryBadges = useMemo(() => {
+    const entries = Array.from(toolCounts.entries());
+    return entries.map(([name, count]) => {
+      const display = getToolDisplay(name);
+      return { name: display.shortName, emoji: display.emoji, color: display.color, count };
+    });
+  }, [toolCounts]);
+
+  return (
+    <div className="mt-2 border border-gray-700/50 rounded-lg bg-gray-800/30 overflow-hidden">
+      {/* Header with tool summary badges */}
+      <button
+        type="button"
+        onClick={() => setShowAll(!showAll)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-gray-700/20 transition-colors"
+      >
+        <span className="text-gray-500 font-medium">🔧 도구 호출 ({toolCalls.length})</span>
+        <div className="flex gap-1 flex-wrap flex-1">
+          {summaryBadges.map(({ name, emoji, color, count }) => (
+            <span
+              key={name}
+              className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-700/50 ${color}`}
+            >
+              <span className="text-[10px]">{emoji}</span>
+              <span className="text-[10px] font-mono">{name}</span>
+              {count > 1 && <span className="text-[10px] text-gray-500">×{count}</span>}
+            </span>
+          ))}
+        </div>
+        <span className="text-gray-600 text-[10px] flex-shrink-0">
+          {showAll ? "접기 ▲" : "펼치기 ▼"}
+        </span>
+      </button>
+
+      {/* Expanded tool call list */}
+      {showAll && (
+        <div className="px-3 pb-2 space-y-0.5">
+          {toolCalls.map((tc, i) => (
+            <ToolCallItem key={`${tc.name}-${i}`} tc={tc} index={i} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== Attachment Reference Parsing =====
+
+interface FileReference {
+  refKey: string;
+  fullMatch: string;
+}
+
+function parseFileReferences(content: string): FileReference[] {
+  const pattern = /@file:([a-zA-Z0-9_-]+)/g;
+  const refs: FileReference[] = [];
+  let match;
+  while ((match = pattern.exec(content)) !== null) {
+    refs.push({ refKey: match[1], fullMatch: match[0] });
+  }
+  return refs;
+}
+
+function AttachmentBadge({ refKey }: { refKey: string }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (downloading) return;
+
+    setDownloading(true);
+    try {
+      // Look up attachment metadata to get the ID
+      const res = await fetch(`/api/attachments/by-ref/${refKey}`);
+      if (!res.ok) {
+        alert("\uCCA8\uBD80\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4");
+        return;
+      }
+      const data = await res.json();
+      if (data.attachment?.id) {
+        // Open download in new tab
+        window.open(`/api/attachments/${data.attachment.id}`, "_blank");
+      }
+    } catch {
+      alert("\uCCA8\uBD80\uD30C\uC77C \uB2E4\uC6B4\uB85C\uB4DC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={downloading}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-500/15 border border-blue-500/30 text-blue-300 hover:bg-blue-500/25 hover:text-blue-200 text-xs transition-colors disabled:opacity-50"
+      title={`\uCCA8\uBD80\uD30C\uC77C \uB2E4\uC6B4\uB85C\uB4DC (${refKey})`}
+    >
+      <span>{"\u{1F4CE}"}</span>
+      <span className="font-mono">{refKey}</span>
+      {downloading ? (
+        <span className="animate-spin inline-block w-3 h-3 border border-blue-300 border-t-transparent rounded-full" />
+      ) : (
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
 interface HistoryEntryCardProps {
   entry: {
@@ -15,6 +250,8 @@ interface HistoryEntryCardProps {
     content: string;
     timestamp: string;
     metadata?: Record<string, unknown>;
+    requestGroupId?: string;
+    requestTitle?: string;
   };
   agentDisplay: { emoji: string; name: string };
   isExpanded: boolean;
@@ -24,6 +261,7 @@ interface HistoryEntryCardProps {
   onToggleReply: (id: string) => void;
   onCopy: (id: string, content: string) => void;
   onReply: (entry: HistoryEntryCardProps['entry'], replyText: string) => void;
+  onFilterByGroup?: (requestGroupId: string, requestTitle: string) => void;
 }
 
 const HistoryEntryCard = memo(function HistoryEntryCard({
@@ -36,6 +274,7 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
   onToggleReply,
   onCopy,
   onReply,
+  onFilterByGroup,
 }: HistoryEntryCardProps) {
   const [replyText, setReplyText] = useState("");
 
@@ -47,6 +286,11 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
   const needsCollapse = entry.content.length > 200;
   const showReplyButton = entry.type === "output" || entry.type === "task_completed";
   const showCopyButton = entry.type === "output" || entry.type === "task_completed" || entry.type === "task_failed";
+
+  // Parse file references from content
+  const fileRefs = useMemo(() => {
+    return parseFileReferences(entry.content);
+  }, [entry.content]);
 
   const handleReplySubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,6 +317,19 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
             <span className="text-xs text-gray-500">
               {relativeTime(entry.timestamp)}
             </span>
+            {entry.requestGroupId && onFilterByGroup && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFilterByGroup(entry.requestGroupId!, entry.requestTitle || entry.requestGroupId!.slice(0, 8));
+                }}
+                className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors truncate max-w-[150px] focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                title={`요청 그룹: ${entry.requestTitle || entry.requestGroupId}`}
+              >
+                📋 {entry.requestTitle || entry.requestGroupId!.slice(0, 8)}
+              </button>
+            )}
           </div>
           <div className="mt-2">
             <div
@@ -92,6 +349,20 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
                 {isExpanded ? "접기 ▲" : "더보기 ▼"}
               </button>
             )}
+
+            {/* Attachment badges */}
+            {fileRefs.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {fileRefs.map((ref, i) => (
+                  <AttachmentBadge key={`${ref.refKey}-${i}`} refKey={ref.refKey} />
+                ))}
+              </div>
+            ) : null}
+
+            {/* Tool calls panel */}
+            {entry.metadata?.toolCalls && Array.isArray(entry.metadata.toolCalls) && (entry.metadata.toolCalls as ToolCallData[]).length > 0 ? (
+              <ToolCallsPanel toolCalls={entry.metadata.toolCalls as ToolCallData[]} />
+            ) : null}
           </div>
           <div className="flex items-center gap-2 mt-2">
             {showReplyButton && (
@@ -148,6 +419,7 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
   return (
     prevProps.entry.id === nextProps.entry.id &&
     prevProps.entry.timestamp === nextProps.entry.timestamp &&
+    prevProps.entry.metadata === nextProps.entry.metadata &&
     prevProps.isExpanded === nextProps.isExpanded &&
     prevProps.isReplying === nextProps.isReplying &&
     prevProps.isCopied === nextProps.isCopied

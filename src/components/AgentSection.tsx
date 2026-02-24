@@ -209,15 +209,112 @@ const AgentSection = memo(function AgentSection({
 
           {/* Live Output */}
           {agent.status === "running" && agent.liveOutput && (
-            <div className="rounded-lg bg-gray-900 p-3 font-mono text-xs text-green-400">
+            <div className="rounded-lg bg-gray-900 p-3 font-mono text-xs">
               <div className="mb-1 flex items-center justify-between text-gray-500">
-                <span>📡 실시간 출력</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                  📡 실시간 출력
+                </span>
                 <span>
                   {agent.liveOutput.chunksReceived} chunks · {formatBytes(agent.liveOutput.totalChars)}
                 </span>
               </div>
-              <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
-                {agent.liveOutput.lastChunk}
+              <div className="max-h-48 overflow-y-auto space-y-0.5">
+                {/* Use structured recentEvents when available, oldest first for chronological display */}
+                {agent.liveOutput.recentEvents && agent.liveOutput.recentEvents.length > 0 ? (
+                  [...agent.liveOutput.recentEvents].reverse().map((evt, i) => {
+                    if (evt.type === "tool_use") {
+                      return (
+                        <div key={i} className="flex items-baseline gap-1.5 py-0.5 text-blue-300">
+                          <span className="flex-shrink-0 text-blue-400">🔧 {evt.tool || "tool"}</span>
+                          {evt.target && (
+                            <>
+                              <span className="text-gray-600">→</span>
+                              <span className="text-gray-400 truncate">{evt.target}</span>
+                            </>
+                          )}
+                          {evt.content && !evt.tool && (
+                            <span className="text-gray-400 truncate">{evt.content}</span>
+                          )}
+                        </div>
+                      );
+                    }
+                    if (evt.type === "text") {
+                      return (
+                        <div key={i} className="text-green-400 py-0.5 whitespace-pre-wrap break-words">
+                          {(evt.content || "").slice(0, 300)}
+                          {(evt.content || "").length > 300 && <span className="text-gray-600">…</span>}
+                        </div>
+                      );
+                    }
+                    if (evt.type === "warning" || evt.type === "health") {
+                      return (
+                        <div key={i} className="text-yellow-600 py-0.5 opacity-60">
+                          ⚠️ {evt.content}
+                        </div>
+                      );
+                    }
+                    if (evt.type === "stderr") {
+                      return (
+                        <div key={i} className="text-gray-500 py-0.5 opacity-50 text-[10px]">
+                          {evt.content}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })
+                ) : (
+                  /* Fallback: parse lastChunk text for backwards compatibility */
+                  agent.liveOutput.lastChunk.split("\n").filter(Boolean).map((line, i) => {
+                    const isToolLine = /^[📖✏️🔧🔍📂💻📝🚀🌐🔎🔌]/.test(line) || line.startsWith("[tool]");
+                    const isTextLine = line.startsWith("[text] ");
+                    const isHealthLine = line.startsWith("[health]") || line.startsWith("[warning]");
+                    const isRetryLine = line.startsWith("[retry]");
+                    if (isToolLine) {
+                      const content = line.replace(/^\[tool\]\s*/, "");
+                      const colonIdx = content.indexOf(":");
+                      const toolPart = colonIdx > 0 ? content.slice(0, colonIdx) : content;
+                      const detailPart = colonIdx > 0 ? content.slice(colonIdx + 1).trim() : "";
+                      return (
+                        <div key={i} className="flex items-baseline gap-1.5 py-0.5 text-blue-300">
+                          <span className="flex-shrink-0">{toolPart}</span>
+                          {detailPart && (
+                            <>
+                              <span className="text-gray-600">:</span>
+                              <span className="text-gray-400 truncate">{detailPart}</span>
+                            </>
+                          )}
+                        </div>
+                      );
+                    }
+                    if (isTextLine) {
+                      return (
+                        <div key={i} className="text-green-400 py-0.5 whitespace-pre-wrap break-words">
+                          {line.slice(7, 307)}
+                        </div>
+                      );
+                    }
+                    if (isHealthLine) {
+                      return (
+                        <div key={i} className="text-yellow-600 py-0.5 opacity-60">
+                          {line}
+                        </div>
+                      );
+                    }
+                    if (isRetryLine) {
+                      return (
+                        <div key={i} className="text-orange-400 py-0.5">
+                          {line}
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={i} className="text-green-400 py-0.5 whitespace-pre-wrap break-words">
+                        {line}
+                      </div>
+                    );
+                  })
+                )}
               </div>
               <div className="mt-1 text-right text-gray-600">
                 마지막 활동: {relativeTime(agent.liveOutput.lastActivityAt)}

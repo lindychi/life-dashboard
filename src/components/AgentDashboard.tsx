@@ -5,6 +5,8 @@ import AgentSection from "@/components/AgentSection";
 import HistoryPanel from "@/components/HistoryPanel";
 import LiveMonitor from "@/components/LiveMonitor";
 import PendingRepliesBanner from "@/components/PendingRepliesBanner";
+import FileAttachment from "@/components/FileAttachment";
+import type { AttachedFile } from "@/components/FileAttachment";
 import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 
 interface AgentDashboardProps {
@@ -22,6 +24,13 @@ interface AgentDashboardProps {
       totalChars: number;
       lastActivityAt: string;
       chunksReceived: number;
+      recentEvents?: Array<{
+        type: "tool_use" | "text" | "health" | "warning" | "stderr";
+        timestamp: string;
+        tool?: string;
+        target?: string;
+        content?: string;
+      }>;
     };
   }>;
   pendingReplies: HistoryEntry[];
@@ -33,8 +42,11 @@ interface AgentDashboardProps {
   queuedCommands: Record<string, Array<{ id: string; type: string; payload: Record<string, unknown>; createdAt: string; status: string }>>;
   queuedCommandsCount: number;
   queuedNotification: string | null;
+  attachedFiles: AttachedFile[];
+  uploadProgress: { current: number; total: number } | null;
   onOrchestrateInputChange: (value: string) => void;
   onOrchestrate: (e: React.FormEvent) => void;
+  onFilesChange: (files: AttachedFile[]) => void;
   onAddTask: (agentId: string, task: string) => void;
   onStartTask: (agentId: string, task: string) => void;
   onPendingReply: (entry: HistoryEntry, replyText: string) => Promise<void>;
@@ -54,8 +66,11 @@ export default function AgentDashboard({
   queuedCommands,
   queuedCommandsCount,
   queuedNotification,
+  attachedFiles,
+  uploadProgress,
   onOrchestrateInputChange,
   onOrchestrate,
+  onFilesChange,
   onAddTask,
   onStartTask,
   onPendingReply,
@@ -149,7 +164,7 @@ export default function AgentDashboard({
       {/* Orchestrate Bar */}
       <div className="bg-gray-800 rounded-xl p-5 border border-blue-500/20">
         <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">전체 지시</h2>
-        <form onSubmit={onOrchestrate} className="space-y-4">
+        <form onSubmit={onOrchestrate} className="space-y-3">
           <div className="flex gap-3">
             <input
               type="text"
@@ -160,10 +175,15 @@ export default function AgentDashboard({
             />
             <button
               type="submit"
-              disabled={!orchestrateInput.trim()}
+              disabled={!orchestrateInput.trim() || uploadProgress !== null}
               className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
             >
-              {isOrchestrating ? (
+              {uploadProgress !== null ? (
+                <>
+                  <span className="animate-spin">⏳</span>
+                  <span>업로드중 {uploadProgress.current}/{uploadProgress.total}</span>
+                </>
+              ) : isOrchestrating ? (
                 <>
                   <span>📋</span>
                   <span>큐에 추가</span>
@@ -176,6 +196,13 @@ export default function AgentDashboard({
               )}
             </button>
           </div>
+
+          {/* File Attachment */}
+          <FileAttachment
+            attachedFiles={attachedFiles}
+            onFilesChange={onFilesChange}
+            disabled={uploadProgress !== null}
+          />
         </form>
 
         {/* Queued notification */}
