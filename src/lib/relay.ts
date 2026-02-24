@@ -45,6 +45,13 @@ const liveOutputCache = new Map<
     totalChars: number;
     lastActivityAt: string;
     chunksReceived: number;
+    recentEvents?: Array<{
+      type: "tool_use" | "text" | "health" | "warning" | "stderr";
+      timestamp: string;
+      tool?: string;
+      target?: string;
+      content?: string;
+    }>;
   }
 >();
 
@@ -298,6 +305,13 @@ export async function updateAgentStatuses(
       totalChars: number;
       lastActivityAt: string;
       chunksReceived: number;
+      recentEvents?: Array<{
+        type: "tool_use" | "text" | "health" | "warning" | "stderr";
+        timestamp: string;
+        tool?: string;
+        target?: string;
+        content?: string;
+      }>;
     };
   }>
 ): Promise<void> {
@@ -701,6 +715,44 @@ export async function drainQueueForIdleAgents(
     }
   }
   return commands;
+}
+
+// Link attachments to a command (N:M via command_attachments table)
+export async function linkAttachmentsToCommand(
+  commandId: string,
+  attachmentIds: string[]
+): Promise<void> {
+  for (const attachmentId of attachmentIds) {
+    await query(
+      `INSERT INTO command_attachments (command_id, attachment_id)
+       VALUES ($1, $2)
+       ON CONFLICT (command_id, attachment_id) DO NOTHING`,
+      [commandId, attachmentId]
+    );
+  }
+}
+
+// Get attachment ref_keys linked to a command
+export async function getCommandAttachments(
+  commandId: string
+): Promise<Array<{ refKey: string; originalFilename: string; storageKey: string }>> {
+  const results = await query<{
+    ref_key: string;
+    original_filename: string;
+    storage_key: string;
+  }>(
+    `SELECT a.ref_key, a.original_filename, a.storage_key
+     FROM command_attachments ca
+     JOIN attachments a ON ca.attachment_id = a.id
+     WHERE ca.command_id = $1
+     ORDER BY ca.created_at`,
+    [commandId]
+  );
+  return results.map((r) => ({
+    refKey: r.ref_key,
+    originalFilename: r.original_filename,
+    storageKey: r.storage_key,
+  }));
 }
 
 // Get in-memory queue stats

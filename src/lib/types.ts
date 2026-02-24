@@ -38,6 +38,18 @@ export interface RelayCommand {
 /** Agent status values */
 export type AgentStatusValue = "running" | "idle" | "waiting" | "error";
 
+/** Structured progress event emitted during task execution */
+export interface ProgressEventEntry {
+  type: "tool_use" | "text" | "health" | "warning" | "stderr";
+  timestamp: string;
+  /** Tool name (for tool_use events) */
+  tool?: string;
+  /** Tool target summary, e.g. file path (for tool_use events) */
+  target?: string;
+  /** Text content (for text/health/warning/stderr events, truncated) */
+  content?: string;
+}
+
 /** Agent status tracked by the relay system */
 export interface AgentStatus {
   id: string;
@@ -51,6 +63,8 @@ export interface AgentStatus {
     totalChars: number;
     lastActivityAt: string;
     chunksReceived: number;
+    /** Recent structured progress events (newest first, max 20) */
+    recentEvents?: ProgressEventEntry[];
   };
 }
 

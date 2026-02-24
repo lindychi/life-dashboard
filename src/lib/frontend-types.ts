@@ -42,6 +42,14 @@ export interface AgentRuntime {
     totalChars: number;
     lastActivityAt: string;
     chunksReceived: number;
+    /** Recent structured progress events (newest first, max 20) */
+    recentEvents?: Array<{
+      type: "tool_use" | "text" | "health" | "warning" | "stderr";
+      timestamp: string;
+      tool?: string;
+      target?: string;
+      content?: string;
+    }>;
   };
 }
 
