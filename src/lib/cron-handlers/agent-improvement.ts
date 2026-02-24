@@ -60,12 +60,11 @@ function severityFromCount(count: number): Issue["severity"] {
 // ─── 분석 함수 ────────────────────────────────────────────
 
 /**
- * 에이전트의 최근 N일 성과 지표 산출
+ * 에이전트의 전체 성과 지표 산출
  * task_started → task_completed/task_failed 쌍으로 실행 시간 계산
  */
 async function analyzeAgentHistory(
-  agentId: string,
-  days: number
+  agentId: string
 ): Promise<AgentMetrics> {
   // 기본 태스크 카운트 조회
   const counts = await queryOne<{
@@ -78,9 +77,8 @@ async function analyzeAgentHistory(
        COUNT(*) FILTER (WHERE type = 'task_failed')    AS failed,
        COUNT(*) FILTER (WHERE type IN ('task_completed', 'task_failed')) AS total
      FROM agent_history
-     WHERE agent_id = $1
-       AND created_at >= NOW() - INTERVAL '1 day' * $2`,
-    [agentId, days]
+     WHERE agent_id = $1`,
+    [agentId]
   );
 
   const taskCompleted = parseInt(counts?.completed || "0", 10);
@@ -102,9 +100,8 @@ async function analyzeAgentHistory(
        AND start.type = 'task_started'
        AND finish.type IN ('task_completed', 'task_failed')
      WHERE start.agent_id = $1
-       AND start.request_group_id IS NOT NULL
-       AND start.created_at >= NOW() - INTERVAL '1 day' * $2`,
-    [agentId, days]
+       AND start.request_group_id IS NOT NULL`,
+    [agentId]
   );
 
   const avgExecutionMinutes = avgRow?.avg_minutes
@@ -125,8 +122,7 @@ async function analyzeAgentHistory(
  * task_failed 엔트리에서 반복적인 에러 패턴을 그룹화
  */
 async function detectErrorPatterns(
-  agentId: string,
-  days: number
+  agentId: string
 ): Promise<Issue[]> {
   // task_failed 엔트리 조회
   const failures = await query<{
@@ -137,9 +133,8 @@ async function detectErrorPatterns(
      FROM agent_history
      WHERE agent_id = $1
        AND type = 'task_failed'
-       AND created_at >= NOW() - INTERVAL '1 day' * $2
      ORDER BY created_at DESC`,
-    [agentId, days]
+    [agentId]
   );
 
   if (failures.length === 0) return [];
@@ -198,8 +193,7 @@ async function detectErrorPatterns(
  * user → agent 메시지 중 부정적 키워드 포함 메시지 분석
  */
 async function detectUserFeedbackPatterns(
-  agentId: string,
-  days: number
+  agentId: string
 ): Promise<Issue[]> {
   // 부정적 피드백 키워드 (한국어 + 영어)
   const negativeKeywords = [
@@ -220,7 +214,7 @@ async function detectUserFeedbackPatterns(
 
   // ILIKE 조건 생성 (각 키워드에 대해 OR 조건)
   const likeConditions = negativeKeywords
-    .map((_, i) => `m.content ILIKE $${i + 3}`)
+    .map((_, i) => `m.content ILIKE $${i + 2}`)
     .join(" OR ");
   const likeParams = negativeKeywords.map((kw) => `%${kw}%`);
 
@@ -232,10 +226,9 @@ async function detectUserFeedbackPatterns(
      FROM messages m
      WHERE m.from_id = 'user'
        AND m.to_id = $1
-       AND m.created_at >= NOW() - INTERVAL '1 day' * $2
        AND (${likeConditions})
      ORDER BY m.created_at DESC`,
-    [agentId, days, ...likeParams]
+    [agentId, ...likeParams]
   );
 
   if (messages.length === 0) return [];
@@ -450,14 +443,13 @@ async function notifyIfNeeded(
 registerCronHandler(
   "agent-improvement-scanner",
   async (ctx: CronHandlerContext) => {
-    const days = (ctx.config.days as number) || 7;
     const agents = getAgents();
     const reports: AgentReport[] = [];
     let issuesFound = 0;
 
     for (const agent of agents) {
       // 1. 성과 지표 분석
-      const metrics = await analyzeAgentHistory(agent.id, days);
+      const metrics = await analyzeAgentHistory(agent.id);
 
       // 태스크가 전혀 없으면 리포트 생략
       if (metrics.totalTasks === 0 && metrics.taskCompleted === 0) {
@@ -465,10 +457,10 @@ registerCronHandler(
       }
 
       // 2. 에러 패턴 감지
-      const errorIssues = await detectErrorPatterns(agent.id, days);
+      const errorIssues = await detectErrorPatterns(agent.id);
 
       // 3. 사용자 피드백 패턴 감지
-      const feedbackIssues = await detectUserFeedbackPatterns(agent.id, days);
+      const feedbackIssues = await detectUserFeedbackPatterns(agent.id);
 
       // 4. 느린 실행 이슈 추가 (평균 10분 초과)
       const allIssues: Issue[] = [...errorIssues, ...feedbackIssues];
@@ -520,7 +512,6 @@ registerCronHandler(
         agentCount: agents.length,
         reportsGenerated: reports.length,
         totalIssues: issuesFound,
-        analyzedDays: days,
       },
     };
   }

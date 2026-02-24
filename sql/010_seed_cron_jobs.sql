@@ -32,7 +32,7 @@ VALUES (
   '에이전트 성과 분석 및 개선 권장사항 생성',
   '0 10 * * 1',
   'agent-improvement-scanner',
-  '{"days": 7}',
+  '{}',
   TRUE
 )
 ON CONFLICT (name) DO NOTHING;
