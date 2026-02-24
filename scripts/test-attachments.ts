@@ -265,7 +265,7 @@ async function testSaveAndRead() {
     if (err instanceof Error && err.message.includes("already exists")) {
       ok("Duplicate ref_key correctly rejected");
     } else {
-      fail("Unexpected error for duplicate ref_key", err.message);
+      fail("Unexpected error for duplicate ref_key", err instanceof Error ? err.message : String(err));
     }
   }
 
