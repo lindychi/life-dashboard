@@ -63,7 +63,13 @@ describe("claude-executor", () => {
       // Verify spawn was called with stream-json args (tool-enabled mode)
       expect(spawn).toHaveBeenCalledWith(
         "claude",
-        ["--print", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Review Q1 metrics"],
+        expect.arrayContaining([
+          "--print", "--output-format", "stream-json", "--verbose",
+          "--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard",
+          "--no-session-persistence", "--system-prompt",
+          expect.stringContaining("You are the PM agent."),
+          "Review Q1 metrics",
+        ]),
         expect.objectContaining({
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -95,7 +101,12 @@ describe("claude-executor", () => {
       // Verify spawn was called with --print only (no stream-json)
       expect(spawn).toHaveBeenCalledWith(
         "claude",
-        ["--print", "--tools", "", "--no-session-persistence", "--system-prompt", "You are the PM agent.", "Plan something"],
+        expect.arrayContaining([
+          "--print", "--tools", "",
+          "--no-session-persistence", "--system-prompt",
+          expect.stringContaining("You are the PM agent."),
+          "Plan something",
+        ]),
         expect.objectContaining({
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -109,6 +120,48 @@ describe("claude-executor", () => {
       expect(result.success).toBe(true);
       expect(result.output).toBe("Plan completed");
       expect(result.exitCode).toBe(0);
+    });
+
+    it("should append tool availability notice to system prompt", async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      // Tool-enabled mode: notice should list available tools and warn against Bash
+      executeClaudeTask({
+        agentId: "dev",
+        task: "Deploy the app",
+        systemPrompt: "You are the DevOps agent.",
+      });
+
+      const toolEnabledArgs = vi.mocked(spawn).mock.calls[0][1] as string[];
+      const systemPromptArg = toolEnabledArgs[toolEnabledArgs.indexOf("--system-prompt") + 1];
+      expect(systemPromptArg).toContain("시스템 제약");
+      expect(systemPromptArg).toContain("Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
+      expect(systemPromptArg).toContain("Bash");
+      expect(systemPromptArg).toContain("텍스트로 제안");
+
+      mockProc.emit("close", 0);
+
+      vi.mocked(spawn).mockClear();
+
+      // Disabled tools mode: notice should say no tools available
+      const mockProc2 = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc2);
+
+      executeClaudeTask({
+        agentId: "pm",
+        task: "Summarize",
+        systemPrompt: "You are the PM agent.",
+        disableTools: true,
+      });
+
+      const disabledArgs = vi.mocked(spawn).mock.calls[0][1] as string[];
+      const disabledPrompt = disabledArgs[disabledArgs.indexOf("--system-prompt") + 1];
+      expect(disabledPrompt).toContain("시스템 제약");
+      expect(disabledPrompt).toContain("도구 사용이 비활성화");
+      expect(disabledPrompt).not.toContain("Read,Write,Edit");
+
+      mockProc2.emit("close", 0);
     });
 
     it("should capture stdout as output on success", async () => {

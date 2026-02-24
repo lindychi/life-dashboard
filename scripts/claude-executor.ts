@@ -214,7 +214,12 @@ export function executeClaudeTask(
       }
     }
 
-    args.push("--no-session-persistence", "--system-prompt", systemPrompt, task);
+    // Append tool availability notice to prevent agents from attempting unavailable tools
+    const toolNotice = disableTools
+      ? "\n\n## 시스템 제약 (필수 준수)\n당신은 도구 사용이 비활성화되어 있습니다. 분석과 텍스트 응답만 가능합니다. 코드 실행, 파일 수정, 쉘 명령 실행은 절대 시도하지 마세요."
+      : `\n\n## 시스템 제약 (필수 준수)\n사용 가능한 도구: ${allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS}\n위 목록에 없는 도구(특히 Bash/터미널/쉘 명령)는 절대 사용하지 마세요. 승인 프롬프트가 표시되면 프로세스가 중단됩니다.\n실행이 필요한 작업(git, 배포, npm 등)은 직접 실행하지 말고, 필요한 명령어를 텍스트로 제안만 해주세요.`;
+
+    args.push("--no-session-persistence", "--system-prompt", systemPrompt + toolNotice, task);
 
     const useStreamJson = !disableTools;
     const streamBuffer = { partial: "" };
