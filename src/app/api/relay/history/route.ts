@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/relay/history
  * Write a history entry
- * Body: { agentId: string, type: string, content: string, metadata?: object }
+ * Body: { agentId: string, type: string, content: string, metadata?: object, requestGroupId?: string, requestTitle?: string }
  */
 export async function POST(request: NextRequest) {
   const apiKey = request.headers.get("x-relay-key");
@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { agentId, type, content, metadata } = await request.json();
+    const { agentId, type, content, metadata, requestGroupId, requestTitle } = await request.json();
 
     if (!agentId || !type || !content) {
       return NextResponse.json(
@@ -71,6 +71,8 @@ export async function POST(request: NextRequest) {
       type,
       content,
       metadata,
+      requestGroupId,
+      requestTitle,
     });
 
     return NextResponse.json({ success: true, entry });

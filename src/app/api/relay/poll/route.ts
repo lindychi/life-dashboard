@@ -57,6 +57,8 @@ export async function POST(request: NextRequest) {
               type: entry.type,
               content: entry.content,
               metadata: entry.metadata,
+              requestGroupId: entry.requestGroupId,
+              requestTitle: entry.requestTitle,
             });
           } catch (error) {
             if (!isDbConnectionError(error)) {

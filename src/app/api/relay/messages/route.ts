@@ -3,6 +3,8 @@ import { validateRelayKey } from "@/lib/relay";
 import { sendMessage, getMessages } from "@/lib/messages";
 import { isDbConnectionError } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/relay/messages
  * Get messages for an agent

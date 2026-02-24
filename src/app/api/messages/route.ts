@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import {
-  sendMessage,
-  getAllAgentsOverview,
-  type Message,
-} from "@/lib/messages";
+import { sendMessage, getAllAgentsOverview } from "@/lib/messages";
 import { isDbConnectionError } from "@/lib/db";
+
+export const dynamic = "force-dynamic";
 
 /**
  * POST /api/messages - 메시지 전송

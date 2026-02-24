@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { getAllHistory, addHistoryEntry } from "@/lib/history";
 import { isDbConnectionError } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/history
  * 모든 에이전트의 히스토리 조회

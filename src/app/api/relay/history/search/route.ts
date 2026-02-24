@@ -40,7 +40,8 @@ export async function GET(request: NextRequest) {
     const paramIndex = agentId ? 3 : 2;
 
     const results = await query<HistoryEntry>(
-      `SELECT id, agent_id as "agentId", type, content, metadata, created_at as timestamp
+      `SELECT id, agent_id as "agentId", type, content, metadata, created_at as timestamp,
+              request_group_id as "requestGroupId", request_title as "requestTitle"
        FROM agent_history
        WHERE content ILIKE $1 ${agentFilter}
        ORDER BY created_at DESC
