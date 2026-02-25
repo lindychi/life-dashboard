@@ -1,15 +1,17 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
+let _jwtSecret: Uint8Array | null = null;
+
 function getJwtSecret(): Uint8Array {
+  if (_jwtSecret) return _jwtSecret;
   const secret = process.env.JWT_SECRET;
   if (!secret && process.env.NODE_ENV === "production") {
     throw new Error("JWT_SECRET environment variable is required in production");
   }
-  return new TextEncoder().encode(secret || "dev-only-secret-do-not-use-in-prod");
+  _jwtSecret = new TextEncoder().encode(secret || "dev-only-secret-do-not-use-in-prod");
+  return _jwtSecret;
 }
-
-const JWT_SECRET = getJwtSecret();
 
 const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || "")
   .split(",")
@@ -27,7 +29,7 @@ export async function createToken(email: string): Promise<string> {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("7d")
-    .sign(JWT_SECRET);
+    .sign(getJwtSecret());
 }
 
 export async function createMagicLinkToken(email: string): Promise<string> {
@@ -35,12 +37,12 @@ export async function createMagicLinkToken(email: string): Promise<string> {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("15m")
-    .sign(JWT_SECRET);
+    .sign(getJwtSecret());
 }
 
 export async function verifyToken(token: string): Promise<User | null> {
   try {
-    const { payload } = await jwtVerify(token, JWT_SECRET);
+    const { payload } = await jwtVerify(token, getJwtSecret());
 
     // Runtime validation: ensure required fields exist
     if (typeof payload.email !== "string" || !payload.email) {
