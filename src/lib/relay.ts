@@ -839,6 +839,72 @@ export async function recoverStaleProcessingCommands(): Promise<number> {
   }
 }
 
+// Recover agents stuck in 'error' state for too long.
+// Agents in error state for >30 minutes are automatically reset to 'idle'.
+// This provides server-side cleanup complementing the gateway-connector's
+// 5-minute local auto-recovery timer.
+export const STALE_ERROR_THRESHOLD_MINUTES = 30;
+
+export async function recoverStaleErrorAgents(): Promise<number> {
+  try {
+    const result = await query<{ id: string; gateway_id: string }>(
+      `UPDATE agent_statuses
+       SET status = 'idle', current_task = NULL, updated_at = NOW()
+       WHERE status = 'error'
+         AND updated_at < NOW() - INTERVAL '${STALE_ERROR_THRESHOLD_MINUTES} minutes'
+       RETURNING id, gateway_id`,
+      []
+    );
+
+    if (result.length > 0) {
+      console.log(`[relay] Auto-recovered ${result.length} stale error agent(s): ${result.map(r => r.id).join(", ")}`);
+    }
+    return result.length;
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+// Reset a specific agent's status to idle (for manual reset from dashboard)
+export async function resetAgentStatus(
+  agentId: string,
+  gatewayId?: string
+): Promise<boolean> {
+  try {
+    const params: string[] = [agentId];
+    let whereClause = `id = $1`;
+    if (gatewayId) {
+      params.push(gatewayId);
+      whereClause += ` AND gateway_id = $2`;
+    }
+
+    const result = await queryOne<{ id: string }>(
+      `UPDATE agent_statuses
+       SET status = 'idle', current_task = NULL, updated_at = NOW()
+       WHERE ${whereClause} AND status IN ('error', 'stale')
+       RETURNING id`,
+      params
+    );
+
+    if (result) {
+      console.log(`[relay] Manual reset: agent ${agentId} → idle`);
+      // Clear live output cache
+      if (gatewayId) {
+        liveOutputCache.delete(`${gatewayId}:${agentId}`);
+      }
+    }
+    return result !== null;
+  } catch (error) {
+    if (isDbConnectionError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 // Remove expired commands from in-memory queue
 export async function cleanupExpiredCommands(): Promise<void> {
   const now = Date.now();
