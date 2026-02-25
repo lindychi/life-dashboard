@@ -58,6 +58,7 @@ const AgentSection = memo(function AgentSection({
   const [quickTaskText, setQuickTaskText] = useState("");
   const [showQuickTaskForm, setShowQuickTaskForm] = useState(false);
   const [pendingTask, setPendingTask] = useState<string | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
 
   const statusStyle = STATUS_STYLES[agent.status];
   const categoryStyle = CATEGORY_STYLES[agent.config.category];
@@ -136,6 +137,27 @@ const AgentSection = memo(function AgentSection({
     }
   };
 
+  const handleManualReset = async () => {
+    if (isResetting) return;
+    setIsResetting(true);
+    try {
+      const response = await fetch("/api/relay/agents/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: agent.config.id }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.error("Failed to reset agent:", error);
+      alert(`리셋 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   // Auto-clear pendingTask when agent status changes
   useEffect(() => {
     if (pendingTask && agent.status === "idle") {
@@ -151,76 +173,81 @@ const AgentSection = memo(function AgentSection({
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-800/30 overflow-hidden">
       {/* Agent Header */}
-      <div className="p-4 border-b border-gray-700 bg-gray-800/50">
-        <div className="flex items-start gap-3">
-          <div className="text-3xl flex-shrink-0">{agent.config.emoji}</div>
+      <div className="px-3 py-3 sm:p-4 border-b border-gray-700 bg-gray-800/50">
+        <div className="flex items-start gap-2 sm:gap-3">
+          <div className="text-2xl sm:text-3xl flex-shrink-0 mt-0.5">{agent.config.emoji}</div>
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap overflow-x-auto">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+            {/* Top row: name + expand button */}
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-1.5 truncate">
                 {agent.config.name}
                 {agent.liveOutput && isRecentActivity(agent.liveOutput.lastActivityAt) && (
-                  <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" title="실시간 출력 수신 중" />
+                  <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse flex-shrink-0" title="실시간 출력 수신 중" />
                 )}
               </h3>
-              <span className={`text-xs px-2 py-1 rounded border ${categoryStyle}`}>
-                {agent.config.category}
-              </span>
-              <span className={`text-xs px-2 py-1 rounded border ${statusStyle.class}`}>
-                {statusStyle.label}
-              </span>
-              {latestActivity && (
-                <span className="text-xs text-gray-500">
-                  {relativeTime(latestActivity)}
-                </span>
-              )}
               <button
                 onClick={handleToggleExpand}
-                className="ml-auto text-gray-400 hover:text-white text-sm focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                className="text-gray-400 hover:text-white text-sm focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none flex-shrink-0 p-1"
                 aria-label={isExpanded ? "섹션 접기" : "섹션 펼치기"}
               >
                 {isExpanded ? "▼" : "▶"}
               </button>
             </div>
-            <p className="text-xs text-gray-400 mt-1">{agent.config.role}</p>
+            {/* Badges row */}
+            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+              <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded border ${categoryStyle}`}>
+                {agent.config.category}
+              </span>
+              <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded border ${statusStyle.class}`}>
+                {statusStyle.label}
+              </span>
+              {latestActivity && (
+                <span className="text-[10px] sm:text-xs text-gray-500">
+                  {relativeTime(latestActivity)}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] sm:text-xs text-gray-400 mt-1 truncate">{agent.config.role}</p>
           </div>
         </div>
       </div>
 
       {/* Expanded Content */}
       {isExpanded && (
-        <div className="p-4 space-y-4">
+        <div className="px-3 py-3 sm:p-4 space-y-3 sm:space-y-4">
           {/* Pending Task - shows immediately before agent status updates */}
           {pendingTask && agent.status === "idle" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 animate-pulse">
+            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-2.5 sm:p-3 animate-pulse">
               <div className="text-xs text-yellow-400 font-medium mb-1 flex items-center gap-2">
                 <span className="inline-block w-2 h-2 bg-yellow-400 rounded-full animate-ping" />
                 호출중...
               </div>
-              <div className="text-sm text-white">{pendingTask}</div>
+              <div className="text-sm text-white break-words">{pendingTask}</div>
             </div>
           )}
 
           {/* Current Task */}
           {agent.currentTask && (
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3">
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2.5 sm:p-3">
               <div className="text-xs text-blue-400 font-medium mb-1">현재 작업</div>
-              <div className="text-sm text-white">{agent.currentTask}</div>
+              <div className="text-sm text-white break-words">{agent.currentTask}</div>
             </div>
           )}
 
           {/* Live Output */}
           {agent.status === "running" && agent.liveOutput && (
-            <div className="rounded-lg bg-gray-900 p-3 font-mono text-xs">
-              <div className="mb-1 flex items-center justify-between text-gray-500">
-                <span className="flex items-center gap-1.5">
+            <div className="rounded-lg bg-gray-900 p-2 sm:p-3 font-mono text-[11px] sm:text-xs overflow-hidden">
+              <div className="mb-1 flex items-center justify-between text-gray-500 gap-2">
+                <span className="flex items-center gap-1.5 flex-shrink-0">
                   <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  📡 실시간 출력
+                  <span className="hidden sm:inline">📡 실시간 출력</span>
+                  <span className="sm:hidden">📡 출력</span>
                 </span>
-                <span>
+                <span className="text-[10px] sm:text-xs truncate">
                   {agent.liveOutput.chunksReceived} chunks · {formatBytes(agent.liveOutput.totalChars)}
                 </span>
               </div>
-              <div className="max-h-48 overflow-y-auto space-y-0.5">
+              <div className="max-h-36 sm:max-h-48 overflow-y-auto space-y-0.5 overflow-x-hidden">
                 {/* Use structured recentEvents when available, oldest first for chronological display */}
                 {agent.liveOutput.recentEvents && agent.liveOutput.recentEvents.length > 0 ? (
                   [...agent.liveOutput.recentEvents].reverse().map((evt, i) => {
@@ -389,11 +416,11 @@ const AgentSection = memo(function AgentSection({
           </div>
 
           {/* Quick Actions */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {pendingTask && agent.status === "idle" && (
               <button
                 disabled
-                className="px-4 py-2 rounded bg-yellow-500/20 text-yellow-400 text-sm cursor-wait border border-yellow-500/30 animate-pulse"
+                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-yellow-500/20 text-yellow-400 text-xs sm:text-sm cursor-wait border border-yellow-500/30 animate-pulse min-h-[40px] sm:min-h-[44px]"
               >
                 호출중...
               </button>
@@ -401,7 +428,7 @@ const AgentSection = memo(function AgentSection({
             {!pendingTask && agent.status === "idle" && agent.stack.length > 0 && (
               <button
                 onClick={handleStartStack}
-                className="px-4 py-2 rounded bg-green-500 text-white text-sm font-medium hover:bg-green-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-green-500 text-white text-xs sm:text-sm font-medium hover:bg-green-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[40px] sm:min-h-[44px]"
               >
                 스택 실행
               </button>
@@ -409,7 +436,7 @@ const AgentSection = memo(function AgentSection({
             {!pendingTask && agent.status === "idle" && !showQuickTaskForm && (
               <button
                 onClick={() => setShowQuickTaskForm(true)}
-                className="px-4 py-2 rounded bg-gray-700 text-gray-300 text-sm hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-gray-700 text-gray-300 text-xs sm:text-sm hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[40px] sm:min-h-[44px]"
               >
                 + 작업 할당
               </button>
@@ -417,9 +444,18 @@ const AgentSection = memo(function AgentSection({
             {agent.status === "running" && (
               <button
                 disabled
-                className="px-4 py-2 rounded bg-gray-700 text-gray-500 text-sm cursor-not-allowed"
+                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-gray-700 text-gray-500 text-xs sm:text-sm cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
               >
                 실행중...
+              </button>
+            )}
+            {(agent.status === "error" || agent.status === "stale") && (
+              <button
+                onClick={handleManualReset}
+                disabled={isResetting}
+                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-xs sm:text-sm font-medium hover:bg-red-500/30 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
+              >
+                {isResetting ? "리셋중..." : "🔄 수동 리셋"}
               </button>
             )}
           </div>

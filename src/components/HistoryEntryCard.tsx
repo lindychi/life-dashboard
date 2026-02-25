@@ -139,28 +139,31 @@ function ToolCallsPanel({ toolCalls }: { toolCalls: ToolCallData[] }) {
   }, [toolCounts]);
 
   return (
-    <div className="mt-2 border border-gray-700/50 rounded-lg bg-gray-800/30 overflow-hidden">
+    <div className="mt-1.5 sm:mt-2 border border-gray-700/50 rounded-lg bg-gray-800/30 overflow-hidden">
       {/* Header with tool summary badges */}
       <button
         type="button"
         onClick={() => setShowAll(!showAll)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-gray-700/20 transition-colors"
+        className="w-full flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 text-xs hover:bg-gray-700/20 transition-colors"
       >
-        <span className="text-gray-500 font-medium">🔧 도구 호출 ({toolCalls.length})</span>
-        <div className="flex gap-1 flex-wrap flex-1">
-          {summaryBadges.map(({ name, emoji, color, count }) => (
+        <span className="text-gray-500 font-medium text-[10px] sm:text-xs flex-shrink-0">🔧 ({toolCalls.length})</span>
+        <div className="flex gap-1 flex-wrap flex-1 overflow-hidden">
+          {summaryBadges.slice(0, 4).map(({ name, emoji, color, count }) => (
             <span
               key={name}
-              className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-700/50 ${color}`}
+              className={`inline-flex items-center gap-0.5 px-1 sm:px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-700/50 ${color}`}
             >
-              <span className="text-[10px]">{emoji}</span>
-              <span className="text-[10px] font-mono">{name}</span>
-              {count > 1 && <span className="text-[10px] text-gray-500">×{count}</span>}
+              <span className="text-[9px] sm:text-[10px]">{emoji}</span>
+              <span className="text-[9px] sm:text-[10px] font-mono">{name}</span>
+              {count > 1 && <span className="text-[9px] sm:text-[10px] text-gray-500">×{count}</span>}
             </span>
           ))}
+          {summaryBadges.length > 4 && (
+            <span className="text-[9px] text-gray-500">+{summaryBadges.length - 4}</span>
+          )}
         </div>
         <span className="text-gray-600 text-[10px] flex-shrink-0">
-          {showAll ? "접기 ▲" : "펼치기 ▼"}
+          {showAll ? "▲" : "▼"}
         </span>
       </button>
 
@@ -301,20 +304,20 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
   };
 
   return (
-    <div className="border border-gray-700 rounded-lg p-3 bg-gray-800/50">
-      <div className="flex items-start gap-2 mb-2">
-        <span className="text-xl" title={agentDisplay.name}>
+    <div className="border border-gray-700 rounded-lg p-2.5 sm:p-3 bg-gray-800/50">
+      <div className="flex items-start gap-1.5 sm:gap-2 mb-1.5 sm:mb-2">
+        <span className="text-lg sm:text-xl flex-shrink-0" title={agentDisplay.name}>
           {agentDisplay.emoji}
         </span>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-gray-300">
+          <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+            <span className="text-xs sm:text-sm font-medium text-gray-300">
               {agentDisplay.name}
             </span>
-            <span className={`text-xs px-2 py-0.5 rounded border ${color}`}>
+            <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded border ${color}`}>
               {label}
             </span>
-            <span className="text-xs text-gray-500">
+            <span className="text-[10px] sm:text-xs text-gray-500">
               {relativeTime(entry.timestamp)}
             </span>
             {entry.requestGroupId && onFilterByGroup && (
@@ -324,16 +327,16 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
                   e.stopPropagation();
                   onFilterByGroup(entry.requestGroupId!, entry.requestTitle || entry.requestGroupId!.slice(0, 8));
                 }}
-                className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors truncate max-w-[150px] focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors truncate max-w-[120px] sm:max-w-[150px] focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 title={`요청 그룹: ${entry.requestTitle || entry.requestGroupId}`}
               >
                 📋 {entry.requestTitle || entry.requestGroupId!.slice(0, 8)}
               </button>
             )}
           </div>
-          <div className="mt-2">
+          <div className="mt-1.5 sm:mt-2">
             <div
-              className={`prose prose-invert prose-sm max-w-none ${
+              className={`prose prose-invert prose-sm max-w-none text-xs sm:text-sm [&_pre]:text-[11px] [&_pre]:overflow-x-auto [&_code]:text-[11px] [&_table]:text-xs ${
                 needsCollapse && !isExpanded ? "line-clamp-3" : ""
               }`}
             >
@@ -364,11 +367,11 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
               <ToolCallsPanel toolCalls={entry.metadata.toolCalls as ToolCallData[]} />
             ) : null}
           </div>
-          <div className="flex items-center gap-2 mt-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 mt-1.5 sm:mt-2">
             {showReplyButton && (
               <button
                 onClick={() => onToggleReply(entry.id)}
-                className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                className="text-[11px] sm:text-xs px-2 sm:px-3 py-1.5 sm:py-2 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[32px] sm:min-h-0 sm:py-1 sm:px-2"
               >
                 {isReplying ? "취소" : "답장"}
               </button>
@@ -376,34 +379,34 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
             {showCopyButton && (
               <button
                 onClick={() => onCopy(entry.id, entry.content)}
-                className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                className="text-[11px] sm:text-xs px-2 sm:px-3 py-1.5 sm:py-2 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[32px] sm:min-h-0 sm:py-1 sm:px-2"
               >
                 {isCopied ? "복사됨!" : "복사"}
               </button>
             )}
           </div>
           {isReplying && (
-            <form onSubmit={handleReplySubmit} className="mt-3 space-y-2">
+            <form onSubmit={handleReplySubmit} className="mt-2 sm:mt-3 space-y-2">
               <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
                 placeholder="답장 입력..."
-                className="w-full px-3 py-2 rounded bg-gray-900 border border-gray-700 text-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-                rows={3}
+                className="w-full px-2.5 sm:px-3 py-2 rounded bg-gray-900 border border-gray-700 text-white text-xs sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                rows={2}
                 autoFocus
               />
               <div className="flex gap-2">
                 <button
                   type="submit"
                   disabled={!replyText.trim()}
-                  className="px-3 py-1 rounded bg-blue-500 text-white text-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-3 py-1.5 sm:py-1 rounded bg-blue-500 text-white text-xs sm:text-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   전송
                 </button>
                 <button
                   type="button"
                   onClick={() => onToggleReply(entry.id)}
-                  className="px-3 py-1 rounded bg-gray-700 text-gray-300 text-sm hover:bg-gray-600"
+                  className="px-3 py-1.5 sm:py-1 rounded bg-gray-700 text-gray-300 text-xs sm:text-sm hover:bg-gray-600"
                 >
                   취소
                 </button>

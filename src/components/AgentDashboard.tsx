@@ -162,21 +162,21 @@ export default function AgentDashboard({
   return (
     <div className="space-y-6">
       {/* Orchestrate Bar */}
-      <div className="bg-gray-800 rounded-xl p-5 border border-blue-500/20">
-        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">전체 지시</h2>
+      <div className="bg-gray-800 rounded-xl p-3 sm:p-5 border border-blue-500/20">
+        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 sm:mb-3">전체 지시</h2>
         <form onSubmit={onOrchestrate} className="space-y-3">
-          <div className="flex gap-3">
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
             <input
               type="text"
               value={orchestrateInput}
               onChange={(e) => onOrchestrateInputChange(e.target.value)}
-              placeholder="전체 지시를 입력하세요... (예: 이번 주 블로그 쓰고, 매출 정리하고, 코드 리뷰해줘)"
-              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              placeholder="전체 지시를 입력하세요..."
+              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 min-h-[44px] text-sm sm:text-base"
             />
             <button
               type="submit"
               disabled={!orchestrateInput.trim() || uploadProgress !== null}
-              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+              className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 min-h-[44px] shrink-0"
             >
               {uploadProgress !== null ? (
                 <>
@@ -215,15 +215,15 @@ export default function AgentDashboard({
 
         {/* Pending Instructions Queue */}
         {pendingCount > 0 && (
-          <div className="mt-4 bg-gray-900/50 rounded-lg p-3 border border-gray-700/50">
+          <div className="mt-3 sm:mt-4 bg-gray-900/50 rounded-lg p-2.5 sm:p-3 border border-gray-700/50">
             <div className="text-xs text-gray-400 font-medium mb-2">
               📋 대기중인 지시 ({pendingCount}개)
             </div>
             <div className="space-y-1">
               {Object.entries(pendingInstructions).map(([agentId, instructions]) =>
                 instructions.map((inst) => (
-                  <div key={inst.id} className="flex items-center gap-2 text-sm">
-                    <span className="text-gray-500 text-xs w-5">#{inst.position}</span>
+                  <div key={inst.id} className="flex items-center gap-2 text-xs sm:text-sm">
+                    <span className="text-gray-500 text-xs w-5 flex-shrink-0">#{inst.position}</span>
                     <span className="text-gray-300 truncate">{inst.content}</span>
                   </div>
                 ))
@@ -234,20 +234,20 @@ export default function AgentDashboard({
 
         {/* Queued Commands */}
         {queuedCommandsCount > 0 && (
-          <div className="mt-4 bg-gray-900/50 rounded-lg p-3 border border-amber-700/30">
+          <div className="mt-3 sm:mt-4 bg-gray-900/50 rounded-lg p-2.5 sm:p-3 border border-amber-700/30">
             <div className="text-xs text-amber-400 font-medium mb-2">
               ⏳ 대기중인 명령 ({queuedCommandsCount}개)
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5 sm:space-y-1">
               {Object.entries(queuedCommands).map(([agentId, commands]) =>
                 commands.map((cmd) => (
-                  <div key={cmd.id} className="flex items-center gap-2 text-sm">
-                    <span className="text-amber-500/70 text-xs font-mono">{cmd.type}</span>
-                    <span className="text-gray-400 text-xs">→ {agentId}</span>
-                    <span className="text-gray-300 truncate text-xs">
+                  <div key={cmd.id} className="flex flex-wrap sm:flex-nowrap items-center gap-1 sm:gap-2 text-xs">
+                    <span className="text-amber-500/70 font-mono flex-shrink-0">{cmd.type}</span>
+                    <span className="text-gray-400 flex-shrink-0">→ {agentId}</span>
+                    <span className="text-gray-300 truncate w-full sm:w-auto">
                       {(cmd.payload?.task as string) || (cmd.payload?.message as string) || cmd.type}
                     </span>
-                    <span className="text-gray-600 text-xs ml-auto">
+                    <span className="text-gray-600 ml-auto flex-shrink-0">
                       {new Date(cmd.createdAt).toLocaleTimeString("ko-KR")}
                     </span>
                   </div>
@@ -300,13 +300,13 @@ export default function AgentDashboard({
       )}
 
       {/* View Mode Toggle */}
-      <div className="flex items-center justify-between">
-        <div className="inline-flex rounded-lg bg-gray-800 p-1" role="tablist">
+      <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 -mb-1">
+        <div className="inline-flex rounded-lg bg-gray-800 p-1 flex-shrink-0" role="tablist">
           <button
             role="tab"
             aria-selected={viewMode === "agents"}
             onClick={() => setViewMode("agents")}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
+            className={`px-3 sm:px-4 py-2 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 min-h-[38px] sm:min-h-0 ${
               viewMode === "agents"
                 ? "bg-blue-600 text-white"
                 : "text-gray-400 hover:text-white"
@@ -318,7 +318,7 @@ export default function AgentDashboard({
             role="tab"
             aria-selected={viewMode === "timeline"}
             onClick={() => setViewMode("timeline")}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
+            className={`px-3 sm:px-4 py-2 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 min-h-[38px] sm:min-h-0 ${
               viewMode === "timeline"
                 ? "bg-blue-600 text-white"
                 : "text-gray-400 hover:text-white"
@@ -330,47 +330,23 @@ export default function AgentDashboard({
 
         {/* Category Filter (only in agent view mode) */}
         {viewMode === "agents" && (
-          <div className="inline-flex rounded-lg bg-gray-800 p-1">
-            <button
-              onClick={() => setCategoryFilter("all")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
-                categoryFilter === "all"
-                  ? "bg-gray-700 text-white"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              전체
-            </button>
-            <button
-              onClick={() => setCategoryFilter("dev")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
-                categoryFilter === "dev"
-                  ? "bg-gray-700 text-white"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              개발
-            </button>
-            <button
-              onClick={() => setCategoryFilter("business")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
-                categoryFilter === "business"
-                  ? "bg-gray-700 text-white"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              경영
-            </button>
-            <button
-              onClick={() => setCategoryFilter("ops")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 ${
-                categoryFilter === "ops"
-                  ? "bg-gray-700 text-white"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              운영
-            </button>
+          <div className="inline-flex rounded-lg bg-gray-800 p-1 flex-shrink-0">
+            {(["all", "dev", "business", "ops"] as const).map((cat) => {
+              const labels = { all: "전체", dev: "개발", business: "경영", ops: "운영" };
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setCategoryFilter(cat)}
+                  className={`px-2.5 sm:px-3 py-1.5 rounded-md text-[11px] sm:text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 min-h-[34px] sm:min-h-0 ${
+                    categoryFilter === cat
+                      ? "bg-gray-700 text-white"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  {labels[cat]}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -394,21 +370,21 @@ export default function AgentDashboard({
 
           {/* Dormant Agents */}
           {dormantAgents.length > 0 && (
-            <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700/50">
-              <h3 className="text-sm font-medium text-gray-400 mb-3">
+            <div className="bg-gray-800/50 rounded-xl p-3 sm:p-4 border border-gray-700/50">
+              <h3 className="text-xs sm:text-sm font-medium text-gray-400 mb-2 sm:mb-3">
                 유휴 에이전트
               </h3>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5 sm:gap-2">
                 {dormantAgents.map((agent) => (
                   <div
                     key={agent.config.id}
-                    className="flex items-center gap-1.5 bg-gray-900/50 rounded-lg px-2.5 py-1.5 border border-gray-700/50"
+                    className="flex items-center gap-1 sm:gap-1.5 bg-gray-900/50 rounded-lg px-2 py-1 sm:px-2.5 sm:py-1.5 border border-gray-700/50"
                   >
-                    <span className="text-sm">{agent.config.emoji}</span>
-                    <span className="text-xs text-gray-400">
+                    <span className="text-xs sm:text-sm">{agent.config.emoji}</span>
+                    <span className="text-[10px] sm:text-xs text-gray-400">
                       {agent.config.name}
                     </span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
+                    <span className="w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full bg-gray-500" />
                   </div>
                 ))}
               </div>

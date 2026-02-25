@@ -103,14 +103,14 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
   }
 
   return (
-    <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-4 mb-6">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-3 sm:p-4 mb-4 sm:mb-6">
+      <div className="flex items-center justify-between mb-3 sm:mb-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-          <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+          <h3 className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider">
             실시간 모니터
           </h3>
-          <span className="text-xs text-gray-500">
+          <span className="text-[10px] sm:text-xs text-gray-500">
             {activeAgents.length} 활성 / {agentStatuses.length} 전체
           </span>
         </div>
@@ -118,7 +118,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
 
       {/* Active agents - expanded cards */}
       {activeAgents.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 sm:gap-3 mb-3">
           {activeAgents.map((agent) => {
             const display = getDisplay(agent.id);
             const logs = getRecentLogs(agent.id);
@@ -127,27 +127,27 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
             return (
               <div
                 key={agent.id}
-                className="bg-gray-900 rounded-lg border border-green-500/30 p-3"
+                className="bg-gray-900 rounded-lg border border-green-500/30 p-2.5 sm:p-3"
               >
                 {/* Header */}
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xl">{display.emoji}</span>
+                  <span className="text-lg sm:text-xl">{display.emoji}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-white truncate">
+                    <div className="flex items-center gap-1.5 sm:gap-2">
+                      <span className="text-xs sm:text-sm font-bold text-white truncate">
                         {display.name}
                       </span>
-                      <span className="flex items-center gap-1">
+                      <span className="flex items-center gap-1 flex-shrink-0">
                         <span
-                          className={`w-2 h-2 rounded-full ${style.bg} ${
+                          className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${style.bg} ${
                             style.pulse ? "animate-pulse" : ""
                           }`}
                         />
-                        <span className="text-[10px] text-green-400">{style.label}</span>
+                        <span className="text-[10px] text-green-400 hidden sm:inline">{style.label}</span>
                       </span>
                     </div>
                   </div>
-                  <span className="text-[10px] text-gray-600">
+                  <span className="text-[10px] text-gray-600 flex-shrink-0">
                     {relativeTime(agent.updatedAt)}
                   </span>
                 </div>
@@ -155,14 +155,14 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
                 {/* Current task */}
                 {agent.currentTask && (
                   <div className="bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1.5 mb-2">
-                    <p className="text-xs text-blue-300 truncate">{agent.currentTask}</p>
+                    <p className="text-[11px] sm:text-xs text-blue-300 line-clamp-2 break-words">{agent.currentTask}</p>
                   </div>
                 )}
 
                 {/* Live output (real-time) — takes priority over history logs */}
                 {agent.liveOutput && (agent.liveOutput.recentEvents?.length || agent.liveOutput.lastChunk) ? (
-                  <div className="bg-gray-800/80 rounded px-2 py-1.5 font-mono text-[11px]">
-                    <div className="max-h-28 overflow-y-auto space-y-0.5">
+                  <div className="bg-gray-800/80 rounded px-2 py-1.5 font-mono text-[10px] sm:text-[11px] overflow-hidden">
+                    <div className="max-h-24 sm:max-h-28 overflow-y-auto overflow-x-hidden space-y-0.5">
                       {agent.liveOutput.recentEvents && agent.liveOutput.recentEvents.length > 0 ? (
                         /* Structured events (newest first in data, reverse for chronological) */
                         [...agent.liveOutput.recentEvents].reverse().slice(-8).map((evt, i) => {
