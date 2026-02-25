@@ -1,6 +1,7 @@
 // Agent별 이벤트 타임라인 저장 (PostgreSQL)
 
 import { query, queryOne } from "./db";
+import { generateRequestTitle } from "./request-group";
 
 export interface HistoryEntry {
   id: string;
@@ -28,12 +29,15 @@ export async function addHistoryEntry(
   agentId: string,
   entry: Omit<HistoryEntry, "id" | "timestamp">
 ): Promise<HistoryEntry> {
+  // requestTitle이 없으면 content 기반으로 요약 제목을 자동 생성
+  const requestTitle = entry.requestTitle || (entry.content ? generateRequestTitle(entry.content) : null);
+
   const rows = await query<HistoryEntry>(
     `INSERT INTO agent_history (agent_id, type, content, metadata, request_group_id, request_title)
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id, agent_id as "agentId", type, content, metadata, created_at as timestamp,
                request_group_id as "requestGroupId", request_title as "requestTitle"`,
-    [agentId, entry.type, entry.content, entry.metadata || null, entry.requestGroupId || null, entry.requestTitle || null]
+    [agentId, entry.type, entry.content, entry.metadata || null, entry.requestGroupId || null, requestTitle]
   );
   return rows[0];
 }

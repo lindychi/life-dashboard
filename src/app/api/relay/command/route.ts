@@ -13,6 +13,10 @@ import { isDbConnectionError } from "@/lib/db";
 import { saveAttachment, getAttachmentByRefKey } from "@/lib/attachments";
 import type { RelayCommandType } from "@/lib/types";
 
+const VALID_COMMAND_TYPES: readonly RelayCommandType[] = [
+  "spawn", "send", "status", "message", "orchestrate", "instruction",
+] as const;
+
 // Dashboard에서 Gateway로 명령 전송 (supports both user session and relay key auth)
 export async function POST(request: NextRequest) {
   // 인증 체크: relay key 또는 user session
@@ -25,7 +29,17 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { gatewayId, type, payload, queue, attachments } = await request.json() as {
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON in request body" },
+        { status: 400 }
+      );
+    }
+
+    const { gatewayId, type, payload, queue, attachments } = body as {
       gatewayId?: string;
       type?: string;
       payload?: Record<string, unknown>;
@@ -57,6 +71,13 @@ export async function POST(request: NextRequest) {
     if (!type || !payload) {
       return NextResponse.json(
         { error: "type and payload required" },
+        { status: 400 }
+      );
+    }
+
+    if (!VALID_COMMAND_TYPES.includes(type as RelayCommandType)) {
+      return NextResponse.json(
+        { error: `Invalid command type "${type}". Must be one of: ${VALID_COMMAND_TYPES.join(", ")}` },
         { status: 400 }
       );
     }

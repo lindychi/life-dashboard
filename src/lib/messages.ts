@@ -2,7 +2,41 @@
 
 import { query, queryOne } from "./db";
 import { getAgentIds } from "./agents";
-import { linkAttachmentsFromContent, getMessageAttachments, type Attachment } from "./attachments";
+import { linkAttachmentsFromContent, type Attachment } from "./attachments";
+
+/** 허용되는 메시지 타입 */
+export const VALID_MESSAGE_TYPES = ["text", "task", "result", "question", "answer"] as const;
+
+/** 메시지 content 최대 길이 (100KB) */
+export const MAX_CONTENT_LENGTH = 100_000;
+
+/** 특수 ID (에이전트가 아닌 허용 ID) */
+const SPECIAL_IDS = ["user", "broadcast"] as const;
+
+/**
+ * 유효한 에이전트/사용자 ID인지 검증
+ * - "user": 대시보드 사용자
+ * - agents.json에 등록된 에이전트 ID
+ */
+export function isValidAgentId(id: string): boolean {
+  if (SPECIAL_IDS.includes(id as typeof SPECIAL_IDS[number])) return true;
+  return getAgentIds().includes(id);
+}
+
+/**
+ * ISO 8601 타임스탬프 형식 검증
+ */
+export function isValidISOTimestamp(value: string): boolean {
+  const date = new Date(value);
+  return !isNaN(date.getTime());
+}
+
+/**
+ * UUID v4 형식 검증
+ */
+export function isValidUUID(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
 
 export interface Message {
   id: string;
@@ -26,14 +60,19 @@ interface MessageRow {
   created_at: string;
 }
 
-// DB 행을 Message 인터페이스로 변환
+// DB 행을 Message 인터페이스로 변환 (runtime validation 포함)
 function toMessage(row: MessageRow): Message {
+  const validTypes: readonly string[] = VALID_MESSAGE_TYPES;
+  const type = validTypes.includes(row.type)
+    ? (row.type as Message["type"])
+    : "text"; // fallback for unknown types
+
   return {
     id: row.id,
     from: row.from_id,
     to: row.to_id,
     content: row.content,
-    type: row.type as Message["type"],
+    type,
     read: row.read,
     timestamp: row.created_at,
   };
@@ -42,10 +81,25 @@ function toMessage(row: MessageRow): Message {
 /**
  * 메시지 전송
  * to가 "broadcast"인 경우 모든 에이전트에게 전송
+ *
+ * @throws {Error} 필수 필드 누락, 유효하지 않은 에이전트 ID, content 초과 등
  */
 export async function sendMessage(
   msg: Omit<Message, "id" | "read" | "timestamp">
 ): Promise<Message> {
+  // 라이브러리 레벨 방어적 검증 (API 레이어를 거치지 않는 직접 호출 대비)
+  if (!msg.from || !msg.to || !msg.content || !msg.type) {
+    throw new Error("sendMessage: missing required fields (from, to, content, type)");
+  }
+
+  if (!VALID_MESSAGE_TYPES.includes(msg.type)) {
+    throw new Error(`sendMessage: invalid type "${msg.type}". Must be one of: ${VALID_MESSAGE_TYPES.join(", ")}`);
+  }
+
+  if (msg.content.length > MAX_CONTENT_LENGTH) {
+    throw new Error(`sendMessage: content exceeds maximum length of ${MAX_CONTENT_LENGTH} characters`);
+  }
+
   // 브로드캐스트와 직접 메시지 모두 동일한 INSERT 쿼리 사용
   // 브로드캐스트는 to_id = 'broadcast', 직접 메시지는 to_id = agentId
   const result = await queryOne<MessageRow>(
@@ -193,17 +247,38 @@ export async function getConversation(
   // since 쿼리는 이미 ASC, 전체 쿼리는 DESC이므로 reverse 필요
   const messages = since ? results.map(toMessage) : results.reverse().map(toMessage);
 
-  // Load attachments for messages that reference files (병렬 로딩)
-  await Promise.all(
-    messages.map(async (msg) => {
-      if (msg.content.includes("@file:")) {
-        const attachments = await getMessageAttachments(msg.id);
-        if (attachments.length > 0) {
-          (msg as Message).attachments = attachments;
-        }
+  // Batch load attachments for messages that reference files (single query instead of N+1)
+  const messageIdsWithFiles = messages
+    .filter((msg) => msg.content.includes("@file:"))
+    .map((msg) => msg.id);
+
+  if (messageIdsWithFiles.length > 0) {
+    const attachmentRows = await query<AttachmentRow>(
+      `SELECT id, message_id, original_filename, mime_type, size_bytes, storage_key, ref_key, created_at
+       FROM attachments
+       WHERE message_id = ANY($1)
+       ORDER BY created_at ASC`,
+      [messageIdsWithFiles]
+    );
+
+    // Group attachments by message_id
+    const attachmentsByMessage = new Map<string, Attachment[]>();
+    for (const row of attachmentRows) {
+      if (!row.message_id) continue;
+      const mapped = mapAttachmentRow(row);
+      const list = attachmentsByMessage.get(row.message_id) || [];
+      list.push(mapped);
+      attachmentsByMessage.set(row.message_id, list);
+    }
+
+    // Assign to messages
+    for (const msg of messages) {
+      const atts = attachmentsByMessage.get(msg.id);
+      if (atts && atts.length > 0) {
+        (msg as Message).attachments = atts;
       }
-    })
-  );
+    }
+  }
 
   return messages;
 }
@@ -316,4 +391,30 @@ export async function getAllAgentsOverview(): Promise<
   }
 
   return overview;
+}
+
+// ===== Internal Types for Batch Attachment Loading =====
+
+interface AttachmentRow {
+  id: string;
+  message_id: string | null;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: string;
+  storage_key: string;
+  ref_key: string;
+  created_at: string;
+}
+
+function mapAttachmentRow(row: AttachmentRow): Attachment {
+  return {
+    id: row.id,
+    messageId: row.message_id,
+    originalFilename: row.original_filename,
+    mimeType: row.mime_type,
+    sizeBytes: parseInt(row.size_bytes, 10),
+    storageKey: row.storage_key,
+    refKey: row.ref_key,
+    createdAt: row.created_at,
+  };
 }

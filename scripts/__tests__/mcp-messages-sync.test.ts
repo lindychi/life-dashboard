@@ -379,7 +379,7 @@ describe("MCP dashboard_get_messages: 엔드-투-엔드 데이터 동기화 (E2E
       from: "planner",
       to: "executor-high",
       content: "Complex refactoring task",
-      type: "request",
+      type: "task",
     });
 
     // Get messages
@@ -403,7 +403,7 @@ describe("MCP dashboard_get_messages: 엔드-투-엔드 데이터 동기화 (E2E
     expect(msg.from).toBe("planner");
     expect(msg.to).toBe("executor-high");
     expect(msg.content).toBe("Complex refactoring task");
-    expect(msg.type).toBe("request");
+    expect(msg.type).toBe("task");
     expect(msg.read).toBe(false);
   });
 });

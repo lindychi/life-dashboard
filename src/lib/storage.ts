@@ -55,7 +55,14 @@ class LocalStorageDriver implements StorageDriver {
 
   async delete(key: string): Promise<void> {
     const fullPath = path.join(UPLOAD_DIR, key);
-    await fs.unlink(fullPath).catch(() => {});
+    try {
+      await fs.unlink(fullPath);
+    } catch (err) {
+      // Ignore ENOENT (file already deleted), log other errors
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.warn(`[storage] Failed to delete local file ${key}:`, (err as Error).message);
+      }
+    }
   }
 
   async exists(key: string): Promise<boolean> {

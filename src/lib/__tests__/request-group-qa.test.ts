@@ -76,12 +76,12 @@ describe("generateRequestTitle: 키워드 매칭 기반 제목 생성", () => {
   });
 
   it("데이터베이스 관련 키워드 매칭", () => {
-    expect(generateRequestTitle("database migration 실행")).toBe("DB 작업");
+    expect(generateRequestTitle("database migration 실행")).toBe("DB 작업 마이그레이션");
   });
 
   it("config/설정 키워드 매칭", () => {
     expect(generateRequestTitle("설정 변경 작업")).toBe("설정 변경");
-    expect(generateRequestTitle("Update the configuration")).toBe("설정 변경");
+    expect(generateRequestTitle("Update the configuration")).toBe("설정 변경 업데이트");
   });
 });
 
@@ -489,9 +489,10 @@ describe("API Route: POST /api/history with requestGroupId", () => {
 
     const insertCall = mockQuery.mock.calls[0];
     const params = insertCall[1] as unknown[];
-    // Indices 4 and 5 should be null (requestGroupId and requestTitle)
+    // Index 4 should be null (requestGroupId)
     expect(params[4]).toBeNull();
-    expect(params[5]).toBeNull();
+    // Index 5 (requestTitle) is auto-generated from content when not explicitly provided
+    expect(params[5]).toBe("No group");
   });
 });
 

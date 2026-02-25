@@ -93,7 +93,11 @@ export async function saveAttachment(
 
   if (!result) {
     // Cleanup file on DB failure
-    await storage.delete(storageKey).catch(() => {});
+    try {
+      await storage.delete(storageKey);
+    } catch (cleanupErr) {
+      console.warn(`[attachments] Failed to cleanup storage file ${storageKey} after DB error:`, (cleanupErr as Error).message);
+    }
     throw new Error("Failed to save attachment record");
   }
 
@@ -213,7 +217,11 @@ export async function deleteAttachment(id: string): Promise<boolean> {
 
   // Delete file from storage (local or S3)
   const storage = getStorageDriver();
-  await storage.delete(attachment.storageKey).catch(() => {});
+  try {
+    await storage.delete(attachment.storageKey);
+  } catch (err) {
+    console.warn(`[attachments] Failed to delete storage file ${attachment.storageKey}:`, (err as Error).message);
+  }
 
   // Delete DB record
   const result = await queryOne<{ id: string }>(

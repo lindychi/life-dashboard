@@ -1,9 +1,15 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || "fallback-secret-not-for-production"
-);
+function getJwtSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET;
+  if (!secret && process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET environment variable is required in production");
+  }
+  return new TextEncoder().encode(secret || "dev-only-secret-do-not-use-in-prod");
+}
+
+const JWT_SECRET = getJwtSecret();
 
 const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || "")
   .split(",")
@@ -35,7 +41,17 @@ export async function createMagicLinkToken(email: string): Promise<string> {
 export async function verifyToken(token: string): Promise<User | null> {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET);
-    return payload as unknown as User;
+
+    // Runtime validation: ensure required fields exist
+    if (typeof payload.email !== "string" || !payload.email) {
+      return null;
+    }
+
+    return {
+      email: payload.email as string,
+      iat: payload.iat ?? 0,
+      exp: payload.exp ?? 0,
+    };
   } catch {
     return null;
   }

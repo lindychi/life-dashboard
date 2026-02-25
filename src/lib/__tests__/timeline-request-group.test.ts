@@ -287,9 +287,10 @@ describe("Unit Tests: addHistoryEntry with requestGroupId", () => {
 
     const call = mockQuery.mock.calls[0];
     const params = call[1] as unknown[];
-    // requestGroupId and requestTitle should be null (positions 4 and 5)
+    // requestGroupId should be null (position 4)
     expect(params[4]).toBeNull();
-    expect(params[5]).toBeNull();
+    // requestTitle is auto-generated from content when not provided (position 5)
+    expect(params[5]).toBe("Some output");
   });
 });
 

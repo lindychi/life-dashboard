@@ -131,35 +131,39 @@ vi.mock("@/lib/db", () => {
       return [];
     }
 
-    // INSERT agent_statuses (UPSERT)
+    // INSERT agent_statuses (batch UPSERT via UNNEST)
     if (sql.includes("INSERT INTO agent_statuses")) {
-      const [agentId, gatewayId, name, status, currentTask, sessionKey] = params;
+      const [ids, gatewayIds, names, statuses, tasks, sessionKeys] = params as [string[], string[], string[], string[], (string | null)[], (string | null)[]];
       const now = new Date().toISOString();
 
-      const existingIndex = mockStorage.agentStatuses.findIndex(
-        (a) => a.id === agentId && a.gateway_id === gatewayId
-      );
+      // Handle both single-value (legacy) and array (batch UNNEST) formats
+      const idArr = Array.isArray(ids) ? ids : [ids];
+      const gwArr = Array.isArray(gatewayIds) ? gatewayIds : [gatewayIds];
+      const nameArr = Array.isArray(names) ? names : [names];
+      const statusArr = Array.isArray(statuses) ? statuses : [statuses];
+      const taskArr = Array.isArray(tasks) ? tasks : [tasks];
+      const skArr = Array.isArray(sessionKeys) ? sessionKeys : [sessionKeys];
 
-      if (existingIndex >= 0) {
-        mockStorage.agentStatuses[existingIndex] = {
-          id: agentId,
-          gateway_id: gatewayId,
-          name,
-          status,
-          current_task: currentTask,
-          session_key: sessionKey,
+      for (let i = 0; i < idArr.length; i++) {
+        const existingIndex = mockStorage.agentStatuses.findIndex(
+          (a) => a.id === idArr[i] && a.gateway_id === gwArr[i]
+        );
+
+        const entry = {
+          id: idArr[i],
+          gateway_id: gwArr[i],
+          name: nameArr[i],
+          status: statusArr[i],
+          current_task: taskArr[i],
+          session_key: skArr[i],
           updated_at: now,
         };
-      } else {
-        mockStorage.agentStatuses.push({
-          id: agentId,
-          gateway_id: gatewayId,
-          name,
-          status,
-          current_task: currentTask,
-          session_key: sessionKey,
-          updated_at: now,
-        });
+
+        if (existingIndex >= 0) {
+          mockStorage.agentStatuses[existingIndex] = entry;
+        } else {
+          mockStorage.agentStatuses.push(entry);
+        }
       }
       return [];
     }

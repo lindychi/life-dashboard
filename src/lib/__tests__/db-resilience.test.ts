@@ -6,6 +6,8 @@ vi.mock("pg", () => {
   return {
     Pool: function Pool(this: any) {
       this.query = mockQuery;
+      this.on = vi.fn();
+      this.end = vi.fn().mockResolvedValue(undefined);
     },
     __mockQuery: mockQuery,
   };

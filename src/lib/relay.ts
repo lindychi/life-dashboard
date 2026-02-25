@@ -31,7 +31,13 @@ export const MAX_GATEWAYS_IN_MEMORY = 50;
 export const COMMAND_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const MAX_LIVE_OUTPUT_ENTRIES = 200;
 
-const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
+const RELAY_API_KEY = (() => {
+  const key = process.env.RELAY_API_KEY;
+  if (!key && process.env.NODE_ENV === "production") {
+    throw new Error("RELAY_API_KEY environment variable is required in production");
+  }
+  return key || "dev-relay-key";
+})();
 
 // In-memory fallback when DB is unavailable
 const inMemoryCommands = new Map<string, RelayCommand[]>();
@@ -83,7 +89,7 @@ export async function registerGateway(
   );
 
   if (!result) {
-    throw new Error("Failed to register gateway");
+    throw new Error(`Failed to register gateway: ${gatewayId}`);
   }
 
   // Reset all previous agent statuses to 'idle' on re-registration
@@ -198,7 +204,7 @@ export async function queueCommand(
     );
 
     if (!result) {
-      throw new Error("Failed to queue command");
+      throw new Error(`Failed to queue command for gateway ${gatewayId}, type: ${command.type}`);
     }
 
     dbAvailable = true;
@@ -342,26 +348,30 @@ export async function updateAgentStatuses(
     };
   }>
 ): Promise<void> {
-  // Use UPSERT for each agent
-  for (const agent of agents) {
-    await query(
-      `
-      INSERT INTO agent_statuses (id, gateway_id, name, status, current_task, session_key, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, NOW())
-      ON CONFLICT (id, gateway_id) DO UPDATE
-      SET name = $3, status = $4, current_task = $5, session_key = $6, updated_at = NOW()
-    `,
-      [
-        agent.id,
-        gatewayId,
-        agent.name,
-        agent.status,
-        agent.currentTask || null,
-        agent.sessionKey || null,
-      ]
-    );
+  // Batch UPSERT all agents in a single query using UNNEST
+  if (agents.length > 0) {
+    const ids = agents.map((a) => a.id);
+    const gatewayIds = agents.map(() => gatewayId);
+    const names = agents.map((a) => a.name);
+    const statuses = agents.map((a) => a.status);
+    const tasks = agents.map((a) => a.currentTask || null);
+    const sessionKeys = agents.map((a) => a.sessionKey || null);
 
-    // Cache liveOutput in memory (too frequent for DB)
+    await query(
+      `INSERT INTO agent_statuses (id, gateway_id, name, status, current_task, session_key, updated_at)
+       SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+         AS t(id, gateway_id, name, status, current_task, session_key),
+         LATERAL (SELECT NOW()) AS ts(updated_at)
+       ON CONFLICT (id, gateway_id) DO UPDATE
+       SET name = EXCLUDED.name, status = EXCLUDED.status,
+           current_task = EXCLUDED.current_task, session_key = EXCLUDED.session_key,
+           updated_at = NOW()`,
+      [ids, gatewayIds, names, statuses, tasks, sessionKeys]
+    );
+  }
+
+  // Cache liveOutput in memory (too frequent for DB)
+  for (const agent of agents) {
     const cacheKey = `${gatewayId}:${agent.id}`;
     if (agent.liveOutput) {
       liveOutputCache.set(cacheKey, agent.liveOutput);
@@ -563,7 +573,7 @@ export async function queueInstruction(
     );
 
     if (!result) {
-      throw new Error("Failed to queue instruction");
+      throw new Error(`Failed to queue instruction for agent ${agentId} on gateway ${gatewayId}`);
     }
 
     // Get position in queue for this agent
@@ -747,8 +757,8 @@ export async function drainQueueForIdleAgents(
           status: "processing",
         });
       }
-    } catch {
-      // Skip this agent on error
+    } catch (error) {
+      console.error(`[relay] Failed to drain instruction queue for agent ${agentId} on gateway ${gatewayId}:`, error);
     }
   }
   return commands;
@@ -851,9 +861,9 @@ export async function recoverStaleErrorAgents(): Promise<number> {
       `UPDATE agent_statuses
        SET status = 'idle', current_task = NULL, updated_at = NOW()
        WHERE status = 'error'
-         AND updated_at < NOW() - INTERVAL '${STALE_ERROR_THRESHOLD_MINUTES} minutes'
+         AND updated_at < NOW() - $1::INTEGER * INTERVAL '1 minute'
        RETURNING id, gateway_id`,
-      []
+      [STALE_ERROR_THRESHOLD_MINUTES]
     );
 
     if (result.length > 0) {

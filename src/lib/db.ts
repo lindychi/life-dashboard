@@ -6,8 +6,25 @@ const pool = new Pool({
   max: 20,                    // Max connections (default 10 → 20 for concurrent agent polling)
   min: 2,                     // Keep 2 warm connections ready
   idleTimeoutMillis: 30000,   // Return idle connections after 30s (default 10s)
-  statement_timeout: 10000,   // 10s query timeout safety net
+  statement_timeout: 30000,   // 30s query timeout (increased from 10s for complex CTEs)
 });
+
+// Handle unexpected pool errors to prevent process crash
+pool.on("error", (err) => {
+  console.error("[db] Unexpected pool error:", err.message);
+});
+
+// Graceful shutdown: close pool on process exit
+function closePool(): void {
+  pool.end().catch((err) => {
+    console.error("[db] Error closing pool:", err.message);
+  });
+}
+
+if (typeof process !== "undefined") {
+  process.once("SIGTERM", closePool);
+  process.once("SIGINT", closePool);
+}
 
 export async function query<T = Record<string, unknown>>(
   text: string,

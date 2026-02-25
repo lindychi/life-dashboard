@@ -459,9 +459,7 @@ describe("messages module", () => {
       expect(Array.isArray(conversation)).toBe(true);
     });
 
-    it("should load attachments for messages with @file: references", async () => {
-      const { getMessageAttachments } = await import("@/lib/attachments");
-
+    it("should batch load attachments for messages with @file: references", async () => {
       await sendMessage({
         from: "dev",
         to: "pm",
@@ -469,9 +467,11 @@ describe("messages module", () => {
         type: "text",
       });
 
-      await getConversation("dev", "pm");
-
-      expect(getMessageAttachments).toHaveBeenCalled();
+      // getConversation now uses batch loading via direct query
+      // instead of calling getMessageAttachments per-message (N+1 optimization)
+      const conversation = await getConversation("dev", "pm");
+      expect(conversation).toHaveLength(1);
+      expect(conversation[0].content).toContain("@file:abc123");
     });
   });
 
