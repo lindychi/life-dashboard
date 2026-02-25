@@ -31,13 +31,17 @@ export const MAX_GATEWAYS_IN_MEMORY = 50;
 export const COMMAND_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const MAX_LIVE_OUTPUT_ENTRIES = 200;
 
-const RELAY_API_KEY = (() => {
+let _relayApiKey: string | null = null;
+
+function getRelayApiKey(): string {
+  if (_relayApiKey) return _relayApiKey;
   const key = process.env.RELAY_API_KEY;
   if (!key && process.env.NODE_ENV === "production") {
     throw new Error("RELAY_API_KEY environment variable is required in production");
   }
-  return key || "dev-relay-key";
-})();
+  _relayApiKey = key || "dev-relay-key";
+  return _relayApiKey;
+}
 
 // In-memory fallback when DB is unavailable
 const inMemoryCommands = new Map<string, RelayCommand[]>();
@@ -62,7 +66,7 @@ const liveOutputCache = new Map<
 >();
 
 export function validateRelayKey(key: string): boolean {
-  return key === RELAY_API_KEY;
+  return key === getRelayApiKey();
 }
 
 export function isDbAvailable(): boolean {
