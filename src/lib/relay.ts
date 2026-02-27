@@ -106,21 +106,35 @@ export async function registerGateway(
   // Reset orphaned 'processing' commands back to 'pending' for re-pickup.
   // Exclude commands already tracked in task_executions (those will be recovered
   // by taskStateManager via the interrupted task recovery flow).
-  const resetResult = await query<{ id: string }>(
-    `UPDATE relay_commands
-     SET status = 'pending'
-     WHERE gateway_id = $1 AND status = 'processing'
-       AND id::text NOT IN (
-         SELECT command_id FROM task_executions
-         WHERE command_id IS NOT NULL AND gateway_id = $1
-           AND status IN ('running', 'interrupted')
-       )
-     RETURNING id`,
-    [gatewayId]
-  );
+  // Wrapped in try-catch: task_executions table may not exist yet.
+  try {
+    const resetResult = await query<{ id: string }>(
+      `UPDATE relay_commands
+       SET status = 'pending'
+       WHERE gateway_id = $1 AND status = 'processing'
+         AND id::text NOT IN (
+           SELECT command_id FROM task_executions
+           WHERE command_id IS NOT NULL AND gateway_id = $1
+             AND status IN ('running', 'interrupted')
+         )
+       RETURNING id`,
+      [gatewayId]
+    );
 
-  if (resetResult.length > 0) {
-    console.log(`[relay] Reset ${resetResult.length} orphaned processing command(s) to pending for gateway ${gatewayId}`);
+    if (resetResult.length > 0) {
+      console.log(`[relay] Reset ${resetResult.length} orphaned processing command(s) to pending for gateway ${gatewayId}`);
+    }
+  } catch (error) {
+    // Fallback: if task_executions table doesn't exist, reset ALL processing commands
+    console.warn(`[relay] Orphan recovery query failed (task_executions may not exist), using simple reset:`, error);
+    try {
+      await query(
+        `UPDATE relay_commands SET status = 'pending' WHERE gateway_id = $1 AND status = 'processing'`,
+        [gatewayId]
+      );
+    } catch {
+      // Best-effort — don't block registration
+    }
   }
 
   return {
