@@ -110,7 +110,7 @@ export async function registerGateway(
     `UPDATE relay_commands
      SET status = 'pending'
      WHERE gateway_id = $1 AND status = 'processing'
-       AND id NOT IN (
+       AND id::text NOT IN (
          SELECT command_id FROM task_executions
          WHERE command_id IS NOT NULL AND gateway_id = $1
            AND status IN ('running', 'interrupted')
