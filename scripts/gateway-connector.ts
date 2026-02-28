@@ -29,6 +29,7 @@ import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "..", ".env.local") });
 
 import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, isGeminiAvailable, formatDuration, type ToolCall } from "./claude-executor";
+import { launchBrowser, closeBrowser, isChromiumAvailable, closeAllBrowsers, cleanupStaleBrowserSessions } from "./browser-session-manager";
 import { selectModel, getModelFlag, getModelStaleTimeout, getCategorySettings, type ModelTier, type DelegationCategory } from "./model-router";
 import { TaskStateManager } from "./task-state-manager";
 import { recordTaskResult, checkForPromotion, markPromoted, getAgentStats } from "./agent-intelligence";
@@ -41,6 +42,31 @@ const GATEWAY_ID = process.env.GATEWAY_ID || os.hostname();
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
 const MCP_CONFIG_PATH = path.resolve(__dirname, "..", ".mcp.json");
 const ENABLE_TMUX = process.env.ENABLE_TMUX === "true";
+
+/**
+ * Build a dynamic MCP config that extends the base config with optional browser support.
+ * Returns the path to a temporary config file.
+ */
+function buildMcpConfig(basePath: string, browserEndpoint?: string): string {
+  const baseConfig = JSON.parse(fs.readFileSync(basePath, "utf-8"));
+
+  if (browserEndpoint) {
+    baseConfig.mcpServers = baseConfig.mcpServers || {};
+    baseConfig.mcpServers["chrome-devtools"] = {
+      type: "stdio",
+      command: "npx",
+      args: [
+        "-y",
+        "@anthropic-ai/chrome-devtools-mcp@latest",
+        `--cdp-endpoint=${browserEndpoint}`
+      ]
+    };
+  }
+
+  const tmpPath = path.join(os.tmpdir(), `mcp-browser-${Date.now()}.json`);
+  fs.writeFileSync(tmpPath, JSON.stringify(baseConfig, null, 2));
+  return tmpPath;
+}
 
 // Load agent default models from agents.json (used for smart model routing)
 const AGENTS_JSON_PATH = path.resolve(__dirname, "..", "agents.json");
@@ -183,6 +209,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   } catch (error) {
     console.error("⚠️ Failed to persist task states:", error);
   }
+
+  await closeAllBrowsers();
 
   process.exit(0);
 }
@@ -582,7 +610,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
   try {
     switch (command.type) {
       case "spawn": {
-        const { agentId, task, systemPrompt, _attachmentRefKeys, requestGroupId, requestTitle, allowBash } = command.payload as {
+        const { agentId, task, systemPrompt, _attachmentRefKeys, requestGroupId, requestTitle, allowBash, enableBrowser } = command.payload as {
           agentId: string;
           task: string;
           systemPrompt?: string;
@@ -590,6 +618,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           requestGroupId?: string;
           requestTitle?: string;
           allowBash?: boolean;
+          enableBrowser?: boolean;
         };
 
         // Request group context for history entries
@@ -677,6 +706,22 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           console.log(`   🔓 Bash access enabled for this task`);
         }
 
+        // Browser setup: launch Chromium if requested
+        let browserSessionId: string | null = null;
+        let dynamicMcpConfig: string | null = null;
+
+        if (enableBrowser && isChromiumAvailable()) {
+          try {
+            browserSessionId = `${agentId}-${command.id}`;
+            const browserSession = await launchBrowser(browserSessionId);
+            dynamicMcpConfig = buildMcpConfig(MCP_CONFIG_PATH, browserSession.cdpEndpoint);
+            console.log(`[gateway] 🌐 Browser launched for ${agentId} on port ${browserSession.port}`);
+          } catch (err) {
+            console.error(`[gateway] ❌ Failed to launch browser:`, err);
+            // Continue without browser - don't fail the task
+          }
+        }
+
         // Smart model routing: analyze task complexity → select model + staleTimeout
         const explicitModel = (command.payload as { model?: ModelTier }).model; // explicit from dashboard
         const modelSelection = selectModel(task, agentId, explicitModel, AGENT_DEFAULT_MODELS[agentId]);
@@ -720,11 +765,12 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           agentId,
           task: finalTask,
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
-          mcpConfig: MCP_CONFIG_PATH,
+          mcpConfig: dynamicMcpConfig || MCP_CONFIG_PATH,
           staleTimeout: finalStaleTimeout,
           maxRetries, // AR-1: Pass agent-specific maxRetries
           enableTmux: ENABLE_TMUX,
           allowBash: allowBash || false,
+          enableBrowser: enableBrowser && !!dynamicMcpConfig,
           model: modelFlag,
           onToolCall: (tc: ToolCall) => {
             taskToolCalls.push(tc);
@@ -793,6 +839,17 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           // Clean up downloaded attachment temp files
           if (_attachmentRefKeys && _attachmentRefKeys.length > 0) {
             cleanupAttachmentFiles(_attachmentRefKeys);
+          }
+
+          // Cleanup browser session
+          if (browserSessionId) {
+            closeBrowser(browserSessionId).then(() => {
+              console.log(`[gateway] 🌐 Browser closed for ${agentId}`);
+            }).catch(() => { /* best-effort */ });
+          }
+          // Cleanup temp MCP config
+          if (dynamicMcpConfig) {
+            try { fs.unlinkSync(dynamicMcpConfig); } catch { /* best-effort */ }
           }
 
           if (result.fallbackUsed && result.provider === "codex") {
@@ -1329,9 +1386,17 @@ function recoverStuckAgents(): void {
   }
 }
 
+let pollCount = 0;
+
 // Main polling loop
 async function pollLoop(): Promise<void> {
+  pollCount++;
   try {
+    // Periodic stale browser session cleanup (every 10 polls)
+    if (pollCount % 10 === 0) {
+      await cleanupStaleBrowserSessions();
+    }
+
     // Auto-recover stuck agents before polling
     recoverStuckAgents();
 
@@ -1383,6 +1448,13 @@ async function main(): Promise<void> {
     console.log("✅ Gemini CLI found (fallback enabled)");
   } else {
     console.log("⚠️  Gemini CLI not found - fallback disabled");
+  }
+
+  // Check Chromium for browser tasks
+  if (isChromiumAvailable()) {
+    console.log(`[gateway] ✅ Chromium available for browser tasks`);
+  } else {
+    console.log(`[gateway] ⚠️ Chromium not found — browser tasks will be skipped`);
   }
 
   // Register

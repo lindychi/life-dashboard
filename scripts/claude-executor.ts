@@ -45,6 +45,28 @@ export const ALLOWED_TOOLS = [
   "mcp__life-dashboard",
 ].join(",");
 
+/**
+ * Build the allowed tools string dynamically based on options.
+ * Extends the base whitelist with optional Bash and browser tools.
+ */
+export function buildAllowedTools(options?: { allowBash?: boolean; enableBrowser?: boolean }): string {
+  const tools = [
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "mcp__life-dashboard",
+  ];
+  if (options?.allowBash) {
+    tools.push("Bash");
+  }
+  if (options?.enableBrowser) {
+    tools.push("mcp__chrome-devtools");
+  }
+  return tools.join(",");
+}
+
 const RATE_LIMIT_PATTERNS = [
   /rate limit/i,
   /too many requests/i,
@@ -91,6 +113,7 @@ export interface ClaudeExecutorOptions {
   disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
   mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
   allowBash?: boolean; // If true, include Bash in allowed tools (use with caution)
+  enableBrowser?: boolean; // If true, include chrome-devtools MCP tools in allowed tools
   maxRetries?: number; // Max retry attempts for hung/rate-limited failures (default 2)
   retryDelayMs?: number; // Delay between retries in ms (default 3000)
   enableTmux?: boolean; // Run Claude inside tmux for live terminal monitoring (default: false)
@@ -417,7 +440,7 @@ function formatToolCallLine(toolName: string, input?: Record<string, unknown>, r
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, allowBash, enableTmux = false, model } = options;
+  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, allowBash, enableBrowser, enableTmux = false, model } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
@@ -439,6 +462,7 @@ export function executeClaudeTask(
 
     // Security: use --allowed-tools whitelist instead of --dangerously-skip-permissions
     // This prevents arbitrary Bash execution if the relay server is compromised
+    const allowedTools = buildAllowedTools({ allowBash, enableBrowser });
     if (disableTools) {
       // No-tool tasks (planner, summarizer): single API call, use --print for simplicity
       args.push("--print");
@@ -447,8 +471,7 @@ export function executeClaudeTask(
       // Tool-using tasks: use --stream-json for structured event output
       // --stream-all includes thinking/inference events for better progress visibility
       args.push("--print", "--stream-json", "--stream-all");
-      const tools = allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS;
-      args.push("--allowed-tools", tools);
+      args.push("--allowed-tools", allowedTools);
 
       // Add MCP config if provided
       if (mcpConfig) {
@@ -459,7 +482,7 @@ export function executeClaudeTask(
     // Append tool availability notice to prevent agents from attempting unavailable tools
     const toolNotice = disableTools
       ? "\n\n## 시스템 제약 (필수 준수)\n당신은 도구 사용이 비활성화되어 있습니다. 분석과 텍스트 응답만 가능합니다. 코드 실행, 파일 수정, 쉘 명령 실행은 절대 시도하지 마세요."
-      : `\n\n## 시스템 제약 (필수 준수)\n사용 가능한 도구: ${allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS}\n위 목록에 없는 도구(특히 Bash/터미널/쉘 명령)는 절대 사용하지 마세요. 승인 프롬프트가 표시되면 프로세스가 중단됩니다.\n실행이 필요한 작업(git, 배포, npm 등)은 직접 실행하지 말고, 필요한 명령어를 텍스트로 제안만 해주세요.`;
+      : `\n\n## 시스템 제약 (필수 준수)\n사용 가능한 도구: ${allowedTools}\n위 목록에 없는 도구(특히 Bash/터미널/쉘 명령)는 절대 사용하지 마세요. 승인 프롬프트가 표시되면 프로세스가 중단됩니다.\n실행이 필요한 작업(git, 배포, npm 등)은 직접 실행하지 말고, 필요한 명령어를 텍스트로 제안만 해주세요.`;
 
     // Verification-Before-Completion protocol: append to tool-using agents only
     // (disableTools agents like planner/summarizer don't produce verifiable artifacts)

@@ -1326,6 +1326,60 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["agentId"],
         },
       },
+      {
+        name: "dashboard_browse_url",
+        description: "Browse a URL using headless Chrome. Launches a browser session, navigates to the URL, waits for the page to load, and returns the page title, text content, and optionally a screenshot. Use this for web research, scraping, or monitoring tasks.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: {
+              type: "string",
+              description: "The URL to navigate to",
+            },
+            waitMs: {
+              type: "number",
+              description: "Milliseconds to wait after page load (default: 2000)",
+            },
+            screenshot: {
+              type: "boolean",
+              description: "Whether to take a screenshot (default: false). Returns base64 PNG.",
+            },
+            sessionId: {
+              type: "string",
+              description: "Optional session ID to reuse an existing browser session. If omitted, creates a new session.",
+            },
+          },
+          required: ["url"],
+        },
+      },
+      {
+        name: "dashboard_browser_screenshot",
+        description: "Take a screenshot of the current page in an active browser session. Returns base64-encoded PNG image.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: {
+              type: "string",
+              description: "The browser session ID",
+            },
+          },
+          required: ["sessionId"],
+        },
+      },
+      {
+        name: "dashboard_browser_close",
+        description: "Close an active browser session and free resources.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: {
+              type: "string",
+              description: "The browser session ID to close",
+            },
+          },
+          required: ["sessionId"],
+        },
+      },
     ],
   };
 });
@@ -2313,6 +2367,250 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             text: JSON.stringify(data, null, 2),
           }],
         };
+      }
+
+      case "dashboard_browse_url": {
+        const { url, waitMs = 2000, screenshot = false, sessionId: existingSessionId } = args as {
+          url: string;
+          waitMs?: number;
+          screenshot?: boolean;
+          sessionId?: string;
+        };
+
+        try {
+          const { launchBrowser, closeBrowser, getBrowser } = await import("./browser-session-manager");
+
+          const sid = existingSessionId || `mcp-browse-${Date.now()}`;
+          let isNewSession = false;
+
+          // Reuse existing session or launch new one
+          let session = getBrowser(sid);
+          if (!session) {
+            session = await launchBrowser(sid);
+            isNewSession = true;
+          }
+
+          // Use CDP to navigate and extract content
+          const http = await import("http");
+
+          // Get page list from CDP
+          const cdpListUrl = `http://127.0.0.1:${session.port}/json/list`;
+          const pages: Array<{ id: string; webSocketDebuggerUrl: string }> = await new Promise((resolve, reject) => {
+            http.get(cdpListUrl, (res) => {
+              let data = "";
+              res.on("data", (chunk: string) => { data += chunk; });
+              res.on("end", () => {
+                try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+              });
+            }).on("error", reject);
+          });
+
+          if (!pages.length) {
+            throw new Error("No browser pages available");
+          }
+
+          // Connect via CDP WebSocket and navigate
+          const WebSocket = (await import("ws")).default;
+          const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
+
+          let cmdId = 1;
+          const sendCDP = (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+            return new Promise((resolve, reject) => {
+              const id = cmdId++;
+              const timeout = setTimeout(() => reject(new Error(`CDP timeout: ${method}`)), 30000);
+              const handler = (msg: { toString(): string }) => {
+                const data = JSON.parse(msg.toString());
+                if (data.id === id) {
+                  clearTimeout(timeout);
+                  ws.removeListener("message", handler);
+                  if (data.error) reject(new Error(data.error.message));
+                  else resolve(data.result);
+                }
+              };
+              ws.on("message", handler);
+              ws.send(JSON.stringify({ id, method, params }));
+            });
+          };
+
+          await new Promise<void>((resolve) => ws.on("open", resolve));
+
+          // Enable page events
+          await sendCDP("Page.enable");
+
+          // Navigate
+          await sendCDP("Page.navigate", { url });
+
+          // Wait for load + additional delay
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+
+          // Extract page info
+          const titleResult = await sendCDP("Runtime.evaluate", {
+            expression: "document.title",
+          }) as { result: { value: string } };
+
+          const contentResult = await sendCDP("Runtime.evaluate", {
+            expression: "document.body?.innerText?.substring(0, 50000) || ''",
+          }) as { result: { value: string } };
+
+          const urlResult = await sendCDP("Runtime.evaluate", {
+            expression: "window.location.href",
+          }) as { result: { value: string } };
+
+          let screenshotBase64: string | undefined;
+          if (screenshot) {
+            const ssResult = await sendCDP("Page.captureScreenshot", {
+              format: "png",
+              quality: 80,
+            }) as { data: string };
+            screenshotBase64 = ssResult.data;
+          }
+
+          ws.close();
+
+          // Close session if it was created just for this call
+          if (isNewSession && !existingSessionId) {
+            await closeBrowser(sid);
+          }
+
+          const result: Record<string, unknown> = {
+            success: true,
+            sessionId: sid,
+            url: urlResult.result.value,
+            title: titleResult.result.value,
+            content: contentResult.result.value,
+            contentLength: contentResult.result.value.length,
+          };
+          if (screenshotBase64) {
+            result.screenshot = `data:image/png;base64,${screenshotBase64}`;
+            result.screenshotSize = screenshotBase64.length;
+          }
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            }],
+          };
+        }
+      }
+
+      case "dashboard_browser_screenshot": {
+        const { sessionId } = args as { sessionId: string };
+
+        try {
+          const { getBrowser } = await import("./browser-session-manager");
+          const session = getBrowser(sessionId);
+
+          if (!session) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ success: false, error: "Session not found" }) }],
+            };
+          }
+
+          const http = await import("http");
+          const cdpListUrl = `http://127.0.0.1:${session.port}/json/list`;
+          const pages: Array<{ webSocketDebuggerUrl: string }> = await new Promise((resolve, reject) => {
+            http.get(cdpListUrl, (res) => {
+              let data = "";
+              res.on("data", (chunk: string) => { data += chunk; });
+              res.on("end", () => {
+                try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+              });
+            }).on("error", reject);
+          });
+
+          if (!pages.length) throw new Error("No pages available");
+
+          const WebSocket = (await import("ws")).default;
+          const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
+          await new Promise<void>((resolve) => ws.on("open", resolve));
+
+          let cmdId = 1;
+          const sendCDP = (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+            return new Promise((resolve, reject) => {
+              const id = cmdId++;
+              const timeout = setTimeout(() => reject(new Error("CDP timeout")), 10000);
+              const handler = (msg: { toString(): string }) => {
+                const data = JSON.parse(msg.toString());
+                if (data.id === id) {
+                  clearTimeout(timeout);
+                  ws.removeListener("message", handler);
+                  if (data.error) reject(new Error(data.error.message));
+                  else resolve(data.result);
+                }
+              };
+              ws.on("message", handler);
+              ws.send(JSON.stringify({ id, method, params }));
+            });
+          };
+
+          const ssResult = await sendCDP("Page.captureScreenshot", {
+            format: "png",
+            quality: 80,
+          }) as { data: string };
+
+          ws.close();
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                sessionId,
+                screenshot: `data:image/png;base64,${ssResult.data}`,
+                size: ssResult.data.length,
+              }),
+            }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            }],
+          };
+        }
+      }
+
+      case "dashboard_browser_close": {
+        const { sessionId } = args as { sessionId: string };
+
+        try {
+          const { closeBrowser, getBrowser } = await import("./browser-session-manager");
+          const session = getBrowser(sessionId);
+
+          if (!session) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ success: false, error: "Session not found" }) }],
+            };
+          }
+
+          await closeBrowser(sessionId);
+
+          return {
+            content: [{ type: "text", text: JSON.stringify({ success: true, sessionId }) }],
+          };
+        } catch (error) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            }],
+          };
+        }
       }
 
       default:
