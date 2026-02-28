@@ -28,8 +28,11 @@ import * as path from "path";
 import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "..", ".env.local") });
 
-import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, formatDuration, type ToolCall } from "./claude-executor";
+import { executeLlmTaskWithRetry, isClaudeAvailable, isCodexAvailable, isGeminiAvailable, formatDuration, type ToolCall } from "./claude-executor";
+import { selectModel, getModelFlag, getModelStaleTimeout, getCategorySettings, type ModelTier, type DelegationCategory } from "./model-router";
 import { TaskStateManager } from "./task-state-manager";
+import { recordTaskResult, checkForPromotion, markPromoted, getAgentStats } from "./agent-intelligence";
+import { recordProviderTask } from "./provider-feedback";
 
 // Config
 const RELAY_URL = process.env.RELAY_URL || "http://localhost:3000";
@@ -38,6 +41,22 @@ const GATEWAY_ID = process.env.GATEWAY_ID || os.hostname();
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
 const MCP_CONFIG_PATH = path.resolve(__dirname, "..", ".mcp.json");
 const ENABLE_TMUX = process.env.ENABLE_TMUX === "true";
+
+// Load agent default models from agents.json (used for smart model routing)
+const AGENTS_JSON_PATH = path.resolve(__dirname, "..", "agents.json");
+const AGENT_DEFAULT_MODELS: Record<string, ModelTier> = {};
+try {
+  const agentsRaw = JSON.parse(fs.readFileSync(AGENTS_JSON_PATH, "utf-8")) as Array<{
+    id: string;
+    defaultModel?: ModelTier;
+  }>;
+  for (const a of agentsRaw) {
+    if (a.defaultModel) AGENT_DEFAULT_MODELS[a.id] = a.defaultModel;
+  }
+  console.log(`📋 Agent default models loaded: ${Object.entries(AGENT_DEFAULT_MODELS).map(([k, v]) => `${k}=${v}`).join(", ")}`);
+} catch {
+  console.warn("⚠️ Could not load agents.json for model defaults, will use auto-analysis only");
+}
 
 // Task state persistence for recovery after restart
 const taskStateManager = new TaskStateManager({
@@ -175,6 +194,49 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 async function gracefulRestart(reason: string): Promise<void> {
   console.log(`\n🔄 Restarting gateway connector: ${reason}`);
   console.log("   Persisting task states before restart...");
+
+  // 1. Collect pending task IDs from task state manager
+  let pendingTaskIds: string[] = [];
+  try {
+    const stateEntries = await taskStateManager.getAllStates();
+    pendingTaskIds = stateEntries
+      .filter((s) => s.status === "running" || s.status === "pending")
+      .map((s) => s.taskId);
+    console.log(`   📋 ${pendingTaskIds.length} pending task(s): ${pendingTaskIds.join(", ")}`);
+  } catch (error) {
+    console.error("   ⚠️ Failed to collect pending task IDs:", error);
+  }
+
+  // 2. Record restart event to DB (via new API endpoint)
+  try {
+    await dashboardApiCall("/api/relay/restart-event", "POST", {
+      gatewayId: GATEWAY_ID,
+      reason,
+      pendingTaskIds,
+    });
+    console.log("   ✅ Restart event logged to DB");
+  } catch (error) {
+    console.error("   ⚠️ Failed to log restart event:", error);
+  }
+
+  // 3. Log restart event to history for visibility (console/dashboard)
+  addHistory("system", "gateway_restart", `🔄 Gateway 재시작: ${reason}`);
+
+  // 4. Flush pending history entries before shutdown
+  try {
+    if (pendingHistoryEntries.length > 0) {
+      await apiCall("/poll", "POST", {
+        gatewayId: GATEWAY_ID,
+        agents: getAgentsList(),
+        historyEntries: [...pendingHistoryEntries],
+      });
+      console.log(`   ✅ Flushed ${pendingHistoryEntries.length} history entries`);
+    }
+  } catch (error) {
+    console.error("   ⚠️ Failed to flush history entries:", error);
+  }
+
+  // 5. Persist task states
   try {
     await taskStateManager.shutdown();
     console.log("   ✅ Task states persisted");
@@ -615,16 +677,36 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           console.log(`   🔓 Bash access enabled for this task`);
         }
 
-        const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획|test|QA|테스트|PM|product|orchestrat|전체|comprehensive|deep|tdd|migration|마이그레이션/i.test(task);
-        // Agent-specific staleTimeout overrides (agents that inherently need more time)
-        const AGENT_STALE_OVERRIDES: Record<string, number> = {
-          qa: 600000,         // 10min — test execution + analysis
+        // Smart model routing: analyze task complexity → select model + staleTimeout
+        const explicitModel = (command.payload as { model?: ModelTier }).model; // explicit from dashboard
+        const modelSelection = selectModel(task, agentId, explicitModel, AGENT_DEFAULT_MODELS[agentId]);
+        const modelFlag = getModelFlag(modelSelection.model);
+        const staleTimeout = getModelStaleTimeout(modelSelection.model, modelSelection.complexityScore);
+
+        // QW-4: Agent-specific staleTimeout floor (increased QA from 10→15min)
+        const AGENT_STALE_FLOORS: Record<string, number> = {
+          qa: 900000,         // 15min — test execution + comprehensive analysis (increased from 10min)
           pm: 600000,         // 10min — analytical tasks
           orchestrator: 900000, // 15min — multi-step orchestration
           analyst: 600000,    // 10min — code analysis
           learner: 600000,    // 10min — knowledge extraction
         };
-        const staleTimeout = AGENT_STALE_OVERRIDES[agentId] || (isComplexTask ? 600000 : 300000); // agent override > complex 10min > simple 5min
+        const finalStaleTimeout = Math.max(staleTimeout, AGENT_STALE_FLOORS[agentId] || 0);
+
+        // AR-1: Agent-specific maxRetries (QA gets 3, others 2)
+        const AGENT_MAX_RETRIES: Record<string, number> = {
+          qa: 3,          // QA: 3 retries (total 4 attempts) — test infrastructure can have transient issues
+          pm: 2,          // PM: 2 retries (default)
+          orchestrator: 2,
+          analyst: 2,
+          learner: 2,
+          // All other agents: default 2 retries
+        };
+        const maxRetries = AGENT_MAX_RETRIES[agentId] ?? 2;
+
+        console.log(`   🧠 Model: ${modelSelection.model} (source: ${modelSelection.source}, complexity: ${modelSelection.complexityScore})`);
+        console.log(`   ⏱️  Stale timeout: ${formatDuration(finalStaleTimeout)}`);
+        console.log(`   🔄 Max retries: ${maxRetries}`);
 
         let totalChars = 0;
         let chunksReceived = 0;
@@ -639,9 +721,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           task: finalTask,
           systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
           mcpConfig: MCP_CONFIG_PATH,
-          staleTimeout,
+          staleTimeout: finalStaleTimeout,
+          maxRetries, // AR-1: Pass agent-specific maxRetries
           enableTmux: ENABLE_TMUX,
           allowBash: allowBash || false,
+          model: modelFlag,
           onToolCall: (tc: ToolCall) => {
             taskToolCalls.push(tc);
           },
@@ -733,9 +817,13 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             addHistory(agentId, "task_completed", `${prefix}${truncatedOutput}`, {
               ...(finalToolCalls.length > 0 ? { toolCalls: finalToolCalls } : {}),
               elapsedMs: taskElapsedMs,
-              isComplex: isComplexTask,
+              modelTier: modelSelection.model,
+              modelSource: modelSelection.source,
+              complexityScore: modelSelection.complexityScore,
               retryCount: (result as { retriesUsed?: number }).retriesUsed || 0,
               provider: result.provider,
+              totalCostUsd: result.totalCostUsd,
+              numTurns: result.numTurns,
               ...(fullOutput.length > 5000 ? { fullResponseLength: fullOutput.length } : {}),
             }, reqGroup);
 
@@ -746,6 +834,19 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
             // Report command result to relay (best-effort)
             reportCommandResult(command.id, "completed");
+
+            // Record provider feedback (for quality tracking)
+            try {
+              recordProviderTask({
+                commandId: command.id,
+                agentId,
+                provider: result.provider || "claude",
+                taskCategory: "standard",
+                success: true,
+                elapsedMs: taskElapsedMs,
+                timestamp: new Date(),
+              });
+            } catch { /* best-effort */ }
 
             agentStatusMap.set(agentId, {
               id: agentId,
@@ -767,7 +868,9 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             addHistory(agentId, "task_failed", errorMsg, {
               ...(finalToolCalls.length > 0 ? { toolCalls: finalToolCalls } : {}),
               elapsedMs: taskElapsedMs,
-              isComplex: isComplexTask,
+              modelTier: modelSelection.model,
+              modelSource: modelSelection.source,
+              complexityScore: modelSelection.complexityScore,
               retryCount: (result as { retriesUsed?: number }).retriesUsed || 0,
               exitCode: result.exitCode,
               isHung,
@@ -780,6 +883,19 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
             // Report command result to relay (best-effort)
             reportCommandResult(command.id, "failed", { error: errorMsg });
+
+            // Record provider feedback (for quality tracking)
+            try {
+              recordProviderTask({
+                commandId: command.id,
+                agentId,
+                provider: result.provider || "claude",
+                taskCategory: "standard",
+                success: false,
+                elapsedMs: taskElapsedMs,
+                timestamp: new Date(),
+              });
+            } catch { /* best-effort */ }
 
             // Update request group agent status to failed
             if (requestGroupId) {
@@ -850,11 +966,16 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
       }
 
       case "orchestrate": {
-        const { task, _attachmentRefKeys: orchAttRefKeys, allowBash: orchAllowBash } = command.payload as {
+        const { task, _attachmentRefKeys: orchAttRefKeys, allowBash: orchAllowBash, requestGroupId, requestTitle } = command.payload as {
           task: string;
           _attachmentRefKeys?: string[];
           allowBash?: boolean;
+          requestGroupId?: string;
+          requestTitle?: string;
         };
+
+        // Request group context for history entries
+        const orchReqGroup = requestGroupId ? { requestGroupId, requestTitle } : undefined;
 
         // Download attachments for orchestrate command
         let orchAttachmentFiles: Array<{ refKey: string; filePath: string; filename: string }> = [];
@@ -889,6 +1010,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           role: string;
           systemPrompt: string;
           enabled: boolean;
+          defaultModel?: ModelTier;
         }>;
         const agents = agentsData
           .filter((a) => a.enabled)
@@ -899,24 +1021,28 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             systemPrompt: a.systemPrompt,
           }));
 
-        // Build an agent name map
+        // Build agent name + default model maps
         const agentNameMap: Record<string, string> = {};
-        agents.forEach((a) => { agentNameMap[a.id] = a.name; });
+        const agentDefaultModelMap: Record<string, ModelTier> = {};
+        agentsData.forEach((a) => {
+          agentNameMap[a.id] = a.name;
+          if (a.defaultModel) agentDefaultModelMap[a.id] = a.defaultModel;
+        });
         const getAgentName = (id: string) => agentNameMap[id] || id;
 
         // Progress callback for real-time visibility
         const onProgress = (event: ProgressEvent) => {
           switch (event.phase) {
             case "plan_creating":
-              addHistory("orchestrator", "task_started", `🧠 작업 분석 중: ${task}`);
+              addHistory("orchestrator", "task_started", `🧠 작업 분석 중: ${task}`, undefined, orchReqGroup);
               break;
             case "plan_created":
-              addHistory("orchestrator", "output", `📋 계획 수립 완료: ${event.totalSubtasks}개 서브태스크 생성\n${event.detail || ""}`);
+              addHistory("orchestrator", "output", `📋 계획 수립 완료: ${event.totalSubtasks}개 서브태스크 생성\n${event.detail || ""}`, undefined, orchReqGroup);
               break;
             case "subtask_starting": {
               const agentName = getAgentName(event.agentId || "unknown");
-              addHistory("orchestrator", "output", `📨 Orchestrator → ${agentName}: "${event.task}"`);
-              addHistory(event.agentId || "unknown", "task_started", `🔄 [${(event.subtaskIndex || 0) + 1}/${event.totalSubtasks}] 작업 수신`);
+              addHistory("orchestrator", "output", `📨 Orchestrator → ${agentName}: "${event.task}"`, undefined, orchReqGroup);
+              addHistory(event.agentId || "unknown", "task_started", `🔄 [${(event.subtaskIndex || 0) + 1}/${event.totalSubtasks}] 작업 수신`, undefined, orchReqGroup);
               break;
             }
             case "subtask_completed": {
@@ -930,21 +1056,21 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
                 ? `✅ ${agentName} → Orchestrator 보고:\n${truncatedDetail}`
                 : `✅ ${agentName} → Orchestrator: 완료`;
               addHistory(event.agentId || "unknown", "task_completed", completedContent,
-                completedDetail.length > 10000 ? { fullResponseLength: completedDetail.length } : undefined);
+                completedDetail.length > 10000 ? { fullResponseLength: completedDetail.length } : undefined, orchReqGroup);
               break;
             }
             case "subtask_failed": {
               const agentName = getAgentName(event.agentId || "unknown");
-              addHistory(event.agentId || "unknown", "task_failed", `❌ ${agentName} → Orchestrator: 실패 — ${event.detail || "알 수 없는 오류"}`);
+              addHistory(event.agentId || "unknown", "task_failed", `❌ ${agentName} → Orchestrator: 실패 — ${event.detail || "알 수 없는 오류"}`, undefined, orchReqGroup);
               break;
             }
             case "subtask_retrying": {
               const agentName = getAgentName(event.agentId || "unknown");
-              addHistory(event.agentId || "unknown", "output", `🔄 ${agentName} 재시도 중: ${event.detail || ""}`);
+              addHistory(event.agentId || "unknown", "output", `🔄 ${agentName} 재시도 중: ${event.detail || ""}`, undefined, orchReqGroup);
               break;
             }
             case "summarizing":
-              addHistory("orchestrator", "output", "📊 결과 종합 중...");
+              addHistory("orchestrator", "output", "📊 결과 종합 중...", undefined, orchReqGroup);
               break;
             case "completed":
               // Final summary logged in .then() handler below
@@ -953,7 +1079,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         };
 
         // Create an executor function that uses executeLlmTask (Claude → Codex fallback)
-        const executor = async (agentId: string, taskStr: string, systemPrompt?: string) => {
+        const executor = async (agentId: string, taskStr: string, systemPrompt?: string, category?: DelegationCategory) => {
           const agentName = getAgentName(agentId);
           agentStatusMap.set(agentId, {
             id: agentId,
@@ -970,12 +1096,35 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           const orchToolCalls: ToolCall[] = [];
           const orchRecentEvents: ProgressEventEntry[] = [];
 
-          const isComplexTask = /분석|analyze|refactor|리팩토링|검토|review|보안|security|아키텍처|architect|debug|디버그|plan|계획|test|QA|테스트|PM|product|orchestrat|전체|comprehensive|deep|tdd|migration|마이그레이션/i.test(taskStr);
-          // Agent-specific staleTimeout overrides
-          const ORCH_AGENT_STALE_OVERRIDES: Record<string, number> = {
-            qa: 600000, pm: 600000, orchestrator: 900000, analyst: 600000, learner: 600000,
+          // Delegation category override: if planner tagged this subtask with a category,
+          // use the category's model tier and stale timeout instead of auto-analysis
+          let orchModelFlag: string;
+          let orchBaseStaleTimeout: number;
+          let routingSource: string;
+
+          if (category) {
+            const catSettings = getCategorySettings(category);
+            orchModelFlag = getModelFlag(catSettings.model);
+            orchBaseStaleTimeout = catSettings.staleTimeout;
+            routingSource = `category:${category}`;
+          } else {
+            // Fallback to smart model routing (auto-analysis)
+            const orchModelSelection = selectModel(taskStr, agentId, undefined, agentDefaultModelMap[agentId]);
+            orchModelFlag = getModelFlag(orchModelSelection.model);
+            orchBaseStaleTimeout = getModelStaleTimeout(orchModelSelection.model, orchModelSelection.complexityScore);
+            routingSource = `${orchModelSelection.source}(score=${orchModelSelection.complexityScore})`;
+          }
+
+          // Agent-specific staleTimeout floors
+          const ORCH_AGENT_STALE_FLOORS: Record<string, number> = {
+            qa: 900000, pm: 600000, orchestrator: 900000, analyst: 600000, learner: 600000,  // QW-4: QA 10→15min
           };
-          const taskStaleTimeout = ORCH_AGENT_STALE_OVERRIDES[agentId] || (isComplexTask ? 600000 : 300000); // agent override > complex 10min > simple 5min
+          const taskStaleTimeout = Math.max(orchBaseStaleTimeout, ORCH_AGENT_STALE_FLOORS[agentId] || 0);
+
+          // AR-1: Agent-specific maxRetries for orchestration subtasks
+          const orchMaxRetries = agentId === "qa" ? 3 : 2;
+
+          console.log(`   🧠 ${agentName}: model=${orchModelFlag} (${routingSource}), timeout=${formatDuration(taskStaleTimeout)}, retries=${orchMaxRetries}`);
 
           const result = await executeLlmTaskWithRetry({
             agentId,
@@ -983,8 +1132,10 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             systemPrompt: systemPrompt || `You are the ${agentId} agent.`,
             mcpConfig: MCP_CONFIG_PATH,
             staleTimeout: taskStaleTimeout,
+            maxRetries: orchMaxRetries, // AR-1: Pass agent-specific maxRetries
             enableTmux: ENABLE_TMUX,
             allowBash: orchAllowBash || false,
+            model: orchModelFlag,
             onToolCall: (tc: ToolCall) => {
               orchToolCalls.push(tc);
             },
@@ -1038,7 +1189,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
                 const preview = streamBuffer.length > 200
                   ? "..." + streamBuffer.slice(-200)
                   : streamBuffer;
-                addHistory(agentId, "output", `⏳ ${agentName} 진행 중...${toolSummary ? `\n${toolSummary}` : ""}\n${preview}`);
+                addHistory(agentId, "output", `⏳ ${agentName} 진행 중...${toolSummary ? `\n${toolSummary}` : ""}\n${preview}`, undefined, orchReqGroup);
               }
             },
           });
@@ -1049,13 +1200,13 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           if (result.success) {
             const prefix = result.fallbackUsed ? "🔁 Codex fallback\n" : "";
             addHistory(agentId, "output", `📋 ${agentName}의 응답${elapsed}:\n${prefix}${result.output || "완료"}`,
-              finalOrchToolCalls.length > 0 ? { toolCalls: finalOrchToolCalls } : undefined);
+              finalOrchToolCalls.length > 0 ? { toolCalls: finalOrchToolCalls } : undefined, orchReqGroup);
             agentStatusMap.set(agentId, { id: agentId, name: agentName, status: "idle" });
           } else {
             const isHung = result.exitCode === -2;
             const label = isHung ? "⏰ 응답 없음 자동 종료" : "⚠️ 오류";
             addHistory(agentId, "output", `${label}${elapsed}:\n${result.error || "실패"}`,
-              finalOrchToolCalls.length > 0 ? { toolCalls: finalOrchToolCalls } : undefined);
+              finalOrchToolCalls.length > 0 ? { toolCalls: finalOrchToolCalls } : undefined, orchReqGroup);
             agentStatusMap.set(agentId, {
               id: agentId,
               name: agentName,
@@ -1064,7 +1215,7 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
             // Add retry info if retries were used
             if (result.exitCode === -2 && "retriesUsed" in result) {
-              addHistory(agentId, "output", `🔄 ${agentName}: ${(result as { retriesUsed: number }).retriesUsed}회 재시도 후에도 실패`);
+              addHistory(agentId, "output", `🔄 ${agentName}: ${(result as { retriesUsed: number }).retriesUsed}회 재시도 후에도 실패`, undefined, orchReqGroup);
             }
           }
 
@@ -1133,9 +1284,11 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
 
 // Track when agents entered error state for auto-recovery
 const agentErrorTimestamps = new Map<string, number>();
+const agentLongStuckNotified = new Set<string>(); // Track if PM was notified about long-stuck agent
 const AUTO_RECOVERY_MS = 300000; // 5 minutes in error state → auto-recover to idle
+const LONG_STUCK_THRESHOLD_MS = 172800000; // QW-5: 2 days (48 hours) — notify PM
 
-// Auto-recover stuck agents (error state > 5 minutes → idle)
+// QW-5: Auto-recover stuck agents (error state > 5 minutes → idle, 2 days → PM alert)
 function recoverStuckAgents(): void {
   const now = Date.now();
   for (const [agentId, agent] of agentStatusMap.entries()) {
@@ -1144,6 +1297,19 @@ function recoverStuckAgents(): void {
         agentErrorTimestamps.set(agentId, now);
       }
       const errorDuration = now - (agentErrorTimestamps.get(agentId) || now);
+
+      // Alert PM if stuck for 2+ days (only once per stuck episode)
+      if (errorDuration > LONG_STUCK_THRESHOLD_MS && !agentLongStuckNotified.has(agentId)) {
+        console.log(`   🚨 Agent ${agentId} stuck for ${Math.round(errorDuration / 86400000)} days, notifying PM`);
+        agentLongStuckNotified.add(agentId);
+        dashboardApiCall("/api/messages", "POST", {
+          from: "system",
+          to: "pm",
+          content: `🚨 **에이전트 장기 고착 감지**\n\n- 에이전트: ${agentId}\n- error 상태 지속 시간: ${Math.round(errorDuration / 86400000)}일\n- 마지막 에러: ${agent.error || "(정보 없음)"}\n\n⚠️ **조치 필요**: 에이전트 상태를 수동으로 확인하고 필요 시 재할당 또는 중단 처리 필요`,
+          type: "alert",
+        }).catch((err) => console.error(`   ⚠️ Failed to notify PM about long-stuck agent:`, err));
+      }
+
       if (errorDuration > AUTO_RECOVERY_MS) {
         console.log(`   🔄 Auto-recovering stuck agent: ${agentId} (error for ${Math.round(errorDuration / 60000)}min)`);
         agentStatusMap.set(agentId, {
@@ -1152,11 +1318,13 @@ function recoverStuckAgents(): void {
           status: "idle",
         });
         agentErrorTimestamps.delete(agentId);
+        agentLongStuckNotified.delete(agentId); // Clear notification flag when recovered
         addHistory(agentId, "status_change", `🔄 자동 복구: error 상태 ${Math.round(errorDuration / 60000)}분 경과로 idle 리셋`);
       }
     } else {
       // Agent is no longer in error, clear the timestamp
       agentErrorTimestamps.delete(agentId);
+      agentLongStuckNotified.delete(agentId);
     }
   }
 }
@@ -1210,6 +1378,13 @@ async function main(): Promise<void> {
     console.log("⚠️  Codex CLI not found - fallback disabled");
   }
 
+  // Check Gemini CLI (fallback)
+  if (isGeminiAvailable()) {
+    console.log("✅ Gemini CLI found (fallback enabled)");
+  } else {
+    console.log("⚠️  Gemini CLI not found - fallback disabled");
+  }
+
   // Register
   const registered = await register();
   if (!registered) {
@@ -1225,9 +1400,31 @@ async function main(): Promise<void> {
     console.log(`🔄 ${interruptedCount} interrupted task(s) found from previous run`);
     addHistory("system", "status_change", `🔄 게이트웨이 재시작: ${interruptedCount}개 중단된 태스크 발견`);
 
+    // 🚨 Notify PM about gateway restart and interrupted tasks
+    try {
+      await dashboardApiCall("/api/messages", "POST", {
+        from: "system",
+        to: "pm",
+        content: `🚨 Gateway 재시작 감지\n\n- 중단된 태스크 수: ${interruptedCount}개\n- 복구 시도 중...\n\n⚠️ **권장**: 타임라인에서 재시작 전후 컨텍스트를 확인하고, 유실된 작업이 있는지 검토해주세요.\n\n명령어: \`dashboard_get_timeline\` (최근 1시간, 'gateway_restart' 이벤트 중심으로 확인)`,
+        type: "alert",
+      });
+      console.log("   📨 PM에게 재시작 알림 전송 완료");
+    } catch (error) {
+      console.error("   ⚠️ Failed to notify PM:", error);
+    }
+
     // Fetch interrupted tasks for potential recovery
     const interrupted = await taskStateManager.getInterruptedTasks();
-    for (const task of interrupted) {
+
+    // 🚨 Priority recovery: Critical agents first (pm, orchestrator)
+    const CRITICAL_AGENTS = ["pm", "orchestrator", "analyst"];
+    const sortedTasks = interrupted.sort((a, b) => {
+      const aPriority = CRITICAL_AGENTS.includes(a.agentId) ? 0 : 1;
+      const bPriority = CRITICAL_AGENTS.includes(b.agentId) ? 0 : 1;
+      return aPriority - bPriority; // Critical agents (0) before others (1)
+    });
+
+    for (const task of sortedTasks) {
       // Only recover tasks under max attempts
       if (task.attemptNumber < task.maxAttempts) {
         console.log(`   🔄 Recovering task for ${task.agentId}: ${task.task.slice(0, 80)}...`);
@@ -1255,6 +1452,17 @@ async function main(): Promise<void> {
         console.log(`   ⛔ Task for ${task.agentId} exceeded max attempts (${task.maxAttempts}), marking as failed`);
         addHistory(task.agentId, "task_failed", `⛔ 최대 재시도 횟수 초과 (${task.maxAttempts}회), 복구 포기: ${task.task.slice(0, 100)}`);
       }
+    }
+
+    // Mark recovery completion in restart history
+    try {
+      await dashboardApiCall("/api/relay/restart-recovery", "POST", {
+        gatewayId: GATEWAY_ID,
+        recoveredCount: sortedTasks.length,
+      });
+      console.log(`   ✅ Recovery process completed (${sortedTasks.length} tasks re-queued)`);
+    } catch (error) {
+      console.error("   ⚠️ Failed to mark recovery completion:", error);
     }
   }
 

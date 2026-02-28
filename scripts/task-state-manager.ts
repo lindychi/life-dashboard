@@ -313,6 +313,17 @@ export class TaskStateManager {
   }
 
   /**
+   * 모든 활성 태스크 상태 조회 (재시작 시 pending 태스크 수집용)
+   */
+  async getAllStates(): Promise<Array<{ taskId: string; agentId: string; status: string }>> {
+    return Array.from(this.activeTasks.values()).map((t) => ({
+      taskId: t.id,
+      agentId: t.agentId,
+      status: t.status,
+    }));
+  }
+
+  /**
    * Shutdown — flush all pending and stop timer
    */
   async shutdown(): Promise<void> {

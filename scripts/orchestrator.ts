@@ -5,6 +5,7 @@
  */
 
 import { executeLlmTask, type ClaudeExecutorOptions } from "./claude-executor";
+import { getModelFlag, getModelStaleTimeout } from "./model-router";
 
 export interface AgentInfo {
   id: string;
@@ -13,10 +14,21 @@ export interface AgentInfo {
   systemPrompt: string;
 }
 
+/**
+ * Delegation category determines model tier, temperature, and timeout.
+ * - quick: status checks, lookups, simple reads (haiku, 2min)
+ * - writing: docs, reports, content creation (sonnet, 5min)
+ * - standard: code implementation, reviews, bug fixes (sonnet, 5min)
+ * - visual: UI/UX work, styling, design (sonnet, 5min)
+ * - ultrabrain: architecture, security analysis, complex debugging (opus, 10min)
+ */
+export type DelegationCategory = "quick" | "writing" | "standard" | "visual" | "ultrabrain";
+
 export interface SubTask {
   agentId: string;
   task: string;
   priority: number;
+  category?: DelegationCategory;
 }
 
 export interface OrchestrationPlan {
@@ -87,12 +99,20 @@ ${agentList}
 Return a JSON object with this structure:
 {
   "subtasks": [
-    { "agentId": "architect", "task": "description", "priority": 1 }
+    { "agentId": "architect", "task": "description", "priority": 1, "category": "standard" }
   ],
   "reasoning": "explanation of the plan"
 }
 
 Priority: 1 = highest priority (execute first), higher numbers = lower priority.
+
+Category (required): classify each subtask's complexity for model selection:
+- "quick": status checks, lookups, simple reads, summaries
+- "writing": documentation, reports, content creation, blog posts
+- "standard": code implementation, bug fixes, reviews, tests
+- "visual": UI/UX work, styling, design, frontend components
+- "ultrabrain": architecture design, security analysis, complex debugging, system optimization
+
 Return ONLY valid JSON, no additional text.`;
 
   const systemPrompt = "You are a task planner. You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no text before or after the JSON. Start your response with { and end with }.";
@@ -102,6 +122,8 @@ Return ONLY valid JSON, no additional text.`;
     task: prompt,
     systemPrompt,
     disableTools: true, // Planner doesn't need file tools - prevents plan mode hanging
+    model: getModelFlag("sonnet"), // Planner: sonnet is sufficient for JSON plan generation
+    staleTimeout: getModelStaleTimeout("sonnet", 15), // disableTools=true is single API call; shorter timeout (sonnet medium complexity)
   };
 
   // Try up to 2 times
@@ -148,14 +170,15 @@ ${prompt}`,
 
 /**
  * Execute a plan by running each subtask via the executor function
- * Executor signature: (agentId: string, task: string, systemPrompt?: string) => Promise<{success, output?, error?}>
+ * Executor signature: (agentId, task, systemPrompt?, category?) => Promise<{success, output?, error?}>
  */
 export async function executePlan(
   plan: OrchestrationPlan,
   executor: (
     agentId: string,
     task: string,
-    systemPrompt?: string
+    systemPrompt?: string,
+    category?: DelegationCategory
   ) => Promise<{ success: boolean; output?: string; error?: string }>,
   onProgress?: (event: ProgressEvent) => void,
   maxSubtaskRetries: number = 1
@@ -173,10 +196,24 @@ export async function executePlan(
   });
 
   // Execute each priority group: within a group, run in parallel
+  // Context Persistence: accumulate previous group results for injection into next groups
   const sortedPriorities = Array.from(priorityGroups.keys()).sort((a, b) => a - b);
+  const previousGroupResults: SubTaskResult[] = [];
 
   for (const priority of sortedPriorities) {
     const group = priorityGroups.get(priority)!;
+
+    // Build context summary from previous priority groups' successful results
+    let contextPrefix = "";
+    if (previousGroupResults.length > 0) {
+      const contextSummary = previousGroupResults
+        .filter(r => r.success && r.output)
+        .map(r => `[${r.agentId}] ${r.output!.slice(-1500)}`)
+        .join("\n---\n");
+      if (contextSummary) {
+        contextPrefix = `## 이전 단계 결과 (참고)\n${contextSummary}\n\n## 당신의 작업\n`;
+      }
+    }
 
     // Fire all subtask_starting events for this batch
     for (const { subtask, index } of group) {
@@ -195,11 +232,12 @@ export async function executePlan(
 
       for (let attempt = 0; attempt <= maxSubtaskRetries; attempt++) {
         try {
+          const baseTask = contextPrefix ? `${contextPrefix}${subtask.task}` : subtask.task;
           const taskStr = attempt > 0
-            ? `이전 시도가 시간 초과로 실패했습니다. 핵심 내용만 간결하게 처리해주세요.\n\n${subtask.task}`
-            : subtask.task;
+            ? `이전 시도가 시간 초과로 실패했습니다. 핵심 내용만 간결하게 처리해주세요.\n\n${baseTask}`
+            : baseTask;
 
-          const result = await executor(subtask.agentId, taskStr, undefined);
+          const result = await executor(subtask.agentId, taskStr, undefined, subtask.category);
 
           if (result.success) {
             const subResult: SubTaskResult = {
@@ -379,6 +417,8 @@ Provide a concise summary mentioning the task, number of successes and failures,
     task: prompt,
     systemPrompt: "You are a results summarizer. Create concise summaries of task execution results.",
     disableTools: true, // Summarizer doesn't need file tools - prevents plan mode hanging
+    model: getModelFlag("haiku"), // Summarizer: haiku is sufficient for text summarization (saves ~80% tokens)
+    staleTimeout: getModelStaleTimeout("haiku", 0), // Simple summarization; short timeout (haiku low complexity)
   };
 
   try {
@@ -416,7 +456,8 @@ export async function orchestrate(
   executor: (
     agentId: string,
     task: string,
-    systemPrompt?: string
+    systemPrompt?: string,
+    category?: DelegationCategory
   ) => Promise<{ success: boolean; output?: string; error?: string }>,
   onProgress?: (event: ProgressEvent) => void
 ): Promise<OrchestrationResult> {

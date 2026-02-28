@@ -44,7 +44,7 @@ const RELAY_API_KEY = process.env.RELAY_API_KEY || "dev-relay-key";
 // Helper function for API calls
 async function apiCall(
   endpoint: string,
-  method: "GET" | "POST" = "GET",
+  method: "GET" | "POST" | "PATCH" | "DELETE" = "GET",
   body?: unknown
 ): Promise<unknown> {
   const url = `${DASHBOARD_URL}${endpoint}`;
@@ -100,14 +100,14 @@ const AddHistorySchema = z.object({
   content: z.string().describe("Content of the history entry"),
   metadata: z.record(z.string(), z.unknown()).optional().describe("Additional metadata"),
   requestGroupId: z.string().uuid().optional().describe("UUID to group related history entries together"),
-  requestTitle: z.string().max(200).optional().describe("Human-readable title for the request group"),
+  requestTitle: z.string().max(200).optional().describe("Human-readable title for the request group (max 200 chars). If omitted, auto-generated from content by analyzing keywords and summarizing"),
 });
 
 const SendMessageSchema = z.object({
-  from: z.string().describe("Sender agent ID"),
-  to: z.string().describe("Recipient agent ID"),
-  content: z.string().describe("Message content"),
-  type: z.string().default("text").describe("Message type"),
+  from: z.string().min(1, "Sender agent ID must not be empty").describe("Sender agent ID"),
+  to: z.string().min(1, "Recipient agent ID must not be empty").describe("Recipient agent ID"),
+  content: z.string().min(1, "Message content must not be empty").max(100_000, "Message content exceeds 100,000 character limit").describe("Message content"),
+  type: z.enum(["text", "task", "result", "question", "answer"]).default("text").describe("Message type"),
   attachments: z.array(z.object({
     filePath: z.string().describe("Local file path to attach"),
     refKey: z.string().optional().describe("Custom ref_key"),
@@ -160,6 +160,202 @@ const DeploySchema = z.object({
 });
 
 const GatewayRestartSchema = z.object({});
+
+const ForceRetryTaskSchema = z.object({
+  taskId: z.string().describe("Task execution ID to retry"),
+  reason: z.string().optional().describe("Optional reason for manual retry"),
+});
+
+// Project CRUD schemas
+const GetProjectsSchema = z.object({
+  status: z.string().optional().describe("Filter by project status (e.g., 'idea', 'in-progress', 'completed')"),
+});
+
+const GetProjectSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+});
+
+const CreateProjectSchema = z.object({
+  name: z.string().min(1).describe("Project name"),
+  description: z.string().min(1).describe("Project description"),
+  status: z.string().optional().default("idea").describe("Project status (default: 'idea')"),
+  progress: z.number().min(0).max(100).optional().default(0).describe("Project progress (0-100)"),
+  url: z.string().optional().describe("Project URL"),
+  kpis: z.array(z.object({
+    label: z.string(),
+    value: z.string(),
+  })).optional().default([]).describe("Key Performance Indicators"),
+});
+
+const UpdateProjectSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+  name: z.string().optional().describe("Project name"),
+  description: z.string().optional().describe("Project description"),
+  status: z.string().optional().describe("Project status"),
+  progress: z.number().min(0).max(100).optional().describe("Project progress (0-100)"),
+  url: z.string().optional().describe("Project URL"),
+  kpis: z.array(z.object({
+    label: z.string(),
+    value: z.string(),
+  })).optional().describe("Key Performance Indicators"),
+});
+
+const DeleteProjectSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID to delete"),
+});
+
+// Project metrics schemas
+const GetProjectMetricsSchema = z.object({
+  projectId: z.string().optional().describe("Filter by specific project ID (omit for all projects)"),
+});
+
+const GetProjectMetricsHistorySchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+  limit: z.number().default(100).describe("Maximum number of history entries to return"),
+});
+
+const SnapshotProjectMetricsSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID to create snapshot for"),
+});
+
+const LinkTaskToProjectSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+  taskExecutionId: z.string().uuid().optional().describe("Task execution ID to link"),
+  taskQueueId: z.string().uuid().optional().describe("Task queue ID to link"),
+  metadata: z.object({
+    task_title: z.string().optional(),
+    task_status: z.string().optional(),
+    task_type: z.string().optional(),
+  }).optional().describe("Optional task metadata"),
+});
+
+const GetProjectTasksSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+  limit: z.number().default(50).describe("Maximum number of tasks to return"),
+});
+
+// OKR Schemas
+const GetObjectivesSchema = z.object({
+  status: z.enum(["active", "completed", "cancelled", "archived"]).optional().describe("Filter by objective status"),
+});
+
+const CreateObjectiveSchema = z.object({
+  title: z.string().describe("Objective title"),
+  description: z.string().optional().describe("Objective description"),
+  period_type: z.enum(["quarterly", "annual", "custom"]).describe("Period type"),
+  start_date: z.string().describe("Start date (YYYY-MM-DD)"),
+  end_date: z.string().describe("End date (YYYY-MM-DD)"),
+  status: z.enum(["active", "completed", "cancelled", "archived"]).optional().describe("Objective status"),
+  owner: z.string().optional().describe("Owner name"),
+  tags: z.array(z.string()).optional().describe("Tags for categorization"),
+});
+
+const UpdateObjectiveSchema = z.object({
+  objectiveId: z.string().uuid().describe("Objective ID"),
+  title: z.string().optional().describe("Objective title"),
+  description: z.string().optional().describe("Objective description"),
+  period_type: z.enum(["quarterly", "annual", "custom"]).optional().describe("Period type"),
+  start_date: z.string().optional().describe("Start date (YYYY-MM-DD)"),
+  end_date: z.string().optional().describe("End date (YYYY-MM-DD)"),
+  status: z.enum(["active", "completed", "cancelled", "archived"]).optional().describe("Objective status"),
+  owner: z.string().optional().describe("Owner name"),
+  tags: z.array(z.string()).optional().describe("Tags for categorization"),
+});
+
+const GetObjectiveSchema = z.object({
+  objectiveId: z.string().uuid().describe("Objective ID"),
+});
+
+const CreateKeyResultSchema = z.object({
+  objective_id: z.string().uuid().describe("Objective ID"),
+  title: z.string().describe("Key result title"),
+  description: z.string().optional().describe("Key result description"),
+  metric_type: z.enum(["percentage", "number", "boolean", "currency"]).describe("Metric type"),
+  target_value: z.number().describe("Target value to achieve"),
+  current_value: z.number().optional().describe("Current progress value"),
+  unit: z.string().optional().describe("Unit of measurement (e.g., 'users', 'revenue', '%')"),
+  status: z.enum(["active", "completed", "at_risk", "off_track"]).optional().describe("Key result status"),
+  weight: z.number().min(0).max(100).optional().describe("Weight for calculating objective progress (sum should be 100)"),
+});
+
+const UpdateKeyResultSchema = z.object({
+  keyResultId: z.string().uuid().describe("Key result ID"),
+  title: z.string().optional().describe("Key result title"),
+  description: z.string().optional().describe("Key result description"),
+  metric_type: z.enum(["percentage", "number", "boolean", "currency"]).optional().describe("Metric type"),
+  target_value: z.number().optional().describe("Target value to achieve"),
+  current_value: z.number().optional().describe("Current progress value"),
+  unit: z.string().optional().describe("Unit of measurement"),
+  status: z.enum(["active", "completed", "at_risk", "off_track"]).optional().describe("Key result status"),
+  weight: z.number().min(0).max(100).optional().describe("Weight for calculating objective progress"),
+});
+
+const LinkProjectObjectiveSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+  objectiveId: z.string().uuid().describe("Objective ID"),
+  relevantKeyResultIds: z.array(z.string().uuid()).optional().describe("Relevant key result IDs for this project"),
+});
+
+const GetProjectObjectivesSchema = z.object({
+  projectId: z.string().uuid().describe("Project ID"),
+});
+
+// Conversation Session Schemas
+const CreateConversationSchema = z.object({
+  title: z.string().min(1).describe("Conversation title"),
+  participants: z.array(z.string()).min(1).describe("Array of participant IDs (agent IDs or 'user')"),
+  context: z.record(z.string(), z.unknown()).optional().describe("Session context data (project info, goals, etc.)"),
+  createdBy: z.string().describe("Creator ID (agent ID or 'user')"),
+});
+
+const GetConversationsSchema = z.object({
+  participantId: z.string().optional().describe("Filter by participant ID"),
+  status: z.enum(["active", "archived", "completed"]).optional().describe("Filter by status"),
+  createdBy: z.string().optional().describe("Filter by creator ID"),
+  limit: z.number().optional().describe("Maximum number of conversations to return"),
+});
+
+const GetConversationSchema = z.object({
+  conversationId: z.string().uuid().describe("Conversation ID"),
+  includeStats: z.boolean().optional().describe("Include statistics (message count, read status)"),
+});
+
+const UpdateConversationSchema = z.object({
+  conversationId: z.string().uuid().describe("Conversation ID"),
+  title: z.string().optional().describe("New title"),
+  context: z.record(z.string(), z.unknown()).optional().describe("Context updates (merged with existing)"),
+  status: z.enum(["active", "archived", "completed"]).optional().describe("New status"),
+});
+
+const DeleteConversationSchema = z.object({
+  conversationId: z.string().uuid().describe("Conversation ID to delete"),
+});
+
+const AddConversationMessageSchema = z.object({
+  conversationId: z.string().uuid().describe("Conversation ID"),
+  from: z.string().describe("Sender ID (agent ID or 'user')"),
+  content: z.string().min(1).describe("Message content"),
+  type: z.enum(["text", "task", "result", "question", "answer", "system"]).optional().describe("Message type"),
+  metadata: z.record(z.string(), z.unknown()).optional().describe("Additional metadata (model info, token usage, etc.)"),
+  parentMessageId: z.string().uuid().optional().describe("Parent message ID for threading"),
+});
+
+const GetConversationMessagesSchema = z.object({
+  conversationId: z.string().uuid().describe("Conversation ID"),
+  limit: z.number().optional().describe("Maximum number of messages to return"),
+  since: z.string().optional().describe("ISO timestamp - only return messages after this time"),
+  parentMessageId: z.string().uuid().optional().describe("Filter by parent message ID (null for top-level only)"),
+});
+
+const UpdateConversationReadStatusSchema = z.object({
+  conversationId: z.string().uuid().describe("Conversation ID"),
+  agentId: z.string().describe("Agent ID"),
+  lastReadMessageId: z.string().uuid().describe("ID of the last message read"),
+});
+
+const GetUnreadConversationsSchema = z.object({
+  agentId: z.string().describe("Agent ID to check unread conversations for"),
+});
 
 // Security: validate that a file path is within the project directory
 function validateProjectPath(filePath: string): string {
@@ -430,6 +626,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "dashboard_submit_task_feedback",
+        description: "Submit user satisfaction feedback for a completed task. Rating is 'good' or 'bad'. Provider identity is hidden — this is purely a quality signal. Used to internally optimize which provider handles which task types.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            commandId: {
+              type: "string",
+              description: "The command ID of the completed task",
+            },
+            rating: {
+              type: "string",
+              enum: ["good", "bad"],
+              description: "User satisfaction rating",
+            },
+          },
+          required: ["commandId", "rating"],
+        },
+      },
+      {
+        name: "dashboard_get_provider_stats",
+        description: "Get provider performance statistics (internal). Shows satisfaction rates, success rates, and recommended providers per task category.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            category: {
+              type: "string",
+              description: "Task category to get stats for (optional, returns all if omitted)",
+            },
+            windowDays: {
+              type: "number",
+              description: "Number of days to look back (default: 30)",
+            },
+          },
+        },
+      },
+      {
         name: "dashboard_get_timeline",
         description: "Get filtered timeline history with cursor-based pagination. Supports filtering by agent, type, date range, and search text. Returns entries newest-first with a cursor for the next page.",
         inputSchema: {
@@ -532,6 +764,566 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {},
+        },
+      },
+      {
+        name: "dashboard_force_retry_task",
+        description: "Manually retry a specific interrupted or failed task. Useful when recovering from gateway restart or identifying lost work.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            taskId: {
+              type: "string",
+              description: "Task execution ID to retry (from task_executions table)",
+            },
+            reason: {
+              type: "string",
+              description: "Optional reason for manual retry (for audit trail)",
+            },
+          },
+          required: ["taskId"],
+        },
+      },
+      {
+        name: "dashboard_get_projects",
+        description: "Get list of all projects. Optional status filter.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            status: {
+              type: "string",
+              description: "Filter by project status (e.g., 'idea', 'in-progress', 'completed')",
+            },
+          },
+        },
+      },
+      {
+        name: "dashboard_get_project",
+        description: "Get a single project by ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID",
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_create_project",
+        description: "Create a new project in Life Dashboard.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "Project name",
+            },
+            description: {
+              type: "string",
+              description: "Project description",
+            },
+            status: {
+              type: "string",
+              description: "Project status (default: 'idea')",
+            },
+            progress: {
+              type: "number",
+              description: "Project progress (0-100, default: 0)",
+            },
+            url: {
+              type: "string",
+              description: "Project URL",
+            },
+            kpis: {
+              type: "array",
+              description: "Key Performance Indicators",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  value: { type: "string" },
+                },
+                required: ["label", "value"],
+              },
+            },
+          },
+          required: ["name", "description"],
+        },
+      },
+      {
+        name: "dashboard_update_project",
+        description: "Update an existing project.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID",
+            },
+            name: {
+              type: "string",
+              description: "Project name",
+            },
+            description: {
+              type: "string",
+              description: "Project description",
+            },
+            status: {
+              type: "string",
+              description: "Project status",
+            },
+            progress: {
+              type: "number",
+              description: "Project progress (0-100)",
+            },
+            url: {
+              type: "string",
+              description: "Project URL",
+            },
+            kpis: {
+              type: "array",
+              description: "Key Performance Indicators",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  value: { type: "string" },
+                },
+                required: ["label", "value"],
+              },
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_delete_project",
+        description: "Delete a project by ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID to delete",
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_get_project_metrics",
+        description: "Get real-time KPI metrics for projects. Returns calculated metrics (completion rate, success rate, task counts, etc.) based on linked task executions. If projectId is omitted, returns metrics for all projects.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Filter by specific project ID (omit for all projects)",
+            },
+          },
+        },
+      },
+      {
+        name: "dashboard_get_project_metrics_history",
+        description: "Get historical metrics snapshots for a project (time-series data). Returns up to 'limit' snapshots ordered by snapshot_at DESC.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID",
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of history entries to return",
+              default: 100,
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_snapshot_project_metrics",
+        description: "Create a new metrics snapshot for a project. Calculates current metrics and stores them in the project_metrics table for historical tracking.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID to create snapshot for",
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_link_task_to_project",
+        description: "Link a task (from task_executions or task_queue) to a project. This enables automatic metrics calculation for the project based on task execution status. Either taskExecutionId or taskQueueId must be provided.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID",
+            },
+            taskExecutionId: {
+              type: "string",
+              description: "Task execution ID to link",
+            },
+            taskQueueId: {
+              type: "string",
+              description: "Task queue ID to link",
+            },
+            metadata: {
+              type: "object",
+              properties: {
+                task_title: {
+                  type: "string",
+                },
+                task_status: {
+                  type: "string",
+                },
+                task_type: {
+                  type: "string",
+                },
+              },
+              description: "Optional task metadata",
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_get_project_tasks",
+        description: "Get list of tasks linked to a project. Returns up to 'limit' tasks ordered by created_at DESC.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "string",
+              description: "Project ID",
+            },
+            limit: {
+              type: "number",
+              description: "Maximum number of tasks to return",
+              default: 50,
+            },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_get_objectives",
+        description: "Get all objectives, optionally filtered by status.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            status: {
+              type: "string",
+              enum: ["active", "completed", "cancelled", "archived"],
+              description: "Filter by objective status",
+            },
+          },
+        },
+      },
+      {
+        name: "dashboard_get_objective",
+        description: "Get objective by ID with its key results.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            objectiveId: {
+              type: "string",
+              description: "Objective ID",
+            },
+          },
+          required: ["objectiveId"],
+        },
+      },
+      {
+        name: "dashboard_create_objective",
+        description: "Create a new objective.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Objective title" },
+            description: { type: "string", description: "Objective description" },
+            period_type: {
+              type: "string",
+              enum: ["quarterly", "annual", "custom"],
+              description: "Period type",
+            },
+            start_date: { type: "string", description: "Start date (YYYY-MM-DD)" },
+            end_date: { type: "string", description: "End date (YYYY-MM-DD)" },
+            status: {
+              type: "string",
+              enum: ["active", "completed", "cancelled", "archived"],
+              description: "Objective status",
+            },
+            owner: { type: "string", description: "Owner name" },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              description: "Tags for categorization",
+            },
+          },
+          required: ["title", "period_type", "start_date", "end_date"],
+        },
+      },
+      {
+        name: "dashboard_update_objective",
+        description: "Update an existing objective.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            objectiveId: { type: "string", description: "Objective ID" },
+            title: { type: "string", description: "Objective title" },
+            description: { type: "string", description: "Objective description" },
+            period_type: {
+              type: "string",
+              enum: ["quarterly", "annual", "custom"],
+              description: "Period type",
+            },
+            start_date: { type: "string", description: "Start date (YYYY-MM-DD)" },
+            end_date: { type: "string", description: "End date (YYYY-MM-DD)" },
+            status: {
+              type: "string",
+              enum: ["active", "completed", "cancelled", "archived"],
+              description: "Objective status",
+            },
+            owner: { type: "string", description: "Owner name" },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              description: "Tags for categorization",
+            },
+          },
+          required: ["objectiveId"],
+        },
+      },
+      {
+        name: "dashboard_create_key_result",
+        description: "Create a new key result for an objective. Progress is auto-calculated from current_value/target_value.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            objective_id: { type: "string", description: "Objective ID" },
+            title: { type: "string", description: "Key result title" },
+            description: { type: "string", description: "Key result description" },
+            metric_type: {
+              type: "string",
+              enum: ["percentage", "number", "boolean", "currency"],
+              description: "Metric type",
+            },
+            target_value: { type: "number", description: "Target value to achieve" },
+            current_value: { type: "number", description: "Current progress value" },
+            unit: { type: "string", description: "Unit (e.g., 'users', '%', '$')" },
+            status: {
+              type: "string",
+              enum: ["active", "completed", "at_risk", "off_track"],
+              description: "Key result status",
+            },
+            weight: {
+              type: "number",
+              description: "Weight for objective progress (0-100, sum=100)",
+            },
+          },
+          required: ["objective_id", "title", "metric_type", "target_value"],
+        },
+      },
+      {
+        name: "dashboard_update_key_result",
+        description: "Update an existing key result. Progress auto-recalculates on value change.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            keyResultId: { type: "string", description: "Key result ID" },
+            title: { type: "string", description: "Key result title" },
+            description: { type: "string", description: "Key result description" },
+            metric_type: {
+              type: "string",
+              enum: ["percentage", "number", "boolean", "currency"],
+              description: "Metric type",
+            },
+            target_value: { type: "number", description: "Target value" },
+            current_value: { type: "number", description: "Current value" },
+            unit: { type: "string", description: "Unit" },
+            status: {
+              type: "string",
+              enum: ["active", "completed", "at_risk", "off_track"],
+              description: "Key result status",
+            },
+            weight: { type: "number", description: "Weight (0-100)" },
+          },
+          required: ["keyResultId"],
+        },
+      },
+      {
+        name: "dashboard_link_project_objective",
+        description: "Link a project to an objective, optionally specifying relevant key results.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: { type: "string", description: "Project ID" },
+            objectiveId: { type: "string", description: "Objective ID" },
+            relevantKeyResultIds: {
+              type: "array",
+              items: { type: "string" },
+              description: "Relevant key result IDs",
+            },
+          },
+          required: ["projectId", "objectiveId"],
+        },
+      },
+      {
+        name: "dashboard_get_project_objectives",
+        description: "Get all objectives linked to a project.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: { type: "string", description: "Project ID" },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
+        name: "dashboard_create_conversation",
+        description: "Create a new conversation session with context management.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Conversation title" },
+            participants: {
+              type: "array",
+              items: { type: "string" },
+              description: "Array of participant IDs (agent IDs or 'user')"
+            },
+            context: {
+              type: "object",
+              description: "Session context data (project info, goals, etc.)"
+            },
+            createdBy: { type: "string", description: "Creator ID (agent ID or 'user')" },
+          },
+          required: ["title", "participants", "createdBy"],
+        },
+      },
+      {
+        name: "dashboard_get_conversations",
+        description: "Get list of conversation sessions with optional filters.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            participantId: { type: "string", description: "Filter by participant ID" },
+            status: {
+              type: "string",
+              enum: ["active", "archived", "completed"],
+              description: "Filter by status"
+            },
+            createdBy: { type: "string", description: "Filter by creator ID" },
+            limit: { type: "number", description: "Maximum number of conversations" },
+          },
+        },
+      },
+      {
+        name: "dashboard_get_conversation",
+        description: "Get a specific conversation session with optional statistics.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversationId: { type: "string", description: "Conversation ID" },
+            includeStats: { type: "boolean", description: "Include statistics (message count, read status)" },
+          },
+          required: ["conversationId"],
+        },
+      },
+      {
+        name: "dashboard_update_conversation",
+        description: "Update conversation title, context, or status.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversationId: { type: "string", description: "Conversation ID" },
+            title: { type: "string", description: "New title" },
+            context: { type: "object", description: "Context updates (merged with existing)" },
+            status: {
+              type: "string",
+              enum: ["active", "archived", "completed"],
+              description: "New status"
+            },
+          },
+          required: ["conversationId"],
+        },
+      },
+      {
+        name: "dashboard_delete_conversation",
+        description: "Delete a conversation session and all its messages.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversationId: { type: "string", description: "Conversation ID to delete" },
+          },
+          required: ["conversationId"],
+        },
+      },
+      {
+        name: "dashboard_add_conversation_message",
+        description: "Add a message to a conversation session with threading support.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversationId: { type: "string", description: "Conversation ID" },
+            from: { type: "string", description: "Sender ID (agent ID or 'user')" },
+            content: { type: "string", description: "Message content" },
+            type: {
+              type: "string",
+              enum: ["text", "task", "result", "question", "answer", "system"],
+              description: "Message type"
+            },
+            metadata: { type: "object", description: "Additional metadata" },
+            parentMessageId: { type: "string", description: "Parent message ID for threading" },
+          },
+          required: ["conversationId", "from", "content"],
+        },
+      },
+      {
+        name: "dashboard_get_conversation_messages",
+        description: "Get messages from a conversation session with pagination and filtering.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversationId: { type: "string", description: "Conversation ID" },
+            limit: { type: "number", description: "Maximum number of messages" },
+            since: { type: "string", description: "ISO timestamp - only return messages after this time" },
+            parentMessageId: { type: "string", description: "Filter by parent message ID" },
+          },
+          required: ["conversationId"],
+        },
+      },
+      {
+        name: "dashboard_update_conversation_read_status",
+        description: "Update read status for a conversation (marks messages as read).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversationId: { type: "string", description: "Conversation ID" },
+            agentId: { type: "string", description: "Agent ID" },
+            lastReadMessageId: { type: "string", description: "ID of the last message read" },
+          },
+          required: ["conversationId", "agentId", "lastReadMessageId"],
+        },
+      },
+      {
+        name: "dashboard_get_unread_conversations",
+        description: "Get all conversations with unread messages for a specific agent.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string", description: "Agent ID to check unread conversations for" },
+          },
+          required: ["agentId"],
         },
       },
     ],
@@ -666,6 +1458,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             },
           ],
         };
+      }
+
+      case "dashboard_submit_task_feedback": {
+        const { commandId, rating } = args as { commandId: string; rating: "good" | "bad" };
+        if (!commandId || !rating) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "commandId and rating required" }) }] };
+        }
+        try {
+          const { recordProviderFeedback } = await import("./provider-feedback");
+          const success = recordProviderFeedback({ commandId, rating, timestamp: new Date() });
+          return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
+        } catch (error) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }] };
+        }
+      }
+
+      case "dashboard_get_provider_stats": {
+        const { category, windowDays } = args as { category?: string; windowDays?: number };
+        try {
+          const { getProviderScores, getCategoryProviderScores } = await import("./provider-feedback");
+          if (category) {
+            const scores = getCategoryProviderScores(category, windowDays);
+            return { content: [{ type: "text", text: JSON.stringify(scores, null, 2) }] };
+          }
+          const scores = getProviderScores(windowDays);
+          return { content: [{ type: "text", text: JSON.stringify(scores, null, 2) }] };
+        } catch (error) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }] };
+        }
       }
 
       case "dashboard_send_command": {
@@ -1041,6 +1862,457 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true,
           };
         }
+      }
+
+      case "dashboard_force_retry_task": {
+        const params = ForceRetryTaskSchema.parse(args);
+
+        const data = await apiCall(
+          "/api/task-executions/force-retry",
+          "POST",
+          {
+            taskId: params.taskId,
+            reason: params.reason || "Manual retry via MCP",
+          }
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_projects": {
+        const params = GetProjectsSchema.parse(args);
+
+        let endpoint = "/api/projects";
+        if (params.status) {
+          endpoint += `?status=${encodeURIComponent(params.status)}`;
+        }
+
+        const data = await apiCall(endpoint);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_project": {
+        const params = GetProjectSchema.parse(args);
+        const data = await apiCall(`/api/projects/${params.projectId}`);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_create_project": {
+        const params = CreateProjectSchema.parse(args);
+        const data = await apiCall("/api/projects", "POST", params);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_update_project": {
+        const params = UpdateProjectSchema.parse(args);
+        const { projectId, ...updateData } = params;
+        const data = await apiCall(`/api/projects/${projectId}`, "PATCH", updateData);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_delete_project": {
+        const params = DeleteProjectSchema.parse(args);
+        const data = await apiCall(`/api/projects/${params.projectId}`, "DELETE");
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_project_metrics": {
+        const params = GetProjectMetricsSchema.parse(args);
+
+        const endpoint = params.projectId
+          ? `/api/projects/${params.projectId}/metrics`
+          : "/api/projects/metrics";
+
+        const data = await apiCall(endpoint);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_project_metrics_history": {
+        const params = GetProjectMetricsHistorySchema.parse(args);
+
+        const queryParams = new URLSearchParams();
+        queryParams.set("limit", params.limit.toString());
+
+        const data = await apiCall(
+          `/api/projects/${params.projectId}/metrics/history?${queryParams}`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_snapshot_project_metrics": {
+        const params = SnapshotProjectMetricsSchema.parse(args);
+
+        const data = await apiCall(
+          `/api/projects/${params.projectId}/metrics`,
+          "POST"
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_link_task_to_project": {
+        const params = LinkTaskToProjectSchema.parse(args);
+
+        const data = await apiCall(
+          `/api/projects/${params.projectId}/tasks`,
+          "POST",
+          {
+            task_execution_id: params.taskExecutionId,
+            task_queue_id: params.taskQueueId,
+            metadata: params.metadata,
+          }
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_project_tasks": {
+        const params = GetProjectTasksSchema.parse(args);
+
+        const queryParams = new URLSearchParams();
+        queryParams.set("limit", params.limit.toString());
+
+        const data = await apiCall(
+          `/api/projects/${params.projectId}/tasks?${queryParams}`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_objectives": {
+        const params = GetObjectivesSchema.parse(args);
+        const queryParams = new URLSearchParams();
+        if (params.status) queryParams.set("status", params.status);
+
+        const data = await apiCall(`/api/okr/objectives?${queryParams}`);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_objective": {
+        const params = GetObjectiveSchema.parse(args);
+        const data = await apiCall(`/api/okr/objectives/${params.objectiveId}`);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_create_objective": {
+        const params = CreateObjectiveSchema.parse(args);
+        const data = await apiCall("/api/okr/objectives", "POST", params);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_update_objective": {
+        const params = UpdateObjectiveSchema.parse(args);
+        const { objectiveId, ...updateData } = params;
+        const data = await apiCall(
+          `/api/okr/objectives/${objectiveId}`,
+          "PATCH",
+          updateData
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_create_key_result": {
+        const params = CreateKeyResultSchema.parse(args);
+        const data = await apiCall("/api/okr/key-results", "POST", params);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_update_key_result": {
+        const params = UpdateKeyResultSchema.parse(args);
+        const { keyResultId, ...updateData } = params;
+        const data = await apiCall(
+          `/api/okr/key-results/${keyResultId}`,
+          "PATCH",
+          updateData
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_link_project_objective": {
+        const params = LinkProjectObjectiveSchema.parse(args);
+        const { projectId, objectiveId, relevantKeyResultIds } = params;
+        const data = await apiCall(
+          `/api/okr/projects/${projectId}/objectives`,
+          "POST",
+          {
+            objective_id: objectiveId,
+            relevant_key_result_ids: relevantKeyResultIds,
+          }
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_project_objectives": {
+        const params = GetProjectObjectivesSchema.parse(args);
+        const data = await apiCall(
+          `/api/okr/projects/${params.projectId}/objectives`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_create_conversation": {
+        const params = CreateConversationSchema.parse(args);
+        const data = await apiCall(
+          "/api/conversations",
+          "POST",
+          params
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_conversations": {
+        const params = GetConversationsSchema.parse(args);
+        const queryParams = new URLSearchParams();
+        if (params.participantId) queryParams.set("participantId", params.participantId);
+        if (params.status) queryParams.set("status", params.status);
+        if (params.createdBy) queryParams.set("createdBy", params.createdBy);
+        if (params.limit) queryParams.set("limit", params.limit.toString());
+
+        const data = await apiCall(
+          `/api/conversations?${queryParams.toString()}`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_conversation": {
+        const params = GetConversationSchema.parse(args);
+        const queryParams = new URLSearchParams();
+        if (params.includeStats) queryParams.set("stats", "true");
+
+        const data = await apiCall(
+          `/api/conversations/${params.conversationId}?${queryParams.toString()}`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_update_conversation": {
+        const params = UpdateConversationSchema.parse(args);
+        const { conversationId, ...updates } = params;
+        const data = await apiCall(
+          `/api/conversations/${conversationId}`,
+          "PATCH",
+          updates
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_delete_conversation": {
+        const params = DeleteConversationSchema.parse(args);
+        const data = await apiCall(
+          `/api/conversations/${params.conversationId}`,
+          "DELETE"
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_add_conversation_message": {
+        const params = AddConversationMessageSchema.parse(args);
+        const { conversationId, ...messageData } = params;
+        const data = await apiCall(
+          `/api/conversations/${conversationId}/messages`,
+          "POST",
+          messageData
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_conversation_messages": {
+        const params = GetConversationMessagesSchema.parse(args);
+        const { conversationId, ...options } = params;
+        const queryParams = new URLSearchParams();
+        if (options.limit) queryParams.set("limit", options.limit.toString());
+        if (options.since) queryParams.set("since", options.since);
+        if (options.parentMessageId !== undefined) {
+          queryParams.set("parentMessageId", options.parentMessageId || "");
+        }
+
+        const data = await apiCall(
+          `/api/conversations/${conversationId}/messages?${queryParams.toString()}`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_update_conversation_read_status": {
+        const params = UpdateConversationReadStatusSchema.parse(args);
+        const { conversationId, ...statusData } = params;
+        const data = await apiCall(
+          `/api/conversations/${conversationId}/read-status`,
+          "POST",
+          statusData
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "dashboard_get_unread_conversations": {
+        const params = GetUnreadConversationsSchema.parse(args);
+        const data = await apiCall(
+          `/api/conversations?participantId=${params.agentId}&status=active`
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
       }
 
       default:

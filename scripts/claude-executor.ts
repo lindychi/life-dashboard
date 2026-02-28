@@ -22,16 +22,21 @@ export interface ExecutionResult {
   exitCode?: number;
   elapsedMs?: number;
   stderrOutput?: string; // Add this for debugging
-  provider?: "claude" | "codex";
+  provider?: "claude" | "codex" | "gemini";
   rateLimited?: boolean;
   fallbackUsed?: boolean;
   fallbackReason?: "rate_limit";
   retriesUsed?: number;
   toolCalls?: ToolCall[];
+  // Token usage metrics (from Claude CLI stream-json result event)
+  totalCostUsd?: number;
+  numTurns?: number;
+  durationApiMs?: number;
+  modelUsed?: string; // Actual model used (from --model flag)
 }
 
 // Safe tools whitelist: file operations + MCP tools, NO Bash execution
-const ALLOWED_TOOLS = [
+export const ALLOWED_TOOLS = [
   "Read",
   "Write",
   "Edit",
@@ -50,6 +55,9 @@ const RATE_LIMIT_PATTERNS = [
   /exceeded.*limit/i,
   /capacity/i,
   /overloaded/i,
+  /throttl/i,
+  /backoff/i,
+  /retry.?after/i,
   /요청.*많/i,
   /속도 제한/i,
   /요청 한도/i,
@@ -67,6 +75,10 @@ function getCodexBin(): string {
   return process.env.CODEX_BIN || "codex";
 }
 
+function getGeminiBin(): string {
+  return process.env.GEMINI_BIN || "gemini";
+}
+
 export interface ClaudeExecutorOptions {
   agentId: string;
   task: string;
@@ -82,6 +94,7 @@ export interface ClaudeExecutorOptions {
   maxRetries?: number; // Max retry attempts for hung/rate-limited failures (default 2)
   retryDelayMs?: number; // Delay between retries in ms (default 3000)
   enableTmux?: boolean; // Run Claude inside tmux for live terminal monitoring (default: false)
+  model?: string; // Target model tier: "haiku", "sonnet", "opus" — passed as --model flag to Claude CLI
 }
 
 /**
@@ -102,6 +115,18 @@ export function isClaudeAvailable(): boolean {
 export function isCodexAvailable(): boolean {
   try {
     execFileSync("which", [getCodexBin()], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if Gemini CLI is available on PATH
+ */
+export function isGeminiAvailable(): boolean {
+  try {
+    execFileSync("which", [getGeminiBin()], { stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -273,17 +298,34 @@ function getToolDisplay(toolName: string): { emoji: string; label: string } {
 
 /**
  * Summarize tool input into a concise one-line string for display in progress logs.
- * Shows the most relevant parameter for each tool type.
+ * Shows the most relevant parameter for each tool type with enhanced detail.
  */
 function summarizeToolInput(toolName: string, input: Record<string, unknown>): string {
   try {
     switch (toolName) {
       case "Read":
-        return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+        if (input.file_path) {
+          const path = String(input.file_path).split("/").slice(-2).join("/");
+          const offset = input.offset ? Number(input.offset) : 1;
+          const limit = input.limit ? Number(input.limit) : undefined;
+          const rangeInfo = limit ? `L${offset}-${offset + limit - 1}` : `L${offset}+`;
+          return `${path} (${rangeInfo})`;
+        }
+        return "";
       case "Write":
-        return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+        if (input.file_path) {
+          const path = String(input.file_path).split("/").slice(-2).join("/");
+          const contentLen = input.content ? String(input.content).length : 0;
+          return `${path} (${contentLen} chars)`;
+        }
+        return "";
       case "Edit":
-        return input.file_path ? String(input.file_path).split("/").slice(-2).join("/") : "";
+        if (input.file_path) {
+          const path = String(input.file_path).split("/").slice(-2).join("/");
+          const oldStr = input.old_string ? String(input.old_string).slice(0, 30) : "";
+          return `${path} ("${oldStr}...")`;
+        }
+        return "";
       case "Grep":
         return input.pattern ? `"${String(input.pattern).slice(0, 50)}"` : "";
       case "Glob":
@@ -316,15 +358,54 @@ function summarizeToolInput(toolName: string, input: Record<string, unknown>): s
 }
 
 /**
- * Format a tool call into a rich display line with emoji and details.
+ * Summarize tool result into a concise preview for display.
+ * Extracts the first 100 chars of meaningful content from tool output.
  */
-function formatToolCallLine(toolName: string, input?: Record<string, unknown>): string {
+function summarizeToolResult(toolName: string, result: string): string {
+  if (!result || result.length === 0) return "";
+
+  try {
+    // For Read operations, show first 100 chars of content
+    if (toolName === "Read") {
+      const preview = result.trim().slice(0, 100).replace(/\n/g, " ");
+      return preview ? `→ ${preview}${result.length > 100 ? "..." : ""}` : "";
+    }
+
+    // For Write/Edit, show success confirmation
+    if (toolName === "Write" || toolName === "Edit") {
+      if (result.toLowerCase().includes("success") || result.toLowerCase().includes("updated")) {
+        return "→ ✓ completed";
+      }
+    }
+
+    // For Grep/Glob, show match count
+    if (toolName === "Grep" || toolName === "Glob") {
+      const lines = result.trim().split("\n");
+      return lines.length > 0 ? `→ ${lines.length} matches` : "";
+    }
+
+    // For other tools, show first 80 chars
+    const preview = result.trim().slice(0, 80).replace(/\n/g, " ");
+    return preview ? `→ ${preview}${result.length > 80 ? "..." : ""}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Format a tool call into a rich display line with emoji and details.
+ * Now includes result preview when available.
+ */
+function formatToolCallLine(toolName: string, input?: Record<string, unknown>, result?: string): string {
   const display = getToolDisplay(toolName);
   const summary = input ? summarizeToolInput(toolName, input) : "";
-  if (summary) {
-    return `${display.emoji} ${display.label}: ${summary}`;
-  }
-  return `${display.emoji} ${display.label}`;
+  const resultPreview = result ? summarizeToolResult(toolName, result) : "";
+
+  const parts = [display.emoji, display.label];
+  if (summary) parts.push(summary);
+  if (resultPreview) parts.push(resultPreview);
+
+  return parts.join(" ");
 }
 
 /**
@@ -336,7 +417,7 @@ function formatToolCallLine(toolName: string, input?: Record<string, unknown>): 
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, allowBash, enableTmux = false } = options;
+  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, allowBash, enableTmux = false, model } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
@@ -351,18 +432,23 @@ export function executeClaudeTask(
 
     const args: string[] = [];
 
-    // Security: use --allowedTools whitelist instead of --dangerously-skip-permissions
+    // Model selection: pass --model flag if specified
+    if (model) {
+      args.push("--model", model);
+    }
+
+    // Security: use --allowed-tools whitelist instead of --dangerously-skip-permissions
     // This prevents arbitrary Bash execution if the relay server is compromised
     if (disableTools) {
       // No-tool tasks (planner, summarizer): single API call, use --print for simplicity
       args.push("--print");
       args.push("--tools", "");
     } else {
-      // Tool-using tasks: use stream-json for structured event output
-      // Note: stream-json only emits events on actual output (tool calls, text), NOT during thinking/inference
-      args.push("--print", "--output-format", "stream-json", "--verbose");
+      // Tool-using tasks: use --stream-json for structured event output
+      // --stream-all includes thinking/inference events for better progress visibility
+      args.push("--print", "--stream-json", "--stream-all");
       const tools = allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS;
-      args.push("--allowedTools", tools);
+      args.push("--allowed-tools", tools);
 
       // Add MCP config if provided
       if (mcpConfig) {
@@ -375,19 +461,36 @@ export function executeClaudeTask(
       ? "\n\n## 시스템 제약 (필수 준수)\n당신은 도구 사용이 비활성화되어 있습니다. 분석과 텍스트 응답만 가능합니다. 코드 실행, 파일 수정, 쉘 명령 실행은 절대 시도하지 마세요."
       : `\n\n## 시스템 제약 (필수 준수)\n사용 가능한 도구: ${allowBash ? `${ALLOWED_TOOLS},Bash` : ALLOWED_TOOLS}\n위 목록에 없는 도구(특히 Bash/터미널/쉘 명령)는 절대 사용하지 마세요. 승인 프롬프트가 표시되면 프로세스가 중단됩니다.\n실행이 필요한 작업(git, 배포, npm 등)은 직접 실행하지 말고, 필요한 명령어를 텍스트로 제안만 해주세요.`;
 
-    args.push("--no-session-persistence", "--system-prompt", systemPrompt + toolNotice, task);
+    // Verification-Before-Completion protocol: append to tool-using agents only
+    // (disableTools agents like planner/summarizer don't produce verifiable artifacts)
+    const verificationProtocol = disableTools ? "" : `
+
+## 완료 프로토콜 (필수 준수)
+작업 완료를 선언하기 전 반드시:
+1. 변경사항의 증거를 구체적으로 제시할 것 (수정한 파일 경로, 핵심 변경 내용)
+2. "should", "probably", "seems to" 등 불확실한 표현 대신 확인된 사실만 기술
+3. 실패하거나 미완료된 부분이 있으면 정직하게 보고 (부분 성공도 가치 있음)
+4. 다음 단계가 필요한 경우 구체적으로 명시`;
+
+    args.push("--system-prompt", systemPrompt + toolNotice + verificationProtocol, task);
 
     const useStreamJson = !disableTools;
     const streamBuffer = { partial: "" };
     const toolCallTracker = new Map<string, ToolCall>();
     const allToolCalls: ToolCall[] = [];
     let finalResultText = "";
+    // Token usage metrics from result event
+    let resultCostUsd: number | undefined;
+    let resultNumTurns: number | undefined;
+    let resultDurationMs: number | undefined;
 
     let stdout = "";
     let stderr = "";
     let lastOutputTime = Date.now();
     let lastStderrTime = Date.now();
-    let lastActivityTime = Date.now(); // max(stdout, stderr)
+    let lastToolCallTime = Date.now(); // 🆕 Track tool call activity
+    let lastTextOutputTime = Date.now(); // 🆕 Track text output activity
+    let lastActivityTime = Date.now(); // max(stdout, stderr, tool_calls, text)
 
     const useTmux = enableTmux && isTmuxAvailable();
     let child: ChildProcess;
@@ -404,16 +507,40 @@ export function executeClaudeTask(
           if (useStreamJson) {
             const { events, textChunks, toolCalls } = parseStreamEvents(chunk, streamBuffer, toolCallTracker);
 
-            // Track and emit tool calls
+            // Track and emit tool calls (initial call without result)
             for (const tc of toolCalls) {
               allToolCalls.push(tc);
               onToolCall?.(tc);
-              onOutput?.(`${formatToolCallLine(tc.name, tc.input)}\n`);
+              lastToolCallTime = Date.now(); // 🆕 Update tool call timestamp
+              lastActivityTime = Date.now();
+              // Emit initial tool call line (result will be appended later if available)
+              onOutput?.(`[tool:${tc.name}] ${summarizeToolInput(tc.name, tc.input || {})}\n`);
             }
 
+            // Process events: capture final result, metrics, and emit tool results
             for (const event of events) {
               if (event.type === "result" && event.result) {
                 finalResultText = event.result;
+              }
+              // Capture token usage metrics from result event
+              if (event.type === "result") {
+                if (event.total_cost_usd !== undefined) resultCostUsd = event.total_cost_usd;
+                if (event.num_turns !== undefined) resultNumTurns = event.num_turns;
+                if (event.duration_ms !== undefined) resultDurationMs = event.duration_ms;
+              }
+              // Emit tool results when they become available
+              if (event.type === "assistant" && event.message?.content) {
+                for (const block of event.message.content) {
+                  if (block.type === "tool_result" && block.tool_use_id) {
+                    const toolCall = toolCallTracker.get(block.tool_use_id);
+                    if (toolCall?.result) {
+                      const resultPreview = summarizeToolResult(toolCall.name, toolCall.result);
+                      if (resultPreview) {
+                        onOutput?.(`  ${resultPreview}\n`);
+                      }
+                    }
+                  }
+                }
               }
             }
 
@@ -421,6 +548,8 @@ export function executeClaudeTask(
             if (textChunks.length > 0) {
               const joined = textChunks.join("");
               stdout += joined;
+              lastTextOutputTime = Date.now(); // 🆕 Update text output timestamp
+              lastActivityTime = Date.now();
               // Stream text chunks so dashboard can show thinking/response progress
               onOutput?.(`[text] ${joined}`);
             }
@@ -442,6 +571,10 @@ export function executeClaudeTask(
               provider: "claude",
               rateLimited: false,
               toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+              totalCostUsd: resultCostUsd,
+              numTurns: resultNumTurns,
+              durationApiMs: resultDurationMs,
+              modelUsed: model,
             });
           } else {
             const rateLimited = isRateLimitError(stdout);
@@ -454,6 +587,10 @@ export function executeClaudeTask(
               provider: "claude",
               rateLimited,
               toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+              totalCostUsd: resultCostUsd,
+              numTurns: resultNumTurns,
+              durationApiMs: resultDurationMs,
+              modelUsed: model,
             });
           }
         },
@@ -479,17 +616,41 @@ export function executeClaudeTask(
         if (useStreamJson) {
           const { events, textChunks, toolCalls } = parseStreamEvents(raw, streamBuffer, toolCallTracker);
 
-          // Track and emit tool calls
+          // Track and emit tool calls (initial call without result)
           for (const tc of toolCalls) {
             allToolCalls.push(tc);
             onToolCall?.(tc);
-            onOutput?.(`${formatToolCallLine(tc.name, tc.input)}\n`);
+            lastToolCallTime = Date.now(); // 🆕 Update tool call timestamp
+            lastActivityTime = Date.now();
+            // Emit initial tool call line (result will be appended later if available)
+            onOutput?.(`[tool:${tc.name}] ${summarizeToolInput(tc.name, tc.input || {})}\n`);
           }
 
+          // Process events: capture final result, metrics, and emit tool results
           for (const event of events) {
             // Capture final result
             if (event.type === "result" && event.result) {
               finalResultText = event.result;
+            }
+            // Capture token usage metrics from result event
+            if (event.type === "result") {
+              if (event.total_cost_usd !== undefined) resultCostUsd = event.total_cost_usd;
+              if (event.num_turns !== undefined) resultNumTurns = event.num_turns;
+              if (event.duration_ms !== undefined) resultDurationMs = event.duration_ms;
+            }
+            // Emit tool results when they become available
+            if (event.type === "assistant" && event.message?.content) {
+              for (const block of event.message.content) {
+                if (block.type === "tool_result" && block.tool_use_id) {
+                  const toolCall = toolCallTracker.get(block.tool_use_id);
+                  if (toolCall?.result) {
+                    const resultPreview = summarizeToolResult(toolCall.name, toolCall.result);
+                    if (resultPreview) {
+                      onOutput?.(`  ${resultPreview}\n`);
+                    }
+                  }
+                }
+              }
             }
           }
 
@@ -497,6 +658,8 @@ export function executeClaudeTask(
           if (textChunks.length > 0) {
             const joined = textChunks.join("");
             stdout += joined;
+            lastTextOutputTime = Date.now(); // 🆕 Update text output timestamp
+            lastActivityTime = Date.now();
             // Stream text chunks so dashboard can show thinking/response progress
             onOutput?.(`[text] ${joined}`);
           }
@@ -555,9 +718,14 @@ export function executeClaudeTask(
         const now = Date.now();
         const silentMs = now - lastActivityTime;
         const stdoutSilentMs = now - lastOutputTime;
+        const toolCallSilentMs = now - lastToolCallTime; // 🆕 Tool call silence
+        const textSilentMs = now - lastTextOutputTime; // 🆕 Text output silence
 
-        // Warning threshold: 60% of stale timeout with no activity at all
-        if (!warnedStale && silentMs > staleTimeout * 0.6) {
+        // Warning threshold: 50% of stale timeout with no activity at all (reduced from 60%)
+        if (!warnedStale && silentMs > staleTimeout * 0.5) {
+          // 🆕 Detailed health metrics
+          const healthDetail = `stdout: ${formatDuration(stdoutSilentMs)}, tool: ${formatDuration(toolCallSilentMs)}, text: ${formatDuration(textSilentMs)}`;
+
           // In tmux mode, check process health before warning/killing
           if (useTmux && healthResetCount < MAX_HEALTH_RESETS) {
             const state = getProcessState(agentId);
@@ -569,7 +737,7 @@ export function executeClaudeTask(
               healthResetCount++;
               warnedStale = false;
               const detail = `CPU: ${state.cpuActive ? 'active' : 'idle'}, children: ${state.childProcessCount}, resets: ${healthResetCount}/${MAX_HEALTH_RESETS}`;
-              onOutput?.(`[health] Process alive and working (${detail}), resetting stale timer\n`);
+              onOutput?.(`[health] ✅ Process working (${detail}) | Silence: ${healthDetail}\n`);
               return; // Skip the kill/warn logic
             }
           }
@@ -580,13 +748,13 @@ export function executeClaudeTask(
             lastActivityTime = Date.now();
             healthResetCount++;
             warnedStale = false;
-            onOutput?.(`[health] Active API connection detected (resets: ${healthResetCount}/${MAX_HEALTH_RESETS}), resetting stale timer\n`);
+            onOutput?.(`[health] ✅ API connection active (resets: ${healthResetCount}/${MAX_HEALTH_RESETS}) | Silence: ${healthDetail}\n`);
             return;
           }
 
           warnedStale = true;
           const resetInfo = healthResetCount > 0 ? `, health resets exhausted: ${healthResetCount}/${MAX_HEALTH_RESETS}` : "";
-          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)}${resetInfo})`;
+          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (${healthDetail}) — stale timeout: ${formatDuration(staleTimeout)}${resetInfo}`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
         }
@@ -667,7 +835,7 @@ export function executeClaudeTask(
           warnedStale = false;
           healthResetCount = 0;
         }
-      }, 15000); // Check every 15 seconds (was 30s, now more responsive)
+      }, 10000); // Check every 10 seconds (reduced from 15s for faster detection)
     }
 
     // In tmux mode, exit is handled by the onExit callback above
@@ -699,6 +867,10 @@ export function executeClaudeTask(
             provider: "claude",
             rateLimited: false,
             toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+            totalCostUsd: resultCostUsd,
+            numTurns: resultNumTurns,
+            durationApiMs: resultDurationMs,
+            modelUsed: model,
           });
         } else {
           const combinedOutput = `${stderr}\n${stdout}`.trim();
@@ -716,6 +888,10 @@ export function executeClaudeTask(
             provider: "claude",
             rateLimited,
             toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+            totalCostUsd: resultCostUsd,
+            numTurns: resultNumTurns,
+            durationApiMs: resultDurationMs,
+            modelUsed: model,
           });
         }
       });
@@ -827,19 +1003,19 @@ export async function executeCodexTask(
         const silentMs = now - lastActivityTime;
         const stdoutSilentMs = now - lastOutputTime;
 
-        if (!warnedStale && silentMs > staleTimeout * 0.6) {
+        if (!warnedStale && silentMs > staleTimeout * 0.5) { // 🆕 Reduced from 0.6 to 0.5
           // Check network health before warning (capped resets)
           const pid = child.pid;
           if (pid && codexHealthResetCount < MAX_CODEX_HEALTH_RESETS && checkNetworkHealth(pid)) {
             lastActivityTime = Date.now();
             codexHealthResetCount++;
-            onOutput?.(`[health] Codex: active API connection (resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}), resetting stale timer\n`);
+            onOutput?.(`[health] ✅ Codex API connection active (resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}) | Silence: ${formatDuration(stdoutSilentMs)}\n`);
             return;
           }
 
           warnedStale = true;
           const resetInfo = codexHealthResetCount > 0 ? `, health resets: ${codexHealthResetCount}/${MAX_CODEX_HEALTH_RESETS}` : "";
-          const msg = `⚠️ No activity for ${formatDuration(silentMs)} (stale timeout: ${formatDuration(staleTimeout)}${resetInfo})`;
+          const msg = `⚠️ Codex: No activity for ${formatDuration(silentMs)} (stdout: ${formatDuration(stdoutSilentMs)}) — stale timeout: ${formatDuration(staleTimeout)}${resetInfo}`;
           console.warn(msg);
           onOutput?.(`[warning] ${msg}\n`);
         }
@@ -910,7 +1086,7 @@ export async function executeCodexTask(
           warnedStale = false;
           codexHealthResetCount = 0;
         }
-      }, 15000);
+      }, 10000); // Check every 10 seconds (reduced from 15s for faster detection)
     }
 
     child.on("error", (err) => {
@@ -956,6 +1132,222 @@ export async function executeCodexTask(
   });
 }
 
+export async function executeGeminiTask(
+  options: ClaudeExecutorOptions
+): Promise<ExecutionResult> {
+  const {
+    task,
+    systemPrompt,
+    workDir,
+    timeout = 0,
+    staleTimeout = 300000,
+    onOutput,
+    model,
+  } = options;
+
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    let resolved = false;
+
+    const safeResolve = (result: ExecutionResult) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(result);
+    };
+
+    const geminiModel = model || process.env.GEMINI_MODEL;
+    const args: string[] = ["--yolo"];
+
+    if (geminiModel) {
+      args.push("--model", geminiModel);
+    }
+
+    // Gemini uses -p flag for prompt (passed as CLI argument, not stdin)
+    const prompt = systemPrompt ? `${systemPrompt}\n\n${task}` : task;
+    args.push("-p", prompt);
+
+    const child: ChildProcess = spawn(getGeminiBin(), args, {
+      cwd: workDir || process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let lastOutputTime = Date.now();
+    let lastActivityTime = Date.now();
+
+    child.stdout?.on("data", (data: Buffer) => {
+      stdout += data.toString();
+      lastOutputTime = Date.now();
+      lastActivityTime = Date.now();
+      onOutput?.(data.toString());
+    });
+
+    child.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+      lastActivityTime = Date.now();
+      if (onOutput && data.toString().trim()) {
+        onOutput(`[stderr] ${data.toString().trim().slice(0, 200)}\n`);
+      }
+    });
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        if (staleTimer) clearInterval(staleTimer);
+        staleTimer = null;
+        child.kill("SIGTERM");
+        safeResolve({
+          success: false,
+          error: `Timeout after ${formatDuration(timeout)}`,
+          exitCode: -1,
+          elapsedMs: Date.now() - startTime,
+          provider: "gemini",
+          rateLimited: false,
+        });
+      }, timeout);
+    }
+
+    // Gemini stale detection — same capped health-reset pattern as Codex
+    const MAX_GEMINI_HEALTH_RESETS = 6;
+    let geminiHealthResetCount = 0;
+    let staleTimer: ReturnType<typeof setInterval> | null = null;
+    if (staleTimeout > 0) {
+      let warnedStale = false;
+      staleTimer = setInterval(() => {
+        const now = Date.now();
+        const silentMs = now - lastActivityTime;
+        const stdoutSilentMs = now - lastOutputTime;
+
+        if (!warnedStale && silentMs > staleTimeout * 0.5) {
+          // Check network health before warning (capped resets)
+          const pid = child.pid;
+          if (pid && geminiHealthResetCount < MAX_GEMINI_HEALTH_RESETS && checkNetworkHealth(pid)) {
+            lastActivityTime = Date.now();
+            geminiHealthResetCount++;
+            onOutput?.(`[health] ✅ Gemini API connection active (resets: ${geminiHealthResetCount}/${MAX_GEMINI_HEALTH_RESETS}) | Silence: ${formatDuration(stdoutSilentMs)}\n`);
+            return;
+          }
+
+          warnedStale = true;
+          const resetInfo = geminiHealthResetCount > 0 ? `, health resets: ${geminiHealthResetCount}/${MAX_GEMINI_HEALTH_RESETS}` : "";
+          const msg = `⚠️ Gemini: No activity for ${formatDuration(silentMs)} (stdout: ${formatDuration(stdoutSilentMs)}) — stale timeout: ${formatDuration(staleTimeout)}${resetInfo}`;
+          console.warn(msg);
+          onOutput?.(`[warning] ${msg}\n`);
+        }
+
+        // Absolute maximum cap: 3x stale timeout regardless of CPU state
+        const absoluteMaxMs = staleTimeout * 3;
+        if (silentMs > absoluteMaxMs) {
+          if (timer) clearTimeout(timer);
+          timer = null;
+          if (staleTimer) clearInterval(staleTimer);
+          staleTimer = null;
+
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // Process may already be dead
+            }
+          }, 5000);
+
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}, health resets: ${geminiHealthResetCount}/${MAX_GEMINI_HEALTH_RESETS}`;
+          safeResolve({
+            success: false,
+            error: `Process exceeded absolute timeout (${formatDuration(absoluteMaxMs)}) with no output. ${detail}`,
+            exitCode: -2,
+            elapsedMs: now - startTime,
+            provider: "gemini",
+            rateLimited: false,
+          });
+          return;
+        }
+
+        if (silentMs > staleTimeout) {
+          // Final network health check (only if resets remain)
+          const killPid = child.pid;
+          if (killPid && geminiHealthResetCount < MAX_GEMINI_HEALTH_RESETS && checkNetworkHealth(killPid)) {
+            lastActivityTime = Date.now();
+            geminiHealthResetCount++;
+            onOutput?.(`[health] Gemini: active API connection at kill threshold (resets: ${geminiHealthResetCount}/${MAX_GEMINI_HEALTH_RESETS}), extending timeout\n`);
+            return;
+          }
+
+          if (timer) clearTimeout(timer);
+          timer = null;
+          if (staleTimer) clearInterval(staleTimer);
+          staleTimer = null;
+
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // Process may already be dead
+            }
+          }, 5000);
+
+          const detail = `stdout silent: ${formatDuration(stdoutSilentMs)}, total silent: ${formatDuration(silentMs)}, health resets: ${geminiHealthResetCount}/${MAX_GEMINI_HEALTH_RESETS}`;
+          safeResolve({
+            success: false,
+            error: `Process hung (no activity for ${formatDuration(staleTimeout)}). ${detail}`,
+            exitCode: -2,
+            elapsedMs: now - startTime,
+            provider: "gemini",
+            rateLimited: false,
+          });
+        } else if (warnedStale && silentMs < staleTimeout * 0.3) {
+          warnedStale = false;
+          geminiHealthResetCount = 0;
+        }
+      }, 10000); // Check every 10 seconds
+    }
+
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      if (staleTimer) clearInterval(staleTimer);
+      safeResolve({
+        success: false,
+        error: err.message,
+        exitCode: -1,
+        elapsedMs: Date.now() - startTime,
+        provider: "gemini",
+        rateLimited: false,
+      });
+    });
+
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (staleTimer) clearInterval(staleTimer);
+      if (code === 0) {
+        safeResolve({
+          success: true,
+          output: stdout.trim(),
+          exitCode: 0,
+          elapsedMs: Date.now() - startTime,
+          stderrOutput: stderr.trim() || undefined,
+          provider: "gemini",
+          rateLimited: false,
+        });
+      } else {
+        const baseError = stderr.trim() || `Process exited with code ${code}`;
+        safeResolve({
+          success: false,
+          output: stdout.trim(),
+          error: baseError,
+          exitCode: code ?? -1,
+          elapsedMs: Date.now() - startTime,
+          stderrOutput: stderr.trim() || undefined,
+          provider: "gemini",
+          rateLimited: false,
+        });
+      }
+    });
+  });
+}
+
 export async function executeLlmTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
@@ -983,6 +1375,19 @@ export async function executeLlmTask(
       fallbackReason: "rate_limit",
       rateLimited: false,
     };
+  }
+
+  // If Codex also failed (rate limit or error), try Gemini
+  if (!codexResult.success && isGeminiAvailable()) {
+    const geminiResult = await executeGeminiTask(options);
+    if (geminiResult.success) {
+      return {
+        ...geminiResult,
+        fallbackUsed: true,
+        fallbackReason: "rate_limit",
+        rateLimited: false,
+      };
+    }
   }
 
   const combinedError = `Claude rate limit exceeded. Codex fallback failed: ${codexResult.error || "unknown error"}`;
