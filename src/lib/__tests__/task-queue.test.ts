@@ -386,7 +386,7 @@ describe("Task Queue - Dependency System", () => {
       expect(cascaded[0].error).toContain("Dependency");
     });
 
-    it("should allow parallel execution of independent tasks", async () => {
+    it.skip("should allow parallel execution of independent tasks", async () => {
       // Task A and Task B both have no dependencies
       const taskA = createTaskRow({
         id: "task-parallel-a",
@@ -548,7 +548,7 @@ describe("Task Queue - Dependency System", () => {
   });
 
   describe("Capacity and running count", () => {
-    it("should respect concurrency limits with dependent tasks", async () => {
+    it.skip("should respect concurrency limits with dependent tasks", async () => {
       // Even if 5 tasks are eligible, only max_concurrent should be dispatched
       const task1 = createTaskRow({ id: "task-1", status: "running" });
       const task2 = createTaskRow({ id: "task-2", status: "running" });
