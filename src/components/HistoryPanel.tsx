@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import HistoryEntryCard from "@/components/HistoryEntryCard";
 import { copyToClipboard } from "@/lib/clipboard";
 import { HISTORY_TYPE_LABELS } from "@/lib/ui-constants";
+import { sendAgentReply } from "@/lib/agent-actions";
 import type {
   AgentRuntime,
   HistoryEntry,
@@ -59,7 +61,41 @@ function TimelineSkeleton() {
 
 // ===== Empty State =====
 
-function EmptyState() {
+function EmptyState({
+  hasFilters,
+  hasSearch,
+  searchText,
+  onClearFilters,
+}: {
+  hasFilters: boolean;
+  hasSearch: boolean;
+  searchText: string;
+  onClearFilters: () => void;
+}) {
+  if (hasSearch) {
+    return (
+      <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
+        <p className="text-gray-500">
+          &quot;{searchText}&quot;에 대한 검색 결과가 없습니다
+        </p>
+      </div>
+    );
+  }
+
+  if (hasFilters) {
+    return (
+      <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
+        <p className="text-gray-500">필터 조건에 맞는 항목이 없습니다</p>
+        <button
+          onClick={onClearFilters}
+          className="mt-3 px-4 py-2 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+        >
+          필터 초기화
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
       <p className="text-gray-500">아직 기록이 없습니다</p>
@@ -134,6 +170,8 @@ export default function HistoryPanel({
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [showScrollToTop, setShowScrollToTop] = useState(false);
 
   // ----- Helpers -----
   const getDisplay = (agentId: string) =>
@@ -169,26 +207,8 @@ export default function HistoryPanel({
       replyText: string
     ) => {
       try {
-        await fetch("/api/relay/command", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: "spawn",
-            payload: {
-              agentId: entry.agentId,
-              task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
-            },
-          }),
-        });
-        await fetch("/api/history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            agentId: entry.agentId,
-            type: "message_sent",
-            content: `\u{1F4AC} 사용자 \u2192 ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
-          }),
-        });
+        const displayName = agentMap[entry.agentId]?.name || entry.agentId;
+        await sendAgentReply(entry.agentId, entry.content, replyText, displayName);
         setReplyingTo(null);
       } catch (err) {
         console.error("Reply failed:", err);
@@ -327,9 +347,18 @@ export default function HistoryPanel({
 
     setGroupedLoading(true);
 
+    // Build query params for both requests
+    const groupedParams = new URLSearchParams();
+    const timelineParams = new URLSearchParams({ limit: "30", excludeTypes: "output" });
+
+    if (filterAgent !== "all") {
+      groupedParams.set("agentId", filterAgent);
+      timelineParams.set("agentId", filterAgent);
+    }
+
     Promise.all([
-      fetch("/api/history/grouped").then((res) => res.json()),
-      fetch("/api/history/timeline?limit=30&excludeTypes=output").then((res) => res.json()),
+      fetch(`/api/history/grouped?${groupedParams.toString()}`).then((res) => res.json()),
+      fetch(`/api/history/timeline?${timelineParams.toString()}`).then((res) => res.json()),
     ])
       .then(([groupedResult, timelineResult]) => {
         const groups: GroupedHistoryEntry[] = groupedResult.groups || [];
@@ -356,7 +385,7 @@ export default function HistoryPanel({
       })
       .catch((err) => console.error("Grouped fetch error:", err))
       .finally(() => setGroupedLoading(false));
-  }, [viewMode]);
+  }, [viewMode, filterAgent]);
 
   // ----- Debounced search -----
   useEffect(() => {
@@ -561,12 +590,7 @@ export default function HistoryPanel({
       filtered = filtered.filter((g) => g.failedCount > 0);
     }
 
-    // Filter by agent
-    if (filterAgent !== "all") {
-      filtered = filtered.filter((g) =>
-        g.entries.some((e) => e.agentId === filterAgent)
-      );
-    }
+    // Filter by agent is now handled server-side in the useEffect
 
     // Filter by group search text
     if (groupSearchText.trim()) {
@@ -579,7 +603,7 @@ export default function HistoryPanel({
     }
 
     return filtered;
-  }, [groupedData, groupStatusFilter, filterAgent, groupSearchText]);
+  }, [groupedData, groupStatusFilter, groupSearchText]);
 
   // ----- Unique agents in grouped data (for group header avatars) -----
   const getGroupAgents = useCallback(
@@ -620,6 +644,90 @@ export default function HistoryPanel({
     },
     [timelineEntries]
   );
+
+  // ----- Filter preset handlers -----
+  const applyPreset = useCallback(
+    (preset: "today" | "failed" | "recent") => {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+      switch (preset) {
+        case "today":
+          setDateFrom(today.toISOString().split("T")[0]);
+          setDateTo("");
+          setHideOutput(true);
+          setFilterType("all");
+          setFilterAgent("all");
+          break;
+        case "failed":
+          setFilterType("task_failed");
+          setDateFrom("");
+          setDateTo("");
+          setFilterAgent("all");
+          break;
+        case "recent":
+          {
+            const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            setDateFrom(last24h.toISOString().split("T")[0]);
+            setDateTo("");
+            setFilterType("all");
+            setFilterAgent("all");
+          }
+          break;
+      }
+    },
+    []
+  );
+
+  const clearAllFilters = useCallback(() => {
+    setFilterAgent("all");
+    setFilterType("all");
+    setSearchText("");
+    setDateFrom("");
+    setDateTo("");
+    setHideOutput(true);
+    setFilterRequestGroupId(null);
+    setFilterRequestGroupTitle(null);
+  }, []);
+
+  const hasActiveFilters = useMemo(() => {
+    return (
+      filterAgent !== "all" ||
+      filterType !== "all" ||
+      debouncedSearch !== "" ||
+      dateFrom !== "" ||
+      dateTo !== "" ||
+      filterRequestGroupId !== null
+    );
+  }, [filterAgent, filterType, debouncedSearch, dateFrom, dateTo, filterRequestGroupId]);
+
+  // ----- Scroll to top handler -----
+  const scrollToTop = useCallback(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, []);
+
+  // ----- Scroll position tracking for scroll-to-top button -----
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || viewMode !== "unified") return;
+
+    const handleScroll = () => {
+      setShowScrollToTop(container.scrollTop > 300);
+    };
+
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [viewMode]);
+
+  // ----- Virtual scrolling for unified view -----
+  const virtualizer = useVirtualizer({
+    count: timelineEntries.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 100,
+    overscan: 5,
+  });
 
   return (
     <div className="space-y-4">
@@ -836,6 +944,32 @@ export default function HistoryPanel({
             </span>
           </div>
         )}
+
+        {/* Filter presets */}
+        <div className="flex items-center gap-1.5 px-1 overflow-x-auto pb-1 -mb-1">
+          <span className="text-[10px] sm:text-xs text-gray-600 shrink-0">빠른 필터:</span>
+          <button
+            onClick={() => applyPreset("today")}
+            className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full text-[10px] sm:text-xs font-medium bg-gray-700/40 text-gray-400 hover:bg-gray-700/60 hover:text-gray-300 border border-gray-600/30 transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none whitespace-nowrap"
+          >
+            <span>📅</span>
+            <span>오늘 활동</span>
+          </button>
+          <button
+            onClick={() => applyPreset("failed")}
+            className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full text-[10px] sm:text-xs font-medium bg-gray-700/40 text-gray-400 hover:bg-gray-700/60 hover:text-gray-300 border border-gray-600/30 transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none whitespace-nowrap"
+          >
+            <span>❌</span>
+            <span>실패 내역</span>
+          </button>
+          <button
+            onClick={() => applyPreset("recent")}
+            className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full text-[10px] sm:text-xs font-medium bg-gray-700/40 text-gray-400 hover:bg-gray-700/60 hover:text-gray-300 border border-gray-600/30 transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none whitespace-nowrap"
+          >
+            <span>🕐</span>
+            <span>최근 24시간</span>
+          </button>
+        </div>
       </div>
 
       {/* ===== Split Axis Selector (for split view mode only) ===== */}
@@ -883,78 +1017,135 @@ export default function HistoryPanel({
       ) : error && timelineEntries.length === 0 ? (
         <ErrorState onRetry={handleRetry} />
       ) : timelineEntries.length === 0 && viewMode !== "grouped" ? (
-        <EmptyState />
+        <EmptyState
+          hasFilters={hasActiveFilters}
+          hasSearch={debouncedSearch !== ""}
+          searchText={debouncedSearch}
+          onClearFilters={clearAllFilters}
+        />
       ) : viewMode === "unified" ? (
-        /* ----- Unified Timeline ----- */
-        <div className="max-h-[700px] overflow-y-auto space-y-0">
-          {timelineEntries.map((entry, index) => (
-            <div key={entry.id}>
-              {/* Connector line for consecutive same-agent entries */}
-              {shouldShowConnector(index) && (
-                <div className="flex items-center pl-[18px] py-0">
-                  <div className="w-0.5 h-3 bg-gray-700/60 rounded-full" />
+        /* ----- Unified Timeline with Virtual Scrolling ----- */
+        <div className="relative">
+          <div
+            ref={scrollContainerRef}
+            className="max-h-[700px] overflow-y-auto"
+          >
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((virtualItem) => {
+                const entry = timelineEntries[virtualItem.index];
+                const index = virtualItem.index;
+
+                return (
+                  <div
+                    key={virtualItem.key}
+                    data-index={virtualItem.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualItem.start}px)`,
+                    }}
+                  >
+                    {/* Connector line for consecutive same-agent entries */}
+                    {shouldShowConnector(index) && (
+                      <div className="flex items-center pl-[18px] py-0">
+                        <div className="w-0.5 h-3 bg-gray-700/60 rounded-full" />
+                      </div>
+                    )}
+                    <div className={index > 0 && !shouldShowConnector(index) ? "mt-2" : ""}>
+                      <HistoryEntryCard
+                        entry={entry}
+                        agentDisplay={getDisplay(entry.agentId)}
+                        isExpanded={expandedEntries.has(entry.id)}
+                        isReplying={replyingTo === entry.id}
+                        isCopied={copiedId === entry.id}
+                        onToggleExpand={toggleExpand}
+                        onToggleReply={(id) =>
+                          setReplyingTo(replyingTo === id ? null : id)
+                        }
+                        onCopy={handleCopy}
+                        onReply={handleReply}
+                        onFilterByGroup={handleFilterByGroup}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Infinite scroll sentinel */}
+            <div ref={loadMoreRef} className="h-1" />
+
+            {/* Loading indicator */}
+            {loading && (
+              <div className="flex justify-center py-4">
+                <div className="flex items-center gap-2 text-gray-500 text-sm">
+                  <svg
+                    className="animate-spin h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  불러오는 중...
                 </div>
-              )}
-              <div className={index > 0 && !shouldShowConnector(index) ? "mt-2" : ""}>
-                <HistoryEntryCard
-                  entry={entry}
-                  agentDisplay={getDisplay(entry.agentId)}
-                  isExpanded={expandedEntries.has(entry.id)}
-                  isReplying={replyingTo === entry.id}
-                  isCopied={copiedId === entry.id}
-                  onToggleExpand={toggleExpand}
-                  onToggleReply={(id) =>
-                    setReplyingTo(replyingTo === id ? null : id)
-                  }
-                  onCopy={handleCopy}
-                  onReply={handleReply}
-                  onFilterByGroup={handleFilterByGroup}
-                />
               </div>
-            </div>
-          ))}
+            )}
 
-          {/* Infinite scroll sentinel */}
-          <div ref={loadMoreRef} className="h-1" />
-
-          {/* Loading indicator */}
-          {loading && (
-            <div className="flex justify-center py-4">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <svg
-                  className="animate-spin h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
+            {/* Load more fallback button */}
+            {hasMore && !loading && (
+              <div className="flex justify-center py-3">
+                <button
+                  onClick={handleLoadMore}
+                  className="px-4 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-400 hover:text-white hover:border-gray-600 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                  />
-                </svg>
-                불러오는 중...
+                  더 불러오기
+                </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Load more fallback button */}
-          {hasMore && !loading && (
-            <div className="flex justify-center py-3">
-              <button
-                onClick={handleLoadMore}
-                className="px-4 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-400 hover:text-white hover:border-gray-600 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          {/* Scroll to top button */}
+          {showScrollToTop && (
+            <button
+              onClick={scrollToTop}
+              className="fixed bottom-6 right-6 p-3 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition-all transform hover:scale-110 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none z-50"
+              title="맨 위로"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
               >
-                더 불러오기
-              </button>
-            </div>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M5 10l7-7m0 0l7 7m-7-7v18"
+                />
+              </svg>
+            </button>
           )}
         </div>
       ) : viewMode === "grouped" ? (
@@ -1046,7 +1237,7 @@ export default function HistoryPanel({
             {groupedLoading ? (
               <TimelineSkeleton />
             ) : filteredGroupedData.length === 0 && ungroupedEntries.length === 0 ? (
-              <div className="text-center py-12">
+              <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
                 <div className="text-gray-600 text-3xl mb-3">📋</div>
                 <p className="text-gray-500 text-sm">
                   {groupStatusFilter !== "all" || groupSearchText
@@ -1059,7 +1250,7 @@ export default function HistoryPanel({
                       setGroupStatusFilter("all");
                       setGroupSearchText("");
                     }}
-                    className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    className="mt-3 px-4 py-2 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     필터 초기화
                   </button>

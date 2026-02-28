@@ -12,3 +12,22 @@ restartPolicyMaxRetries = 3
 # Configure in Railway dashboard: Volume → Mount Path: /app/uploads
 [[deploy.volumes]]
 mountPath = "/app/uploads"
+
+# Railway Proxy Headers for SSE/WebSocket Support
+# These headers ensure long-lived connections are properly proxied
+[deploy.proxyHeaders]
+# Disable request body buffering for streaming responses
+"X-Accel-Buffering" = "no"
+# Keep-alive for SSE connections
+"Connection" = "keep-alive"
+# Required for WebSocket upgrade (if needed in future)
+"Upgrade" = "websocket"
+"Sec-WebSocket-Key" = "keep"
+"Sec-WebSocket-Version" = "keep"
+
+# Environment configuration for production
+[deploy.environment]
+NODE_ENV = "production"
+PORT = "3000"
+UPLOAD_MAX_SIZE = "10485760"
+STORAGE_TYPE = "local"

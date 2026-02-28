@@ -9,12 +9,12 @@
  * 5. getUnreadCount() — counts, edge cases, NaN handling
  * 6. getAllAgentsOverview() — comprehensive overview, per-agent state, empty states
  *
- * Bug-revealing tests:
- * - sendMessage() has no content/type validation at library level
- * - getConversation() with `since` param never tested before
- * - getConversation() ordering inconsistency (DESC+reverse vs ASC)
- * - markAsRead() broadcast idempotency edge cases
- * - getUnreadCount() parseInt edge cases
+ * Bug-revealing tests (all FIXED):
+ * - sendMessage() now validates type and content length at library level
+ * - getConversation() with `since` param now tested
+ * - getConversation() ordering: DESC+reverse for full query, ASC for since query
+ * - markAsRead() broadcast idempotency via ON CONFLICT DO NOTHING
+ * - getUnreadCount() NaN safety via || 0 fallback
  *
  * Mock Pattern: vi.mock('@/lib/db') + vi.mock('pg') per MEMORY.md
  */
@@ -521,10 +521,17 @@ describe("messages.ts — Comprehensive TDD Test Suite", () => {
         expect(result.content).toBe("   \n\t  ");
       });
 
-      it("should allow extremely long content (BUG: no max length validation)", async () => {
+      it("should allow content up to MAX_CONTENT_LENGTH (100KB)", async () => {
         const longContent = "x".repeat(100_000);
         const result = await send("dev", "pm", longContent);
         expect(result.content.length).toBe(100_000);
+      });
+
+      it("should reject content exceeding MAX_CONTENT_LENGTH", async () => {
+        const overLimit = "x".repeat(100_001);
+        await expect(send("dev", "pm", overLimit)).rejects.toThrow(
+          "content exceeds maximum length"
+        );
       });
 
       it("should reject empty 'from' agent ID (FIXED: validation added)", async () => {
@@ -1431,6 +1438,86 @@ describe("messages.ts — Comprehensive TDD Test Suite", () => {
 
       expect(overview.pm.unread).toBe(1);
       expect(conversation).toHaveLength(1);
+    });
+  });
+
+  // =======================================================================
+  // 9. 브로드캐스트 Cascade 테스트
+  // =======================================================================
+  describe("브로드캐스트 Cascade", () => {
+    it("should track read status independently across 4+ agents", async () => {
+      // Send broadcast visible to all 4 agents: pm, dev, qa, reviewer
+      await send("pm", "broadcast", "team meeting at 3pm");
+
+      // Verify all agents see 1 unread
+      for (const agentId of ["pm", "dev", "qa", "reviewer"]) {
+        expect(await getUnreadCount(agentId)).toBe(1);
+      }
+
+      // Only dev and qa read it
+      await markAsRead("dev", "msg-1");
+      await markAsRead("qa", "msg-1");
+
+      // dev and qa: 0, pm and reviewer: 1
+      expect(await getUnreadCount("dev")).toBe(0);
+      expect(await getUnreadCount("qa")).toBe(0);
+      expect(await getUnreadCount("pm")).toBe(1);
+      expect(await getUnreadCount("reviewer")).toBe(1);
+
+      // Verify overview consistency
+      const overview = await getAllAgentsOverview();
+      expect(overview.dev.unread).toBe(0);
+      expect(overview.qa.unread).toBe(0);
+      expect(overview.pm.unread).toBe(1);
+      expect(overview.reviewer.unread).toBe(1);
+    });
+
+    it("should handle multiple broadcasts with partial reads across agents", async () => {
+      await sendWithDelay([
+        { from: "pm", to: "broadcast", content: "broadcast-1" },
+        { from: "dev", to: "broadcast", content: "broadcast-2" },
+        { from: "qa", to: "broadcast", content: "broadcast-3" },
+      ]);
+
+      // All agents see 3 unread
+      expect(await getUnreadCount("pm")).toBe(3);
+      expect(await getUnreadCount("reviewer")).toBe(3);
+
+      // pm reads broadcast-1 and broadcast-2
+      await markAsRead("pm", "msg-1");
+      await markAsRead("pm", "msg-2");
+
+      // reviewer reads only broadcast-3
+      await markAsRead("reviewer", "msg-3");
+
+      expect(await getUnreadCount("pm")).toBe(1); // only broadcast-3 unread
+      expect(await getUnreadCount("reviewer")).toBe(2); // broadcast-1 and broadcast-2 unread
+
+      const overview = await getAllAgentsOverview();
+      expect(overview.pm.unread).toBe(1);
+      expect(overview.reviewer.unread).toBe(2);
+    });
+
+    it("should correctly mix direct and broadcast unread counts", async () => {
+      // Direct messages to pm
+      await send("dev", "pm", "direct-1");
+      await send("qa", "pm", "direct-2");
+      // Broadcast
+      await send("reviewer", "broadcast", "broadcast-1");
+
+      // pm: 2 direct + 1 broadcast = 3
+      expect(await getUnreadCount("pm")).toBe(3);
+
+      // Read 1 direct message
+      await markAsRead("pm", "msg-1");
+      expect(await getUnreadCount("pm")).toBe(2);
+
+      // Read broadcast
+      await markAsRead("pm", "msg-3");
+      expect(await getUnreadCount("pm")).toBe(1);
+
+      // dev still sees broadcast as unread
+      expect(await getUnreadCount("dev")).toBe(1);
     });
   });
 });

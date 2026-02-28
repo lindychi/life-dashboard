@@ -139,7 +139,7 @@ function ToolCallsPanel({ toolCalls }: { toolCalls: ToolCallData[] }) {
   }, [toolCounts]);
 
   return (
-    <div className="mt-1.5 sm:mt-2 border border-gray-700/50 rounded-lg bg-gray-800/30 overflow-hidden">
+    <div className="mt-1.5 sm:mt-2 lg:mt-1 border border-gray-700/50 rounded-lg bg-gray-800/30 overflow-hidden">
       {/* Header with tool summary badges */}
       <button
         type="button"
@@ -304,9 +304,9 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
   };
 
   return (
-    <div className="border border-gray-700 rounded-lg p-2.5 sm:p-3 bg-gray-800/50">
-      <div className="flex items-start gap-1.5 sm:gap-2 mb-1.5 sm:mb-2">
-        <span className="text-lg sm:text-xl flex-shrink-0" title={agentDisplay.name}>
+    <div className="border border-gray-700 rounded-lg p-2.5 sm:p-3 lg:p-2 bg-gray-800/50">
+      <div className="flex items-start gap-1.5 sm:gap-2 lg:gap-1.5 mb-1.5 sm:mb-2 lg:mb-1">
+        <span className="text-lg sm:text-xl lg:text-lg flex-shrink-0" title={agentDisplay.name}>
           {agentDisplay.emoji}
         </span>
         <div className="flex-1 min-w-0">
@@ -334,7 +334,7 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
               </button>
             )}
           </div>
-          <div className="mt-1.5 sm:mt-2">
+          <div className="mt-1.5 sm:mt-2 lg:mt-1">
             <div
               className={`prose prose-invert prose-sm max-w-none text-xs sm:text-sm [&_pre]:text-[11px] [&_pre]:overflow-x-auto [&_code]:text-[11px] [&_table]:text-xs ${
                 needsCollapse && !isExpanded ? "line-clamp-3" : ""
@@ -367,7 +367,7 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
               <ToolCallsPanel toolCalls={entry.metadata.toolCalls as ToolCallData[]} />
             ) : null}
           </div>
-          <div className="flex items-center gap-1.5 sm:gap-2 mt-1.5 sm:mt-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 mt-1.5 sm:mt-2 lg:mt-1">
             {showReplyButton && (
               <button
                 onClick={() => onToggleReply(entry.id)}

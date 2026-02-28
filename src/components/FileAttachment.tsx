@@ -68,6 +68,7 @@ export default function FileAttachment({
 }: FileAttachmentProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pasteNotification, setPasteNotification] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const validateAndAddFiles = useCallback(
@@ -168,6 +169,61 @@ export default function FileAttachment({
     [attachedFiles, onFilesChange]
   );
 
+  const handlePaste = useCallback(
+    (e: ClipboardEvent) => {
+      if (disabled) return;
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageItems = Array.from(items).filter((item) =>
+        item.type.startsWith("image/")
+      );
+
+      if (imageItems.length === 0) return;
+
+      // Prevent default paste behavior (text insertion)
+      e.preventDefault();
+
+      const files: File[] = [];
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) {
+          // Generate a timestamp-based filename
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+          const ext = file.type.split("/")[1] || "png";
+          const renamedFile = new File([file], `clipboard-${timestamp}.${ext}`, {
+            type: file.type,
+          });
+          files.push(renamedFile);
+        }
+      }
+
+      if (files.length > 0) {
+        validateAndAddFiles(files);
+        setPasteNotification(`클립보드 이미지 ${files.length}개 첨부됨`);
+        setTimeout(() => setPasteNotification(null), 2000);
+      }
+    },
+    [disabled, validateAndAddFiles]
+  );
+
+  // Return the paste handler so parent can attach it
+  React.useEffect(() => {
+    // Store the handler in a way that parent can access it
+    // We'll expose it via a custom event
+    const handlePasteGlobal = (e: Event) => {
+      handlePaste(e as ClipboardEvent);
+    };
+
+    // Listen globally for paste events
+    document.addEventListener("paste", handlePasteGlobal);
+
+    return () => {
+      document.removeEventListener("paste", handlePasteGlobal);
+    };
+  }, [handlePaste]);
+
   return (
     <div className="space-y-2">
       {/* Drop zone & file select button */}
@@ -212,6 +268,14 @@ export default function FileAttachment({
         <div className="flex items-start gap-2 rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-300">
           <span className="shrink-0 mt-0.5">{"\u26A0\uFE0F"}</span>
           <span className="whitespace-pre-wrap">{error}</span>
+        </div>
+      )}
+
+      {/* Paste notification */}
+      {pasteNotification && (
+        <div className="flex items-center gap-2 rounded-lg bg-green-500/10 border border-green-500/30 px-3 py-2 text-xs text-green-300 animate-pulse">
+          <span className="shrink-0">{"\u2705"}</span>
+          <span>{pasteNotification}</span>
         </div>
       )}
 

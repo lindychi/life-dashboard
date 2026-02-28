@@ -29,6 +29,10 @@ ENV STORAGE_TYPE=local
 # PostgreSQL client for migration execution
 RUN apk add --no-cache postgresql16-client
 
+# Increase file descriptor limits for many concurrent SSE connections
+# Default is typically 1024, increase to support 10k+ concurrent connections
+# Note: Alpine Linux doesn't have /etc/security/limits.conf, limits are set at runtime
+
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 

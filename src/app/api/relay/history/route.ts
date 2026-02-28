@@ -67,7 +67,6 @@ export async function POST(request: NextRequest) {
     }
 
     const entry = await addHistoryEntry(agentId, {
-      agentId,
       type,
       content,
       metadata,

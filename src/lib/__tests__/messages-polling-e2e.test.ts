@@ -111,12 +111,13 @@ function setupMocks(
       return { message_id: messageId };
     }
 
-    // markAsRead direct: UPDATE messages SET read = TRUE
-    if (sql.includes("UPDATE messages") && sql.includes("SET read = TRUE")) {
+    // markAsRead direct: UPDATE messages SET read = TRUE WHERE id = $1 AND to_id = $2 RETURNING 1 as count
+    if (sql.includes("UPDATE messages") && sql.includes("SET read = TRUE") && sql.includes("RETURNING")) {
       const [messageId, agentId] = params as [string, string];
       const msg = messageStore.find((m) => m.id === messageId && m.to_id === agentId);
       if (msg) {
         msg.read = true;
+        // Real implementation returns row with 'count: 1', not null check
         return { count: 1 };
       }
       return null;
@@ -141,8 +142,8 @@ function setupMocks(
 
   // query mock — used by getMessages, getConversation, getAllAgentsOverview
   mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
-    // getAllAgentsOverview: unnest query
-    if (sql.includes("unnest($1::text[])")) {
+    // getAllAgentsOverview: unnest query (actual SQL uses "unnest($1::text[]) AS a(agent_id)")
+    if (sql.includes("unnest($1::text[])") && sql.includes("AS a(agent_id)")) {
       const [agentIds] = params as [string[]];
       return agentIds.map((agentId) => {
         // Unread count: direct + broadcast not read
@@ -156,7 +157,7 @@ function setupMocks(
           )).length;
         const unread_count = directUnread + broadcastUnread;
 
-        // Latest message (to this agent or broadcast)
+        // Latest message (to this agent or broadcast) — DESC order like actual query
         const agentMessages = messageStore
           .filter((m) => m.to_id === agentId || m.to_id === "broadcast")
           .sort(
@@ -214,10 +215,18 @@ function setupMocks(
             new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
 
-      // The real query uses ORDER BY created_at DESC LIMIT $3, then code reverses
-      // Mock returns DESC order (like real DB), the actual code reverses it
-      const descSorted = [...conversationMessages].reverse().slice(0, limit);
-      return descSorted;
+      // Real query behavior:
+      // - without 'since': ORDER BY created_at DESC LIMIT $3 → returns newest first
+      // - with 'since': ORDER BY created_at ASC LIMIT $4 → returns oldest first
+      // The actual code then reverses DESC results to get chronological order
+      if (hasCreatedAtFilter) {
+        // 'since' variant: ASC order (already chronological)
+        return conversationMessages.slice(0, limit);
+      } else {
+        // No 'since': DESC order (newest first), then code reverses
+        const descSorted = [...conversationMessages].reverse().slice(0, limit);
+        return descSorted;
+      }
     }
 
     // getMessages: LEFT JOIN message_read_status

@@ -3,6 +3,10 @@ set -e
 
 echo "=== Life Dashboard Startup ==="
 
+# Configure SSE connection limits
+echo "[SSE] Configuring connection limits for real-time streaming..."
+ulimit -n 65535 2>/dev/null || echo "[SSE] Warning: Could not set file descriptor limit"
+
 # Run database migrations if DATABASE_URL is set
 if [ -n "$DATABASE_URL" ] && [ -d "./sql" ]; then
   echo "[Migration] Running database migrations..."

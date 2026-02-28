@@ -6,6 +6,7 @@ import {
   updateAgentStatuses,
   drainQueueForIdleAgents,
   recoverStaleProcessingCommands,
+  recoverStaleErrorAgents,
 } from "@/lib/relay";
 import { addHistoryEntry } from "@/lib/history";
 import { isDbConnectionError } from "@/lib/db";
@@ -58,7 +59,6 @@ export async function POST(request: NextRequest) {
         if (entry.agentId && entry.type && entry.content) {
           try {
             await addHistoryEntry(entry.agentId, {
-              agentId: entry.agentId,
               type: entry.type,
               content: entry.content,
               metadata: entry.metadata,
@@ -74,12 +74,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Periodically clean up stale 'processing' commands (throttled to 1/min)
+    // Periodically clean up stale 'processing' commands and error agents (throttled to 1/min)
     const now = Date.now();
     if (now - lastStaleRecoveryAt > STALE_RECOVERY_INTERVAL_MS) {
       lastStaleRecoveryAt = now;
       try {
         await recoverStaleProcessingCommands();
+      } catch {
+        // Best-effort cleanup
+      }
+      try {
+        await recoverStaleErrorAgents();
       } catch {
         // Best-effort cleanup
       }

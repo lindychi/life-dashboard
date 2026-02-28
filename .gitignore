@@ -43,3 +43,9 @@ next-env.d.ts
 
 # uploads
 /uploads
+
+# Tool/editor configs
+.omc/
+.omx/
+.serena/
+.vscode/

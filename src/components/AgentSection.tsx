@@ -4,6 +4,7 @@ import React, { useState, memo, useEffect } from "react";
 import HistoryEntryCard from "@/components/HistoryEntryCard";
 import { copyToClipboard } from "@/lib/clipboard";
 import { relativeTime, formatBytes } from "@/lib/format-utils";
+import { STATUS_STYLES, CATEGORY_STYLES } from "@/lib/ui-constants";
 import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 
 interface AgentSectionProps {
@@ -16,20 +17,7 @@ interface AgentSectionProps {
   defaultExpanded?: boolean;
 }
 
-// Styles
-const STATUS_STYLES: Record<AgentRuntime["status"], { class: string; label: string }> = {
-  running: { class: "bg-green-500/20 text-green-400 border-green-500/30", label: "🟢 실행중" },
-  idle: { class: "bg-gray-500/20 text-gray-400 border-gray-500/30", label: "⚫ 대기" },
-  waiting: { class: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30", label: "🟡 대기중" },
-  error: { class: "bg-red-500/20 text-red-400 border-red-500/30", label: "🔴 에러" },
-  stale: { class: "bg-amber-600/20 text-amber-400 border-amber-600/30", label: "🟠 비활성" },
-};
-
-const CATEGORY_STYLES: Record<AgentConfig["category"], string> = {
-  dev: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-  business: "bg-green-500/20 text-green-400 border-green-500/30",
-  ops: "bg-orange-500/20 text-orange-400 border-orange-500/30",
-};
+// STATUS_STYLES and CATEGORY_STYLES imported from @/lib/ui-constants
 
 // Keep this local as it's only used here
 function isRecentActivity(timestamp: string): boolean {
@@ -60,8 +48,8 @@ const AgentSection = memo(function AgentSection({
   const [pendingTask, setPendingTask] = useState<string | null>(null);
   const [isResetting, setIsResetting] = useState(false);
 
-  const statusStyle = STATUS_STYLES[agent.status];
-  const categoryStyle = CATEGORY_STYLES[agent.config.category];
+  const statusStyle = STATUS_STYLES[agent.status] || STATUS_STYLES.idle;
+  const categoryStyle = CATEGORY_STYLES[agent.config.category] || CATEGORY_STYLES.dev;
 
   const displayedHistory = showAllHistory
     ? historyEntries.slice(0, 50)
@@ -173,13 +161,13 @@ const AgentSection = memo(function AgentSection({
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-800/30 overflow-hidden">
       {/* Agent Header */}
-      <div className="px-3 py-3 sm:p-4 border-b border-gray-700 bg-gray-800/50">
+      <div className="px-3 py-3 sm:p-4 lg:p-3 border-b border-gray-700 bg-gray-800/50">
         <div className="flex items-start gap-2 sm:gap-3">
-          <div className="text-2xl sm:text-3xl flex-shrink-0 mt-0.5">{agent.config.emoji}</div>
+          <div className="text-2xl sm:text-3xl lg:text-2xl flex-shrink-0 mt-0.5">{agent.config.emoji}</div>
           <div className="flex-1 min-w-0">
             {/* Top row: name + expand button */}
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-1.5 truncate">
+              <h3 className="text-base sm:text-lg lg:text-base font-bold text-white flex items-center gap-1.5 truncate">
                 {agent.config.name}
                 {agent.liveOutput && isRecentActivity(agent.liveOutput.lastActivityAt) && (
                   <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse flex-shrink-0" title="실시간 출력 수신 중" />
@@ -195,7 +183,7 @@ const AgentSection = memo(function AgentSection({
             </div>
             {/* Badges row */}
             <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-              <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded border ${categoryStyle}`}>
+              <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded border ${categoryStyle.badge}`}>
                 {agent.config.category}
               </span>
               <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded border ${statusStyle.class}`}>
@@ -214,7 +202,7 @@ const AgentSection = memo(function AgentSection({
 
       {/* Expanded Content */}
       {isExpanded && (
-        <div className="px-3 py-3 sm:p-4 space-y-3 sm:space-y-4">
+        <div className="px-3 py-3 sm:p-4 lg:p-3 space-y-3 sm:space-y-4 lg:space-y-2.5">
           {/* Pending Task - shows immediately before agent status updates */}
           {pendingTask && agent.status === "idle" && (
             <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-2.5 sm:p-3 animate-pulse">
@@ -228,7 +216,7 @@ const AgentSection = memo(function AgentSection({
 
           {/* Current Task */}
           {agent.currentTask && (
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2.5 sm:p-3">
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2.5 sm:p-3 lg:p-2">
               <div className="text-xs text-blue-400 font-medium mb-1">현재 작업</div>
               <div className="text-sm text-white break-words">{agent.currentTask}</div>
             </div>
@@ -236,7 +224,7 @@ const AgentSection = memo(function AgentSection({
 
           {/* Live Output */}
           {agent.status === "running" && agent.liveOutput && (
-            <div className="rounded-lg bg-gray-900 p-2 sm:p-3 font-mono text-[11px] sm:text-xs overflow-hidden">
+            <div className="rounded-lg bg-gray-900 p-2 sm:p-3 lg:p-2 font-mono text-[11px] sm:text-xs overflow-hidden">
               <div className="mb-1 flex items-center justify-between text-gray-500 gap-2">
                 <span className="flex items-center gap-1.5 flex-shrink-0">
                   <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" />
@@ -247,7 +235,7 @@ const AgentSection = memo(function AgentSection({
                   {agent.liveOutput.chunksReceived} chunks · {formatBytes(agent.liveOutput.totalChars)}
                 </span>
               </div>
-              <div className="max-h-36 sm:max-h-48 overflow-y-auto space-y-0.5 overflow-x-hidden">
+              <div className="max-h-36 sm:max-h-48 lg:max-h-36 overflow-y-auto space-y-0.5 overflow-x-hidden">
                 {/* Use structured recentEvents when available, oldest first for chronological display */}
                 {agent.liveOutput.recentEvents && agent.liveOutput.recentEvents.length > 0 ? (
                   [...agent.liveOutput.recentEvents].reverse().map((evt, i) => {
@@ -420,7 +408,7 @@ const AgentSection = memo(function AgentSection({
             {pendingTask && agent.status === "idle" && (
               <button
                 disabled
-                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-yellow-500/20 text-yellow-400 text-xs sm:text-sm cursor-wait border border-yellow-500/30 animate-pulse min-h-[40px] sm:min-h-[44px]"
+                className="px-3 sm:px-4 lg:px-3 py-2 sm:py-2.5 lg:py-1.5 rounded bg-yellow-500/20 text-yellow-400 text-xs sm:text-sm lg:text-xs cursor-wait border border-yellow-500/30 animate-pulse min-h-[40px] sm:min-h-[44px] lg:min-h-0"
               >
                 호출중...
               </button>
@@ -428,7 +416,7 @@ const AgentSection = memo(function AgentSection({
             {!pendingTask && agent.status === "idle" && agent.stack.length > 0 && (
               <button
                 onClick={handleStartStack}
-                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-green-500 text-white text-xs sm:text-sm font-medium hover:bg-green-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[40px] sm:min-h-[44px]"
+                className="px-3 sm:px-4 lg:px-3 py-2 sm:py-2.5 lg:py-1.5 rounded bg-green-500 text-white text-xs sm:text-sm lg:text-xs font-medium hover:bg-green-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[40px] sm:min-h-[44px] lg:min-h-0"
               >
                 스택 실행
               </button>
@@ -436,7 +424,7 @@ const AgentSection = memo(function AgentSection({
             {!pendingTask && agent.status === "idle" && !showQuickTaskForm && (
               <button
                 onClick={() => setShowQuickTaskForm(true)}
-                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-gray-700 text-gray-300 text-xs sm:text-sm hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[40px] sm:min-h-[44px]"
+                className="px-3 sm:px-4 lg:px-3 py-2 sm:py-2.5 lg:py-1.5 rounded bg-gray-700 text-gray-300 text-xs sm:text-sm lg:text-xs hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[40px] sm:min-h-[44px] lg:min-h-0"
               >
                 + 작업 할당
               </button>
@@ -444,7 +432,7 @@ const AgentSection = memo(function AgentSection({
             {agent.status === "running" && (
               <button
                 disabled
-                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-gray-700 text-gray-500 text-xs sm:text-sm cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
+                className="px-3 sm:px-4 lg:px-3 py-2 sm:py-2.5 lg:py-1.5 rounded bg-gray-700 text-gray-500 text-xs sm:text-sm lg:text-xs cursor-not-allowed min-h-[40px] sm:min-h-[44px] lg:min-h-0"
               >
                 실행중...
               </button>
@@ -453,7 +441,7 @@ const AgentSection = memo(function AgentSection({
               <button
                 onClick={handleManualReset}
                 disabled={isResetting}
-                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-xs sm:text-sm font-medium hover:bg-red-500/30 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
+                className="px-3 sm:px-4 lg:px-3 py-2 sm:py-2.5 lg:py-1.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-xs sm:text-sm lg:text-xs font-medium hover:bg-red-500/30 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] lg:min-h-0"
               >
                 {isResetting ? "리셋중..." : "🔄 수동 리셋"}
               </button>
@@ -506,7 +494,7 @@ const AgentSection = memo(function AgentSection({
             </button>
 
             {showHistory && (
-              <div className="space-y-2">
+              <div className="space-y-2 lg:space-y-1.5">
                 {displayedHistory.map((entry) => {
                   const agentDisplay = agentMap[entry.agentId] || {
                     emoji: "🤖",
@@ -544,7 +532,7 @@ const AgentSection = memo(function AgentSection({
           </div>
 
           {/* Stats Footer */}
-          <div className="text-xs text-gray-500 border-t border-gray-700 pt-3">
+          <div className="text-xs text-gray-500 border-t border-gray-700 pt-3 lg:pt-2">
             오늘 완료: {agent.completedToday}건
           </div>
         </div>

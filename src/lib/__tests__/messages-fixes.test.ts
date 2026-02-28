@@ -127,7 +127,7 @@ function setupMocks() {
         const unread_count = directUnread + broadcastUnread;
 
         const agentMessages = messageStore
-          .filter((m) => m.to_id === agentId || m.to_id === "broadcast")
+          .filter((m) => (m.to_id === agentId || m.to_id === "broadcast") && m.from_id !== agentId)
           .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
         const latest = agentMessages[0] || null;
 

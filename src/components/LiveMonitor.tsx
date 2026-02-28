@@ -4,8 +4,14 @@ import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { relativeTime } from "@/lib/format-utils";
+import { STATUS_STYLES } from "@/lib/ui-constants";
+import type { HistoryEntry } from "@/lib/frontend-types";
 
-interface AgentStatusEntry {
+/**
+ * Live agent status entry as received from the relay status API.
+ * Re-exported here for use in AgentDashboard props.
+ */
+export interface AgentStatusEntry {
   id: string;
   name: string;
   status: "running" | "idle" | "waiting" | "error" | "stale";
@@ -26,27 +32,13 @@ interface AgentStatusEntry {
   };
 }
 
-interface HistoryEntry {
-  id: string;
-  agentId: string;
-  type: string;
-  content: string;
-  timestamp: string;
-}
-
 interface LiveMonitorProps {
   agentStatuses: AgentStatusEntry[];
   historyData: Record<string, HistoryEntry[]>;
   agentMap: Record<string, { emoji: string; name: string }>;
 }
 
-const STATUS_STYLES: Record<string, { bg: string; pulse: boolean; label: string }> = {
-  running: { bg: "bg-green-500", pulse: true, label: "실행 중" },
-  idle: { bg: "bg-gray-500", pulse: false, label: "대기" },
-  waiting: { bg: "bg-yellow-500", pulse: true, label: "대기 중" },
-  error: { bg: "bg-red-500", pulse: false, label: "에러" },
-  stale: { bg: "bg-amber-600", pulse: false, label: "비활성" },
-};
+// STATUS_STYLES imported from @/lib/ui-constants
 
 /**
  * Render a single line of live output with appropriate styling.
@@ -103,8 +95,8 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
   }
 
   return (
-    <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-3 sm:p-4 mb-4 sm:mb-6">
-      <div className="flex items-center justify-between mb-3 sm:mb-4">
+    <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-3 sm:p-4 lg:p-3 mb-4 sm:mb-6 lg:mb-3">
+      <div className="flex items-center justify-between mb-3 sm:mb-4 lg:mb-2">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
           <h3 className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider">
@@ -118,7 +110,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
 
       {/* Active agents - expanded cards */}
       {activeAgents.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 sm:gap-3 mb-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 sm:gap-3 lg:gap-2 mb-3 lg:mb-2">
           {activeAgents.map((agent) => {
             const display = getDisplay(agent.id);
             const logs = getRecentLogs(agent.id);
@@ -127,7 +119,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
             return (
               <div
                 key={agent.id}
-                className="bg-gray-900 rounded-lg border border-green-500/30 p-2.5 sm:p-3"
+                className="bg-gray-900 rounded-lg border border-green-500/30 p-2.5 sm:p-3 lg:p-2"
               >
                 {/* Header */}
                 <div className="flex items-center gap-2 mb-2">
@@ -264,7 +256,7 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
         <div className="flex flex-wrap gap-2">
           {otherAgents.map((agent) => {
             const display = getDisplay(agent.id);
-            const style = STATUS_STYLES[agent.status] || STATUS_STYLES.idle;
+            const style = STATUS_STYLES[agent.status] ?? STATUS_STYLES.idle;
 
             return (
               <div

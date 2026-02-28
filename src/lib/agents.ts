@@ -9,6 +9,8 @@ export interface AgentConfig {
   category: "dev" | "business" | "ops";
   systemPrompt: string;
   enabled: boolean;
+  allowBash?: boolean; // Bash 도구 사용 허용 여부 (기본값: false)
+  defaultModel?: "haiku" | "sonnet" | "opus"; // 기본 모델 (smart routing용)
   projects?: string[];
 }
 

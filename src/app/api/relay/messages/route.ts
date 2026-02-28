@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateRelayKey } from "@/lib/relay";
-import { sendMessage, getMessages } from "@/lib/messages";
+import {
+  sendMessage,
+  getMessages,
+  isValidAgentId,
+  VALID_MESSAGE_TYPES,
+  MAX_CONTENT_LENGTH,
+} from "@/lib/messages";
 import { isDbConnectionError } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -67,14 +73,46 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate 'from' agent ID
+    if (!isValidAgentId(from)) {
+      return NextResponse.json(
+        { error: `Invalid 'from' agent ID: ${from}` },
+        { status: 400 }
+      );
+    }
+
+    // Validate 'to' agent ID (allowing "broadcast")
+    if (to !== "broadcast" && !isValidAgentId(to)) {
+      return NextResponse.json(
+        { error: `Invalid 'to' agent ID: ${to}` },
+        { status: 400 }
+      );
+    }
+
+    // Trim content and check if empty
+    const trimmedContent = content.trim();
+    if (!trimmedContent) {
+      return NextResponse.json(
+        { error: "Content cannot be empty" },
+        { status: 400 }
+      );
+    }
+
+    // Content length validation
+    if (trimmedContent.length > MAX_CONTENT_LENGTH) {
+      return NextResponse.json(
+        { error: `Content exceeds maximum length of ${MAX_CONTENT_LENGTH} characters` },
+        { status: 400 }
+      );
+    }
+
     // Default type to "text" if not provided
     const messageType = type || "text";
 
     // Type validation
-    const validTypes = ["text", "task", "result", "question", "answer"];
-    if (!validTypes.includes(messageType)) {
+    if (!VALID_MESSAGE_TYPES.includes(messageType)) {
       return NextResponse.json(
-        { error: `Invalid type. Must be one of: ${validTypes.join(", ")}` },
+        { error: `Invalid type. Must be one of: ${VALID_MESSAGE_TYPES.join(", ")}` },
         { status: 400 }
       );
     }
@@ -82,7 +120,7 @@ export async function POST(request: NextRequest) {
     const message = await sendMessage({
       from,
       to,
-      content,
+      content: trimmedContent,
       type: messageType,
     });
 

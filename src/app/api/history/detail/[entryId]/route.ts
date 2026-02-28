@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { getHistoryDetail } from "@/lib/history";
 import { isDbConnectionError } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 interface RouteParams {
   params: Promise<{
     entryId: string;
@@ -11,6 +13,7 @@ interface RouteParams {
 
 /**
  * GET /api/history/detail/[entryId]
+ *
  * 특정 히스토리 항목의 전체 상세 로그 반환
  *
  * Query params:
@@ -42,31 +45,26 @@ export async function GET(request: NextRequest, props: RouteParams) {
     const params = await props.params;
     const { entryId } = params;
 
-    // UUID 형식 검증
+    // UUID 형식 검증 (standard UUID format)
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(entryId)) {
       return NextResponse.json(
-        { error: "Invalid entry ID format" },
+        { error: "Invalid entry ID format (must be UUID)" },
         { status: 400 }
       );
     }
 
     const { searchParams } = new URL(request.url);
-    const contentOffset = parseInt(searchParams.get("contentOffset") || "0", 10);
-    const contentLimit = parseInt(searchParams.get("contentLimit") || "0", 10);
+    const contentOffset = Math.max(0, parseInt(searchParams.get("contentOffset") || "0", 10));
+    const contentLimit = Math.max(0, parseInt(searchParams.get("contentLimit") || "0", 10));
     const includeNeighbors = searchParams.get("includeNeighbors") !== "false";
 
-    // 음수 방지
-    if (contentOffset < 0 || contentLimit < 0) {
-      return NextResponse.json(
-        { error: "contentOffset and contentLimit must be non-negative" },
-        { status: 400 }
-      );
-    }
+    // Cap limits for safety
+    const safeContentLimit = contentLimit > 0 ? Math.min(1000000, contentLimit) : 0; // Max 1MB
 
     const result = await getHistoryDetail(entryId, {
       contentOffset,
-      contentLimit,
+      contentLimit: safeContentLimit,
       includeNeighbors,
     });
 
@@ -77,7 +75,10 @@ export async function GET(request: NextRequest, props: RouteParams) {
       );
     }
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      ...result,
+      generatedAt: new Date().toISOString(),
+    });
   } catch (error) {
     if (isDbConnectionError(error)) {
       return NextResponse.json(

@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
     },
   },
   // Allow larger request bodies for file uploads
-  serverExternalPackages: ["pg"],
+  serverExternalPackages: ["pg", "better-sqlite3"],
 };
 
 export default nextConfig;

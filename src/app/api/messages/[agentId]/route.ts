@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { getMessages, getConversation, markAsRead } from "@/lib/messages";
+import { getMessages, getConversation, markAsRead, isValidAgentId, isValidISOTimestamp, isValidUUID } from "@/lib/messages";
 import { isDbConnectionError } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -24,10 +24,35 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
   try {
     const { agentId } = await context.params;
+
+    // agentId 유효성 검증
+    if (!isValidAgentId(agentId)) {
+      return NextResponse.json(
+        { error: `Invalid agentId: "${agentId}" is not a registered agent or "user"` },
+        { status: 400 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const unreadOnly = searchParams.get("unreadOnly") === "true";
     const withAgent = searchParams.get("with");
     const since = searchParams.get("since") || undefined;
+
+    // with 파라미터 유효성 검증
+    if (withAgent && !isValidAgentId(withAgent)) {
+      return NextResponse.json(
+        { error: `Invalid "with" parameter: "${withAgent}" is not a registered agent or "user"` },
+        { status: 400 }
+      );
+    }
+
+    // since ISO 타임스탬프 형식 검증
+    if (since && !isValidISOTimestamp(since)) {
+      return NextResponse.json(
+        { error: `Invalid "since" parameter: must be a valid ISO 8601 timestamp` },
+        { status: 400 }
+      );
+    }
 
     let messages;
 
@@ -65,12 +90,37 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
   try {
     const { agentId } = await context.params;
+
+    // agentId 유효성 검증
+    if (!isValidAgentId(agentId)) {
+      return NextResponse.json(
+        { error: `Invalid agentId: "${agentId}" is not a registered agent or "user"` },
+        { status: 400 }
+      );
+    }
+
     const body = await req.json();
     const { messageId } = body;
 
     if (!messageId) {
       return NextResponse.json(
         { error: "Missing required field: messageId" },
+        { status: 400 }
+      );
+    }
+
+    // messageId가 문자열인지 검증
+    if (typeof messageId !== "string") {
+      return NextResponse.json(
+        { error: "messageId must be a string" },
+        { status: 400 }
+      );
+    }
+
+    // messageId UUID 형식 검증
+    if (!isValidUUID(messageId)) {
+      return NextResponse.json(
+        { error: "messageId must be a valid UUID" },
         { status: 400 }
       );
     }

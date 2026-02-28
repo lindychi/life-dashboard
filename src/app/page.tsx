@@ -1,91 +1,27 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { looksLikeQuestion } from "@/lib/performance-utils";
-import { relativeTime } from "@/lib/format-utils";
-import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
+import type { HistoryEntry } from "@/lib/frontend-types";
 import AgentDashboard from "@/components/AgentDashboard";
 import CronJobsPanel from "@/components/CronJobsPanel";
+import MessagesPanel from "@/components/MessagesPanel";
+import SessionsPanel from "@/components/SessionsPanel";
+import PermissionApprovalBanner from "@/components/PermissionApprovalBanner";
 import { uploadFiles } from "@/components/FileAttachment";
 import type { AttachedFile, UploadedAttachment } from "@/components/FileAttachment";
-
-// ===== Types =====
-
-interface Project {
-  name: string;
-  description: string;
-  status: string;
-  progress: number;
-  url?: string;
-  kpis: { label: string; value: string }[];
-}
-
-interface Message {
-  id: string;
-  from: string;
-  to: string;
-  content: string;
-  type: "text" | "task" | "result" | "question" | "answer";
-  read: boolean;
-  timestamp: string;
-}
-
-interface AgentMessageOverview {
-  unread: number;
-  latest?: Message;
-}
-
-// ===== Data =====
-
-const projects: Project[] = [
-  {
-    name: "MumMum",
-    description: "영어 학습 앱",
-    status: "🟢 배포됨",
-    progress: 80,
-    url: "https://mummum.up.railway.app",
-    kpis: [
-      { label: "목표", value: "$10K MRR" },
-      { label: "현재", value: "성장 단계" },
-    ],
-  },
-  {
-    name: "Rezoom",
-    description: "이력서 서비스",
-    status: "🟡 진행중",
-    progress: 20,
-    kpis: [{ label: "현재 작업", value: "Import 페이지" }],
-  },
-  {
-    name: "정화의 영역",
-    description: "던전 빌딩 로그라이트",
-    status: "📝 기획중",
-    progress: 15,
-    kpis: [{ label: "엔진", value: "Godot 4" }],
-  },
-  {
-    name: "안부",
-    description: "독거인을 위한 안부 알림 앱",
-    status: "💡 아이디어",
-    progress: 0,
-    kpis: [{ label: "타겟", value: "독거 노인/1인 가구" }],
-  },
-  {
-    name: "크레딧컨설팅",
-    description: "빚쟁이를 위한 빚 관리 웹사이트",
-    status: "🟡 진행중",
-    progress: 10,
-    kpis: [{ label: "타겟", value: "대출/빚 있는 사람" }],
-  },
-  {
-    name: "LifeDashboard",
-    description: "이 대시보드",
-    status: "🆕 시작",
-    progress: 5,
-    kpis: [],
-  },
-];
+import {
+  useAgents,
+  useUser,
+  useGatewayStatus,
+  useLiveAgentStatuses,
+  useHistoryData,
+  useMessageOverview,
+  usePendingReplies,
+  useProjects,
+  type Project,
+} from "@/hooks/useDashboardData";
+import { usePermissionApprovals } from "@/hooks/usePermissionApprovals";
 
 // ===== Components =====
 function ProgressBar({ progress }: { progress: number }) {
@@ -101,16 +37,16 @@ function ProgressBar({ progress }: { progress: number }) {
 
 function ProjectCard({ project }: { project: Project }) {
   return (
-    <div className="bg-gray-800 rounded-xl p-5 hover:bg-gray-750 transition-colors border border-gray-700">
-      <div className="flex justify-between items-start mb-3">
+    <div className="bg-gray-800 rounded-xl p-5 lg:p-3.5 hover:bg-gray-750 transition-colors border border-gray-700">
+      <div className="flex justify-between items-start mb-3 lg:mb-2">
         <div>
-          <h2 className="text-lg font-bold text-white">{project.name}</h2>
+          <h2 className="text-lg lg:text-base font-bold text-white">{project.name}</h2>
           <p className="text-gray-400 text-xs">{project.description}</p>
         </div>
         <span className="text-sm">{project.status}</span>
       </div>
 
-      <div className="mb-3">
+      <div className="mb-3 lg:mb-2">
         <div className="flex justify-between text-xs text-gray-400 mb-1">
           <span>진행률</span>
           <span>{project.progress}%</span>
@@ -118,8 +54,8 @@ function ProjectCard({ project }: { project: Project }) {
         <ProgressBar progress={project.progress} />
       </div>
 
-      {project.kpis.length > 0 && (
-        <div className="space-y-1">
+      {project.kpis && project.kpis.length > 0 && (
+        <div className="space-y-1 lg:space-y-0.5">
           {project.kpis.map((kpi, i) => (
             <div key={i} className="flex justify-between text-sm">
               <span className="text-gray-400">{kpi.label}</span>
@@ -157,7 +93,7 @@ function TabButton({
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-sm sm:text-base font-medium transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+      className={`px-3 sm:px-4 lg:px-3 py-2.5 sm:py-2 lg:py-1.5 rounded-lg text-xs sm:text-base lg:text-sm font-medium transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none min-h-[44px] lg:min-h-0 ${
         active
           ? "bg-blue-600 text-white"
           : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
@@ -168,421 +104,40 @@ function TabButton({
   );
 }
 
-// ===== Helper =====
-const MSG_TYPE_STYLES: Record<Message["type"], string> = {
-  text: "bg-gray-700 border-gray-600 text-gray-200",
-  task: "bg-blue-500/10 border-blue-500/30 text-blue-200",
-  result: "bg-green-500/10 border-green-500/30 text-green-200",
-  question: "bg-yellow-500/10 border-yellow-500/30 text-yellow-200",
-  answer: "bg-purple-500/10 border-purple-500/30 text-purple-200",
-};
-
-const MSG_TYPE_LABELS: Record<Message["type"], string> = {
-  text: "",
-  task: "TASK",
-  result: "RESULT",
-  question: "QUESTION",
-  answer: "ANSWER",
-};
-
-// getAgentDisplay is now dynamic, created inside Home via agentMap useMemo
-
-// ===== Messages Panel Component =====
-function MessagesPanel({
-  agents,
-  agentOverview,
-  agentMap,
-  onRefreshOverview,
-}: {
-  agents: AgentRuntime[];
-  agentOverview: Record<string, AgentMessageOverview>;
-  agentMap: Record<string, { emoji: string; name: string }>;
-  onRefreshOverview: () => void;
-}) {
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [conversation, setConversation] = useState<Message[]>([]);
-  const [messageInput, setMessageInput] = useState("");
-  const [messageType, setMessageType] = useState<Message["type"]>("text");
-  const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastFetchTimestampRef = useRef<string | null>(null);
-
-  // Full conversation fetch (initial load or agent switch)
-  const fetchFullConversation = useCallback(async (agentId: string) => {
-    try {
-      const res = await fetch(`/api/messages/${agentId}?with=user`);
-      const data = await res.json();
-      if (data.messages) {
-        const msgs = data.messages as Message[];
-        // Optimistic markAsRead: 즉시 read=true로 표시
-        const unreadIds = new Set(
-          msgs.filter((m) => !m.read && m.to === agentId).map((m) => m.id)
-        );
-        const markedMsgs = unreadIds.size > 0
-          ? msgs.map((m) => unreadIds.has(m.id) ? { ...m, read: true } : m)
-          : msgs;
-        setConversation(markedMsgs);
-        // Track latest timestamp for incremental fetches
-        if (msgs.length > 0) {
-          lastFetchTimestampRef.current = msgs[msgs.length - 1].timestamp;
-        }
-        // Fire-and-forget API calls for markAsRead
-        if (unreadIds.size > 0) {
-          for (const msgId of unreadIds) {
-            fetch(`/api/messages/${agentId}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ messageId: msgId }),
-            }).catch(() => {});
-          }
-          onRefreshOverview();
-        }
-      }
-    } catch (err) {
-      console.error("Failed to fetch conversation:", err);
-    }
-  }, [onRefreshOverview]);
-
-  // Incremental fetch: only get messages since last known timestamp
-  const fetchNewMessages = useCallback(async (agentId: string) => {
-    if (!lastFetchTimestampRef.current) {
-      // No previous fetch, do full load
-      return fetchFullConversation(agentId);
-    }
-    try {
-      const since = encodeURIComponent(lastFetchTimestampRef.current);
-      const res = await fetch(`/api/messages/${agentId}?with=user&since=${since}`);
-      const data = await res.json();
-      if (data.messages && (data.messages as Message[]).length > 0) {
-        const newMsgs = data.messages as Message[];
-        // Optimistic markAsRead: 즉시 read=true로 표시
-        const unreadIds = new Set(
-          newMsgs.filter((m) => !m.read && m.to === agentId).map((m) => m.id)
-        );
-        const markedNewMsgs = unreadIds.size > 0
-          ? newMsgs.map((m) => unreadIds.has(m.id) ? { ...m, read: true } : m)
-          : newMsgs;
-
-        setConversation((prev) => {
-          // Deduplicate: filter out messages already in state (including optimistic ones)
-          const existingIds = new Set(prev.map((m) => m.id));
-          const uniqueNew = markedNewMsgs.filter((m) => !existingIds.has(m.id));
-          return uniqueNew.length > 0 ? [...prev, ...uniqueNew] : prev;
-        });
-        // Update latest timestamp
-        lastFetchTimestampRef.current = newMsgs[newMsgs.length - 1].timestamp;
-        // Fire-and-forget API calls for markAsRead
-        if (unreadIds.size > 0) {
-          for (const msgId of unreadIds) {
-            fetch(`/api/messages/${agentId}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ messageId: msgId }),
-            }).catch(() => {});
-          }
-          onRefreshOverview();
-        }
-      }
-    } catch (err) {
-      console.error("Failed to fetch new messages:", err);
-    }
-  }, [onRefreshOverview, fetchFullConversation]);
-
-  // On agent switch: full fetch + reset timestamp
-  useEffect(() => {
-    if (!selectedAgent) return;
-    lastFetchTimestampRef.current = null;
-    fetchFullConversation(selectedAgent);
-  }, [selectedAgent, fetchFullConversation]);
-
-  // Polling: incremental fetch every 1.5s
-  useEffect(() => {
-    if (!selectedAgent) return;
-    const interval = setInterval(() => fetchNewMessages(selectedAgent), 1500);
-    return () => clearInterval(interval);
-  }, [selectedAgent, fetchNewMessages]);
-
-  // Scroll to bottom when conversation updates
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [conversation]);
-
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!messageInput.trim() || !selectedAgent || sending) return;
-
-    const content = messageInput.trim();
-    const type = messageType;
-
-    // Optimistic update: 즉시 UI에 반영
-    const optimisticMsg: Message = {
-      id: `optimistic-${Date.now()}`,
-      from: "user",
-      to: selectedAgent,
-      content,
-      type,
-      read: true,
-      timestamp: new Date().toISOString(),
-    };
-    setConversation((prev) => [...prev, optimisticMsg]);
-    setMessageInput("");
-
-    setSending(true);
-    try {
-      const res = await fetch("/api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: "user",
-          to: selectedAgent,
-          content,
-          type,
-        }),
-      });
-      const data = await res.json();
-      // Replace optimistic message with real one from server
-      if (data.message) {
-        setConversation((prev) =>
-          prev.map((m) => (m.id === optimisticMsg.id ? data.message : m))
-        );
-      }
-      onRefreshOverview();
-    } catch (err) {
-      console.error("Failed to send message:", err);
-      // Rollback optimistic message on failure
-      setConversation((prev) =>
-        prev.filter((m) => m.id !== optimisticMsg.id)
-      );
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const getDisplay = (agentId: string) =>
-    agentMap[agentId] || { emoji: "\u{1F916}", name: agentId };
-
-  // Sort agents by unread count (descending), then alphabetically
-  const sortedAgents = [...agents].sort((a, b) => {
-    const unreadA = agentOverview[a.config.id]?.unread || 0;
-    const unreadB = agentOverview[b.config.id]?.unread || 0;
-    if (unreadB !== unreadA) return unreadB - unreadA;
-    return a.config.name.localeCompare(b.config.name);
-  });
-
-  return (
-    <div className="flex flex-col md:flex-row gap-4 min-h-[500px]">
-      {/* Left sidebar: Agent list */}
-      <div className="md:w-64 flex-shrink-0">
-        <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-          <div className="p-3 border-b border-gray-700">
-            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">
-              Agents
-            </p>
-          </div>
-          <div className="divide-y divide-gray-700">
-            {sortedAgents.map((agent) => {
-              const overview = agentOverview[agent.config.id];
-              const unread = overview?.unread || 0;
-              const isSelected = selectedAgent === agent.config.id;
-              return (
-                <button
-                  key={agent.config.id}
-                  onClick={() => setSelectedAgent(agent.config.id)}
-                  className={`w-full text-left px-3 py-3 flex items-center gap-3 transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
-                    isSelected
-                      ? "bg-blue-600/20 border-l-2 border-l-blue-500"
-                      : "hover:bg-gray-700/50"
-                  }`}
-                >
-                  <span className="text-xl">{agent.config.emoji}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-white">
-                        {agent.config.name}
-                      </span>
-                      {unread > 0 && (
-                        <span className="bg-blue-600 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center">
-                          {unread}
-                        </span>
-                      )}
-                    </div>
-                    {overview?.latest && (
-                      <p className="text-xs text-gray-500 truncate mt-0.5">
-                        {overview.latest.content}
-                      </p>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Right panel: Conversation */}
-      <div className="flex-1 flex flex-col bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-        {!selectedAgent ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <p className="text-gray-500 text-lg">대화할 에이전트를 선택하세요</p>
-              <p className="text-gray-600 text-sm mt-1">
-                사이드바에서 에이전트를 선택해 대화를 시작하세요
-              </p>
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* Chat header */}
-            <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
-              <span className="text-xl">
-                {getDisplay(selectedAgent).emoji}
-              </span>
-              <div>
-                <h3 className="text-sm font-bold text-white">
-                  {getDisplay(selectedAgent).name}
-                </h3>
-                <p className="text-xs text-gray-500">
-                  {agents.find((a) => a.config.id === selectedAgent)?.config.role}
-                </p>
-              </div>
-            </div>
-
-            {/* Messages area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[500px] sm:max-h-[600px]">
-              {conversation.length === 0 ? (
-                <div className="text-center py-8">
-                  <p className="text-gray-500 text-sm">아직 메시지가 없습니다</p>
-                  <p className="text-gray-600 text-xs mt-1">
-                    아래에서 첫 메시지를 보내세요
-                  </p>
-                </div>
-              ) : (
-                conversation.map((msg) => {
-                  const isUser = msg.from === "user";
-                  const style = MSG_TYPE_STYLES[msg.type];
-                  const typeLabel = MSG_TYPE_LABELS[msg.type];
-                  return (
-                    <div
-                      key={msg.id}
-                      className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-                    >
-                      <div
-                        className={`max-w-[75%] rounded-xl px-4 py-2.5 border ${style}`}
-                      >
-                        {typeLabel && (
-                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-70 block mb-1">
-                            {typeLabel}
-                          </span>
-                        )}
-                        <p className="text-sm break-words">{msg.content}</p>
-                        <p className="text-[10px] opacity-50 mt-1 text-right">
-                          {relativeTime(msg.timestamp)}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input area */}
-            <form
-              onSubmit={handleSend}
-              className="p-3 border-t border-gray-700 flex gap-2"
-            >
-              <select
-                value={messageType}
-                onChange={(e) => setMessageType(e.target.value as Message["type"])}
-                className="bg-gray-700 border border-gray-600 rounded-lg px-2 py-2 text-xs text-white focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 w-20 sm:w-24"
-              >
-                <option value="text">Text</option>
-                <option value="task">Task</option>
-                <option value="question">Question</option>
-                <option value="result">Result</option>
-                <option value="answer">Answer</option>
-              </select>
-              <input
-                type="text"
-                value={messageInput}
-                onChange={(e) => setMessageInput(e.target.value)}
-                placeholder="메시지를 입력하세요..."
-                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500"
-              />
-              <button
-                type="submit"
-                disabled={sending || !messageInput.trim()}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-              >
-                {sending ? "전송중..." : "전송"}
-              </button>
-            </form>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ===== Types for API =====
-interface GatewayConnection {
-  id: string;
-  status: "connected" | "disconnected";
-  lastHeartbeat: string;
-}
-
-interface User {
-  email: string;
-}
-
 // ===== Main =====
 export default function Home() {
   const [activeTab, setActiveTab] = useState<
-    "agents" | "projects" | "finance" | "messages" | "cronjobs"
+    "agents" | "projects" | "finance" | "messages" | "sessions" | "cronjobs"
   >("agents");
-  const [agents, setAgents] = useState<AgentRuntime[]>([]);
-  const [user, setUser] = useState<User | null>(null);
-  const [gateways, setGateways] = useState<GatewayConnection[]>([]);
-  const [historyData, setHistoryData] = useState<Record<string, HistoryEntry[]>>({});
-  const [agentOverview, setAgentOverview] = useState<Record<string, AgentMessageOverview>>({});
-  const [totalUnread, setTotalUnread] = useState(0);
-  const [dbConnected, setDbConnected] = useState(true);
   const [orchestrateInput, setOrchestrateInput] = useState("");
-  const [isOrchestrating, setIsOrchestrating] = useState(false);
-  const [liveAgentStatuses, setLiveAgentStatuses] = useState<
-    Array<{
-      id: string;
-      name: string;
-      status: "running" | "idle" | "waiting" | "error" | "stale";
-      currentTask?: string;
-      updatedAt: string;
-      liveOutput?: {
-        lastChunk: string;
-        totalChars: number;
-        lastActivityAt: string;
-        chunksReceived: number;
-        recentEvents?: Array<{
-          type: "tool_use" | "text" | "health" | "warning" | "stderr";
-          timestamp: string;
-          tool?: string;
-          target?: string;
-          content?: string;
-        }>;
-      };
-    }>
-  >([]);
-  const [pendingInstructions, setPendingInstructions] = useState<
-    Record<string, Array<{ id: string; content: string; createdAt: string; position: number }>>
-  >({});
-  const [pendingCount, setPendingCount] = useState(0);
-  const [queuedCommands, setQueuedCommands] = useState<
-    Record<string, Array<{ id: string; type: string; payload: Record<string, unknown>; createdAt: string; status: string }>>
-  >({});
-  const [queuedCommandsCount, setQueuedCommandsCount] = useState(0);
   const [queuedNotification, setQueuedNotification] = useState<string | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const router = useRouter();
+
+  // Custom hooks
+  const { agents, setAgents, agentMap } = useAgents();
+  const user = useUser();
+  const { connectedGateways, dbConnected, setDbConnected } = useGatewayStatus();
+  const {
+    liveAgentStatuses,
+    isOrchestrating,
+    pendingInstructions,
+    pendingCount,
+    queuedCommands,
+    queuedCommandsCount,
+  } = useLiveAgentStatuses(setAgents, setDbConnected);
+  const { historyData, setHistoryData } = useHistoryData(isOrchestrating);
+  const { agentOverview, totalUnread, fetchMessageOverview } = useMessageOverview();
+  const pendingReplies = usePendingReplies(historyData);
+  const { projects, isLoading: projectsLoading } = useProjects();
+  const {
+    pendingApprovals,
+    approveRequest,
+    denyRequest,
+    hasPendingApprovals,
+    pendingCount: approvalCount,
+  } = usePermissionApprovals();
 
   const today = new Date().toLocaleDateString("ko-KR", {
     year: "numeric",
@@ -591,185 +146,10 @@ export default function Home() {
     weekday: "long",
   });
 
-  // Fetch agents from API
-  useEffect(() => {
-    fetch("/api/agents")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.agents) {
-          const runtimeAgents: AgentRuntime[] = data.agents.map((config: AgentConfig) => ({
-            config,
-            status: "idle" as const,
-            stack: [],
-            completedToday: 0,
-          }));
-          setAgents(runtimeAgents);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
-  // Build dynamic agent map for HistoryPanel and MessagesPanel
-  const agentMap = useMemo(() => {
-    const map: Record<string, { emoji: string; name: string }> = {
-      user: { emoji: "\u{1F464}", name: "User" },
-      system: { emoji: "\u{1F5A5}\uFE0F", name: "System" },
-    };
-    agents.forEach((a) => {
-      map[a.config.id] = { emoji: a.config.emoji, name: a.config.name };
-    });
-    return map;
-  }, [agents]);
-
-  // Fetch user info
-  useEffect(() => {
-    fetch("/api/auth/me")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.user) setUser(data.user);
-      })
-      .catch(console.error);
-  }, []);
-
-  // Fetch gateway status (polling every 5s)
-  useEffect(() => {
-    const fetchStatus = () => {
-      fetch("/api/relay/status")
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.gateways) setGateways(data.gateways);
-          if (data.dbConnected !== undefined) setDbConnected(data.dbConnected);
-        })
-        .catch(console.error);
-    };
-
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Fetch live agent statuses from relay (polling every 2s when orchestrating, else 5s)
-  useEffect(() => {
-    const fetchStatuses = () => {
-      fetch("/api/relay/status")
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.agents) {
-            // Flatten all gateway agent statuses
-            const all = Object.values(data.agents as Record<string, Array<{
-              id: string;
-              name: string;
-              status: "running" | "idle" | "waiting" | "error";
-              currentTask?: string;
-              updatedAt: string;
-              liveOutput?: {
-                lastChunk: string;
-                totalChars: number;
-                lastActivityAt: string;
-                chunksReceived: number;
-                recentEvents?: Array<{
-                  type: "tool_use" | "text" | "health" | "warning" | "stderr";
-                  timestamp: string;
-                  tool?: string;
-                  target?: string;
-                  content?: string;
-                }>;
-              };
-            }>>).flat();
-            setLiveAgentStatuses(all);
-
-            // Merge liveOutput into agents state
-            setAgents((prev) => {
-              const liveMap = new Map(all.map((a) => [a.id, a]));
-              let changed = false;
-              const next = prev.map((agent) => {
-                const live = liveMap.get(agent.config.id);
-                if (!live) return agent;
-                const newLiveOutput = live.liveOutput || undefined;
-                const statusChanged = live.status !== agent.status;
-                const taskChanged = live.currentTask !== agent.currentTask;
-                const liveOutputChanged = newLiveOutput?.chunksReceived !== agent.liveOutput?.chunksReceived;
-                if (!statusChanged && !taskChanged && !liveOutputChanged) return agent;
-                changed = true;
-                return {
-                  ...agent,
-                  status: live.status,
-                  currentTask: live.currentTask,
-                  liveOutput: newLiveOutput,
-                };
-              });
-              return changed ? next : prev;
-            });
-
-            // Auto-detect orchestration: if any agent is running, keep fast polling
-            const hasRunning = all.some((a) => a.status === "running");
-            if (hasRunning && !isOrchestrating) {
-              setIsOrchestrating(true);
-            } else if (!hasRunning && isOrchestrating) {
-              setIsOrchestrating(false);
-            }
-          }
-          if (data.pendingInstructions) setPendingInstructions(data.pendingInstructions);
-          if (data.pendingCount !== undefined) setPendingCount(data.pendingCount);
-          if (data.queuedCommands) setQueuedCommands(data.queuedCommands);
-          if (data.queuedCommandsCount !== undefined) setQueuedCommandsCount(data.queuedCommandsCount);
-          if (data.dbConnected !== undefined) setDbConnected(data.dbConnected);
-        })
-        .catch(console.error);
-    };
-
-    fetchStatuses();
-    const pollInterval = isOrchestrating ? 2000 : 5000;
-    const interval = setInterval(fetchStatuses, pollInterval);
-    return () => clearInterval(interval);
-  }, [isOrchestrating]);
-
-  // Fetch history (polling every 2s when orchestrating, else 5s)
-  useEffect(() => {
-    const fetchHistory = () => {
-      fetch("/api/history")
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.history) setHistoryData(data.history);
-        })
-        .catch(console.error);
-    };
-
-    fetchHistory();
-    const pollInterval = isOrchestrating ? 2000 : 5000;
-    const interval = setInterval(fetchHistory, pollInterval);
-    return () => clearInterval(interval);
-  }, [isOrchestrating]);
-
-  // Fetch message overview (polling every 2s)
-  const fetchMessageOverview = useCallback(() => {
-    fetch("/api/messages")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.agents) {
-          setAgentOverview(data.agents);
-          const total = Object.values(data.agents as Record<string, AgentMessageOverview>).reduce(
-            (sum, a) => sum + a.unread,
-            0
-          );
-          setTotalUnread(total);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
-  useEffect(() => {
-    fetchMessageOverview();
-    const interval = setInterval(fetchMessageOverview, 2000);
-    return () => clearInterval(interval);
-  }, [fetchMessageOverview]);
-
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/login");
   };
-
-  const connectedGateways = gateways.filter((g) => g.status === "connected");
 
   const handleAddTask = (agentId: string, description: string) => {
     setAgents((prev) =>
@@ -793,14 +173,12 @@ export default function Home() {
   };
 
   const handleStartTask = async (agentId: string, task: string) => {
-    // Find the agent to get systemPrompt
     const agent = agents.find((a) => a.config.id === agentId);
     if (!agent) {
       console.error(`Agent ${agentId} not found`);
       return;
     }
 
-    // Update UI state to running
     setAgents((prev) =>
       prev.map((agent) =>
         agent.config.id === agentId
@@ -815,7 +193,6 @@ export default function Home() {
     );
 
     try {
-      // Call relay API to spawn task
       const response = await fetch("/api/relay/command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -825,6 +202,7 @@ export default function Home() {
             agentId,
             task,
             systemPrompt: agent.config.systemPrompt,
+            allowBash: agent.config.allowBash || false,
           },
         }),
       });
@@ -837,7 +215,6 @@ export default function Home() {
       const result = await response.json();
       console.log(`Task spawned for ${agentId}:`, result);
 
-      // Add success history entry
       const historyEntry: HistoryEntry = {
         id: crypto.randomUUID(),
         agentId,
@@ -853,7 +230,6 @@ export default function Home() {
     } catch (error) {
       console.error("Failed to start task:", error);
 
-      // Revert agent status to idle on error
       setAgents((prev) =>
         prev.map((agent) =>
           agent.config.id === agentId
@@ -875,7 +251,6 @@ export default function Home() {
         )
       );
 
-      // Show error to user
       alert(`Failed to start task: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
@@ -887,12 +262,10 @@ export default function Home() {
     const task = orchestrateInput.trim();
     const filesToUpload = [...attachedFiles];
 
-    // Clear input and files immediately so user can type the next instruction
     setOrchestrateInput("");
     setAttachedFiles([]);
 
     try {
-      // Upload attached files first if any
       let uploadedAttachments: UploadedAttachment[] = [];
       if (filesToUpload.length > 0) {
         setUploadProgress({ current: 0, total: filesToUpload.length });
@@ -902,7 +275,6 @@ export default function Home() {
           });
         } catch (uploadError) {
           setUploadProgress(null);
-          // Restore input and files on upload error
           setOrchestrateInput(task);
           setAttachedFiles(filesToUpload);
           alert(`파일 업로드 실패: ${uploadError instanceof Error ? uploadError.message : "알 수 없는 오류"}`);
@@ -911,7 +283,6 @@ export default function Home() {
         setUploadProgress(null);
       }
 
-      // Build command body with attachment refs
       const commandBody: Record<string, unknown> = {
         type: "orchestrate",
         payload: { task },
@@ -934,7 +305,6 @@ export default function Home() {
         throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
-      // Show notification when agents are already busy
       if (isOrchestrating) {
         setQueuedNotification(
           uploadedAttachments.length > 0
@@ -943,11 +313,8 @@ export default function Home() {
         );
         setTimeout(() => setQueuedNotification(null), 3000);
       }
-      // Note: isOrchestrating is auto-detected from agent status polling.
-      // We don't set it here — it will be set when the polling detects running agents.
     } catch (error) {
       console.error("Orchestrate failed:", error);
-      // Restore the input on error so user doesn't lose their text
       setOrchestrateInput(task);
       setAttachedFiles(filesToUpload);
       alert(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
@@ -957,50 +324,17 @@ export default function Home() {
   const runningCount = agents.filter((a) => a.status === "running").length;
   const totalStacked = agents.reduce((sum, a) => sum + a.stack.length, 0);
 
-  // Compute entries awaiting user reply
-  const pendingReplies = useMemo(() => {
-    const allEntries = Object.values(historyData).flat();
-    const sorted = [...allEntries].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-
-    // For each agent, find the last output/task_completed that looks like a question
-    const agentLastQuestion: Record<string, HistoryEntry> = {};
-    const agentReplied: Set<string> = new Set();
-
-    for (const entry of sorted) {
-      if (
-        (entry.type === "output" || entry.type === "task_completed") &&
-        looksLikeQuestion(entry.content)
-      ) {
-        agentLastQuestion[entry.agentId] = entry;
-        agentReplied.delete(entry.agentId);
-      }
-      if (entry.type === "message_sent" && entry.agentId) {
-        agentReplied.add(entry.agentId);
-      }
-    }
-
-    // Return entries that have not been replied to
-    return Object.entries(agentLastQuestion)
-      .filter(([agentId]) => !agentReplied.has(agentId))
-      .map(([, entry]) => entry);
-  }, [historyData]);
-
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
       <header className="border-b border-gray-800 bg-gray-900/80 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
-          {/* Mobile: 세로 배치 / Desktop: 가로 배치 */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4 lg:py-2.5">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-            {/* 제목 + 날짜 */}
             <div className="flex items-center justify-between sm:block">
               <div>
-                <h1 className="text-xl sm:text-2xl font-bold">🎛️ LifeDashboard</h1>
+                <h1 className="text-xl sm:text-2xl lg:text-xl font-bold">🎛️ LifeDashboard</h1>
                 <p className="text-gray-500 text-xs sm:text-sm">{today}</p>
               </div>
-              {/* Mobile only: 로그아웃 */}
               {user && (
                 <button
                   onClick={handleLogout}
@@ -1011,9 +345,7 @@ export default function Home() {
               )}
             </div>
 
-            {/* 상태 바 */}
             <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-6 text-xs sm:text-sm">
-              {/* Gateway Status */}
               <div className="flex items-center gap-1.5">
                 <span
                   className={`w-2 h-2 rounded-full ${
@@ -1023,13 +355,10 @@ export default function Home() {
                   }`}
                 />
                 <span className="text-gray-400">
-                  {connectedGateways.length > 0
-                    ? `연결됨`
-                    : "미연결"}
+                  {connectedGateways.length > 0 ? `연결됨` : "미연결"}
                 </span>
               </div>
 
-              {/* DB Status */}
               {!dbConnected && (
                 <div className="flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
@@ -1037,7 +366,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Stats */}
               <div className="text-gray-400">
                 <span className="text-green-400">{runningCount}</span> 실행
                 · <span className="text-blue-400">{totalStacked}</span> 대기
@@ -1052,9 +380,16 @@ export default function Home() {
                     </button>
                   </>
                 )}
+                {hasPendingApprovals && (
+                  <>
+                    {" · "}
+                    <span className="text-orange-400 animate-pulse">
+                      🔐 {approvalCount} 승인 대기
+                    </span>
+                  </>
+                )}
               </div>
 
-              {/* User - Desktop only */}
               {user && (
                 <div className="hidden sm:flex items-center gap-3">
                   <span className="text-gray-400">{user.email}</span>
@@ -1070,31 +405,19 @@ export default function Home() {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1.5 sm:gap-2 mt-3 sm:mt-4 overflow-x-auto" role="tablist">
-            <TabButton
-              active={activeTab === "agents"}
-              onClick={() => setActiveTab("agents")}
-            >
-              🤖 <span className="hidden sm:inline">Agents</span>
+          <div className="flex gap-1 sm:gap-2 mt-3 sm:mt-4 lg:mt-2 overflow-x-auto pb-1 -mb-1 scrollbar-none" role="tablist">
+            <TabButton active={activeTab === "agents"} onClick={() => setActiveTab("agents")}>
+              🤖 <span className="hidden sm:inline">Agents</span><span className="sm:hidden">에이전트</span>
             </TabButton>
-            <TabButton
-              active={activeTab === "projects"}
-              onClick={() => setActiveTab("projects")}
-            >
-              🚀 <span className="hidden sm:inline">Projects</span>
+            <TabButton active={activeTab === "projects"} onClick={() => setActiveTab("projects")}>
+              🚀 <span className="hidden sm:inline">Projects</span><span className="sm:hidden">프로젝트</span>
             </TabButton>
-            <TabButton
-              active={activeTab === "finance"}
-              onClick={() => setActiveTab("finance")}
-            >
-              💰 <span className="hidden sm:inline">Finance</span>
+            <TabButton active={activeTab === "finance"} onClick={() => setActiveTab("finance")}>
+              💰 <span className="hidden sm:inline">Finance</span><span className="sm:hidden">재정</span>
             </TabButton>
-            <TabButton
-              active={activeTab === "messages"}
-              onClick={() => setActiveTab("messages")}
-            >
+            <TabButton active={activeTab === "messages"} onClick={() => setActiveTab("messages")}>
               <span className="relative">
-                💬 <span className="hidden sm:inline">Messages</span>
+                💬 <span className="hidden sm:inline">Messages</span><span className="sm:hidden">메시지</span>
                 {totalUnread > 0 && (
                   <span className="absolute -top-2 -right-3 sm:-right-2 bg-red-500 text-white text-[10px] rounded-full px-1.5 py-0.5 min-w-[18px] text-center leading-none">
                     {totalUnread > 99 ? "99+" : totalUnread}
@@ -1102,18 +425,27 @@ export default function Home() {
                 )}
               </span>
             </TabButton>
-            <TabButton
-              active={activeTab === "cronjobs"}
-              onClick={() => setActiveTab("cronjobs")}
-            >
-              ⏰ <span className="hidden sm:inline">Cron Jobs</span>
+            <TabButton active={activeTab === "sessions"} onClick={() => setActiveTab("sessions")}>
+              💭 <span className="hidden sm:inline">Sessions</span><span className="sm:hidden">세션</span>
+            </TabButton>
+            <TabButton active={activeTab === "cronjobs"} onClick={() => setActiveTab("cronjobs")}>
+              ⏰ <span className="hidden sm:inline">Cron Jobs</span><span className="sm:hidden">크론</span>
             </TabButton>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 lg:py-4">
+        {/* Permission Approval Banner */}
+        {hasPendingApprovals && (
+          <PermissionApprovalBanner
+            pendingApprovals={pendingApprovals}
+            onApprove={approveRequest}
+            onDeny={denyRequest}
+          />
+        )}
+
         {activeTab === "agents" && (
           <AgentDashboard
             agents={agents}
@@ -1138,6 +470,9 @@ export default function Home() {
             onStartTask={handleStartTask}
             onPendingReply={async (entry, replyText) => {
               try {
+                // Find agent config to get allowBash setting
+                const agent = agents.find((a) => a.config.id === entry.agentId);
+
                 const response = await fetch("/api/relay/command", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -1146,6 +481,7 @@ export default function Home() {
                     payload: {
                       agentId: entry.agentId,
                       task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
+                      allowBash: agent?.config.allowBash || false,
                     },
                   }),
                 });
@@ -1171,18 +507,26 @@ export default function Home() {
         )}
 
         {activeTab === "projects" && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {projects.map((project) => (
-              <ProjectCard key={project.name} project={project} />
-            ))}
+          <div>
+            {projectsLoading ? (
+              <div className="text-center text-gray-400 py-8">프로젝트 로딩 중...</div>
+            ) : projects.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">프로젝트가 없습니다</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {projects.map((project) => (
+                  <ProjectCard key={project.id} project={project} />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         {activeTab === "finance" && (
-          <div className="space-y-6">
-            <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-              <h3 className="text-lg font-bold mb-4">🎯 재정 목표</h3>
-              <div className="space-y-4">
+          <div className="space-y-6 lg:space-y-4">
+            <div className="bg-gray-800 rounded-xl p-6 lg:p-4 border border-gray-700">
+              <h3 className="text-lg font-bold mb-4 lg:mb-3">🎯 재정 목표</h3>
+              <div className="space-y-4 lg:space-y-3">
                 <div>
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-gray-400">MumMum $10K MRR</span>
@@ -1196,8 +540,8 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-              <h3 className="text-lg font-bold mb-4">💸 이번 달 지출</h3>
+            <div className="bg-gray-800 rounded-xl p-6 lg:p-4 border border-gray-700">
+              <h3 className="text-lg font-bold mb-4 lg:mb-3">💸 이번 달 지출</h3>
               <p className="text-gray-500 text-sm">
                 Supabase 연동 후 데이터 표시
               </p>
@@ -1214,13 +558,15 @@ export default function Home() {
           />
         )}
 
+        {activeTab === "sessions" && <SessionsPanel agentMap={agentMap} />}
+
         {activeTab === "cronjobs" && <CronJobsPanel />}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-gray-800 mt-12">
-        <div className="max-w-7xl mx-auto px-6 py-4 text-center text-gray-500 text-sm">
-          Built with Next.js • Inspired by oh-my-claudecode
+      <footer className="border-t border-gray-800 mt-12 lg:mt-8">
+        <div className="max-w-7xl mx-auto px-6 py-4 lg:py-3 text-center text-gray-500 text-sm">
+          Built with Next.js &bull; Inspired by oh-my-claudecode
         </div>
       </footer>
     </div>

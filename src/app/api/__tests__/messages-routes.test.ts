@@ -26,6 +26,11 @@ vi.mock("@/lib/messages", () => ({
   markAsRead: vi.fn(),
   getAllAgentsOverview: vi.fn(),
   getUnreadCount: vi.fn(),
+  isValidAgentId: vi.fn((id: string) => ["pm", "dev", "reviewer", "user"].includes(id)),
+  isValidISOTimestamp: vi.fn(() => true),
+  isValidUUID: vi.fn(() => true),
+  VALID_MESSAGE_TYPES: ["text", "task", "result", "question", "answer"],
+  MAX_CONTENT_LENGTH: 100_000,
 }));
 
 // Mock attachments (transitive dependency)
@@ -339,6 +344,50 @@ describe("GET /api/messages/[agentId]", () => {
     expect(getConversation).toHaveBeenCalledWith("dev", "pm", 50, undefined);
     const json = await res.json();
     expect(json.messages[0].content).toBe("conversation msg");
+  });
+
+  it("should support 'since' parameter for incremental fetch", async () => {
+    (getCurrentUser as ReturnType<typeof vi.fn>).mockResolvedValue({
+      email: "test@test.com",
+    });
+    (getConversation as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: "msg-2",
+        from: "pm",
+        to: "dev",
+        content: "new message after timestamp",
+        type: "text",
+        read: false,
+        timestamp: "2024-01-01T12:05:00Z",
+      },
+    ]);
+
+    const sinceTimestamp = "2024-01-01T12:00:00Z";
+    const req = createRequest(
+      `http://localhost:3000/api/messages/dev?with=pm&since=${encodeURIComponent(sinceTimestamp)}`
+    );
+    const res = await GET(req, { params: Promise.resolve({ agentId: "dev" }) });
+
+    expect(getConversation).toHaveBeenCalledWith("dev", "pm", 50, sinceTimestamp);
+    const json = await res.json();
+    expect(json.messages).toHaveLength(1);
+    expect(json.messages[0].content).toBe("new message after timestamp");
+  });
+
+  it("should return 400 for invalid 'since' timestamp format", async () => {
+    (getCurrentUser as ReturnType<typeof vi.fn>).mockResolvedValue({
+      email: "test@test.com",
+    });
+    (isValidISOTimestamp as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+    const req = createRequest(
+      "http://localhost:3000/api/messages/dev?with=pm&since=invalid-timestamp"
+    );
+    const res = await GET(req, { params: Promise.resolve({ agentId: "dev" }) });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("Invalid \"since\" parameter");
   });
 
   it("should return empty messages on DB connection error (graceful fallback)", async () => {

@@ -8,6 +8,7 @@ import PendingRepliesBanner from "@/components/PendingRepliesBanner";
 import FileAttachment from "@/components/FileAttachment";
 import type { AttachedFile } from "@/components/FileAttachment";
 import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
+import { sendAgentReply } from "@/lib/agent-actions";
 
 interface AgentDashboardProps {
   agents: AgentRuntime[];
@@ -80,36 +81,14 @@ export default function AgentDashboard({
     "all" | "dev" | "business" | "ops"
   >("all");
 
-  // Handle reply to history entry
+  // Handle reply to history entry (uses shared sendAgentReply utility)
   const handleReplyToEntry = async (
     entry: HistoryEntry,
     replyText: string
   ) => {
     try {
-      const response = await fetch("/api/relay/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "spawn",
-          payload: {
-            agentId: entry.agentId,
-            task: `사용자 피드백에 대해 응답하세요.\n\n이전 당신의 메시지:\n${entry.content.slice(0, 500)}\n\n사용자 답신:\n${replyText}`,
-          },
-        }),
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
-      }
-      await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agentId: entry.agentId,
-          type: "message_sent",
-          content: `💬 사용자 → ${agentMap[entry.agentId]?.name || entry.agentId}: ${replyText}`,
-        }),
-      });
+      const displayName = agentMap[entry.agentId]?.name || entry.agentId;
+      await sendAgentReply(entry.agentId, entry.content, replyText, displayName);
     } catch (error) {
       console.error("Failed to send reply:", error);
       alert(`답신 전송 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
@@ -117,7 +96,7 @@ export default function AgentDashboard({
   };
 
   // Sort and filter agents
-  const { activeAgents, dormantAgents } = useMemo(() => {
+  const { activeAgents, dormantAgents, activeAgentsByCategory } = useMemo(() => {
     const filtered =
       categoryFilter === "all"
         ? agents
@@ -156,14 +135,27 @@ export default function AgentDashboard({
     // Sort dormant alphabetically
     dormant.sort((a, b) => a.config.name.localeCompare(b.config.name));
 
-    return { activeAgents: active, dormantAgents: dormant };
+    // Group active agents by category
+    const byCategory: Record<string, AgentRuntime[]> = {
+      dev: [],
+      business: [],
+      ops: [],
+    };
+    active.forEach((agent) => {
+      const category = agent.config.category || "ops";
+      if (byCategory[category]) {
+        byCategory[category].push(agent);
+      }
+    });
+
+    return { activeAgents: active, dormantAgents: dormant, activeAgentsByCategory: byCategory };
   }, [agents, historyData, categoryFilter]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-4">
       {/* Orchestrate Bar */}
-      <div className="bg-gray-800 rounded-xl p-3 sm:p-5 border border-blue-500/20">
-        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 sm:mb-3">전체 지시</h2>
+      <div className="bg-gray-800 rounded-xl p-3 sm:p-5 lg:p-3 border border-blue-500/20">
+        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 sm:mb-3 lg:mb-2">전체 지시</h2>
         <form onSubmit={onOrchestrate} className="space-y-3">
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
             <input
@@ -171,12 +163,12 @@ export default function AgentDashboard({
               value={orchestrateInput}
               onChange={(e) => onOrchestrateInputChange(e.target.value)}
               placeholder="전체 지시를 입력하세요..."
-              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 min-h-[44px] text-sm sm:text-base"
+              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 lg:py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 min-h-[44px] lg:min-h-0 text-sm sm:text-base"
             />
             <button
               type="submit"
               disabled={!orchestrateInput.trim() || uploadProgress !== null}
-              className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 min-h-[44px] shrink-0"
+              className="w-full sm:w-auto px-6 lg:px-4 py-3 lg:py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 min-h-[44px] lg:min-h-0 shrink-0"
             >
               {uploadProgress !== null ? (
                 <>
@@ -215,7 +207,7 @@ export default function AgentDashboard({
 
         {/* Pending Instructions Queue */}
         {pendingCount > 0 && (
-          <div className="mt-3 sm:mt-4 bg-gray-900/50 rounded-lg p-2.5 sm:p-3 border border-gray-700/50">
+          <div className="mt-3 sm:mt-4 lg:mt-2 bg-gray-900/50 rounded-lg p-2.5 sm:p-3 border border-gray-700/50">
             <div className="text-xs text-gray-400 font-medium mb-2">
               📋 대기중인 지시 ({pendingCount}개)
             </div>
@@ -234,7 +226,7 @@ export default function AgentDashboard({
 
         {/* Queued Commands */}
         {queuedCommandsCount > 0 && (
-          <div className="mt-3 sm:mt-4 bg-gray-900/50 rounded-lg p-2.5 sm:p-3 border border-amber-700/30">
+          <div className="mt-3 sm:mt-4 lg:mt-2 bg-gray-900/50 rounded-lg p-2.5 sm:p-3 border border-amber-700/30">
             <div className="text-xs text-amber-400 font-medium mb-2">
               ⏳ 대기중인 명령 ({queuedCommandsCount}개)
             </div>
@@ -353,25 +345,93 @@ export default function AgentDashboard({
 
       {/* Agent View Mode */}
       {viewMode === "agents" && (
-        <div className="space-y-4">
-          {/* Active Agent Sections */}
-          {activeAgents.map((agent) => (
-            <AgentSection
-              key={agent.config.id}
-              agent={agent}
-              historyEntries={historyData[agent.config.id] || []}
-              agentMap={agentMap}
-              onAddTask={onAddTask}
-              onStartTask={onStartTask}
-              onReplyToEntry={handleReplyToEntry}
-              defaultExpanded={agent.status === "running"}
-            />
-          ))}
+        <div className="space-y-4 lg:space-y-3">
+          {/* Active Agent Sections - Grouped by Category */}
+          {categoryFilter === "all" ? (
+            <>
+              {/* Dev Category */}
+              {activeAgentsByCategory.dev.length > 0 && (
+                <div className="space-y-3 lg:space-y-2">
+                  <h3 className="text-xs sm:text-sm font-semibold text-gray-400 uppercase tracking-wider px-1 flex items-center gap-2">
+                    <span>🛠</span> <span>Dev</span>
+                  </h3>
+                  {activeAgentsByCategory.dev.map((agent) => (
+                    <AgentSection
+                      key={agent.config.id}
+                      agent={agent}
+                      historyEntries={historyData[agent.config.id] || []}
+                      agentMap={agentMap}
+                      onAddTask={onAddTask}
+                      onStartTask={onStartTask}
+                      onReplyToEntry={handleReplyToEntry}
+                      defaultExpanded={agent.status === "running"}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Business Category */}
+              {activeAgentsByCategory.business.length > 0 && (
+                <div className="space-y-3 lg:space-y-2">
+                  <h3 className="text-xs sm:text-sm font-semibold text-gray-400 uppercase tracking-wider px-1 flex items-center gap-2">
+                    <span>💼</span> <span>Business</span>
+                  </h3>
+                  {activeAgentsByCategory.business.map((agent) => (
+                    <AgentSection
+                      key={agent.config.id}
+                      agent={agent}
+                      historyEntries={historyData[agent.config.id] || []}
+                      agentMap={agentMap}
+                      onAddTask={onAddTask}
+                      onStartTask={onStartTask}
+                      onReplyToEntry={handleReplyToEntry}
+                      defaultExpanded={agent.status === "running"}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Ops Category */}
+              {activeAgentsByCategory.ops.length > 0 && (
+                <div className="space-y-3 lg:space-y-2">
+                  <h3 className="text-xs sm:text-sm font-semibold text-gray-400 uppercase tracking-wider px-1 flex items-center gap-2">
+                    <span>⚙️</span> <span>Ops</span>
+                  </h3>
+                  {activeAgentsByCategory.ops.map((agent) => (
+                    <AgentSection
+                      key={agent.config.id}
+                      agent={agent}
+                      historyEntries={historyData[agent.config.id] || []}
+                      agentMap={agentMap}
+                      onAddTask={onAddTask}
+                      onStartTask={onStartTask}
+                      onReplyToEntry={handleReplyToEntry}
+                      defaultExpanded={agent.status === "running"}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            // Category filter active - show flat list
+            activeAgents.map((agent) => (
+              <AgentSection
+                key={agent.config.id}
+                agent={agent}
+                historyEntries={historyData[agent.config.id] || []}
+                agentMap={agentMap}
+                onAddTask={onAddTask}
+                onStartTask={onStartTask}
+                onReplyToEntry={handleReplyToEntry}
+                defaultExpanded={agent.status === "running"}
+              />
+            ))
+          )}
 
           {/* Dormant Agents */}
           {dormantAgents.length > 0 && (
-            <div className="bg-gray-800/50 rounded-xl p-3 sm:p-4 border border-gray-700/50">
-              <h3 className="text-xs sm:text-sm font-medium text-gray-400 mb-2 sm:mb-3">
+            <div className="bg-gray-800/50 rounded-xl p-3 sm:p-4 lg:p-3 border border-gray-700/50">
+              <h3 className="text-xs sm:text-sm font-medium text-gray-400 mb-2 sm:mb-3 lg:mb-2">
                 유휴 에이전트
               </h3>
               <div className="flex flex-wrap gap-1.5 sm:gap-2">

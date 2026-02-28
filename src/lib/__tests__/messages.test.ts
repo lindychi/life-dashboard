@@ -116,7 +116,7 @@ vi.mock("@/lib/db", () => {
 
         // Latest message for this agent
         const agentMessages = mockStorage.messages
-          .filter((m) => m.to_id === agentId || m.to_id === "broadcast")
+          .filter((m) => (m.to_id === agentId || m.to_id === "broadcast") && m.from_id !== agentId)
           .sort(
             (a, b) =>
               new Date(b.created_at).getTime() - new Date(a.created_at).getTime()

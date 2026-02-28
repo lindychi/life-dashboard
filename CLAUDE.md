@@ -140,6 +140,206 @@ Messages can reference uploaded files inline using `@file:<ref_key>` (e.g., `@fi
 
 Single-page client component (`src/app/page.tsx`) with tabs: Agents, History, Messages, Projects, Finance. Uses react-markdown + remark-gfm for rendering Claude's markdown responses. Polls `/api/relay/status` every 5 seconds for gateway connectivity.
 
+### Projects System
+
+PostgreSQL-backed CRUD system for tracking user's side projects with real-time KPI metrics.
+
+**Database Schema:**
+- `sql/017_projects.sql` — `projects` table with `id`, `name`, `description`, `status`, `progress` (0-100), `url`, `kpis` (JSONB array)
+- `sql/018_project_metrics.sql` — Real-time KPI system with `project_metrics` (metrics snapshots) and `project_tasks` (task-project linkage)
+
+**Setup:**
+```bash
+psql life_dashboard < sql/017_projects.sql
+psql life_dashboard < sql/018_project_metrics.sql
+```
+
+**Core Libraries:**
+- `src/lib/projects.ts` — CRUD operations (getProjects, createProject, updateProject, deleteProject)
+- `src/lib/project-metrics.ts` — Real-time KPI calculation and metrics tracking
+
+**API Routes:**
+- `/api/projects` — List/create projects
+- `/api/projects/[id]` — Get/update/delete single project
+- `/api/projects/metrics` — Get all projects with latest metrics
+- `/api/projects/[id]/metrics` — Get/create metrics snapshot for project
+- `/api/projects/[id]/metrics/history` — Get metrics history (time-series)
+- `/api/projects/[id]/tasks` — Get/link tasks to project
+
+**Real-time KPI Metrics:**
+- Automatic calculation based on linked `task_executions` and `task_queue` entries
+- Metrics: completion_rate, success_rate, total_tasks, completed_tasks, failed_tasks, running_tasks, avg_task_duration_seconds
+- Auto-triggered snapshot creation on task status changes
+- Auto-update `projects.progress` field based on completion_rate
+
+**MCP Tools (for Claude Code agents):**
+- `dashboard_get_project_metrics` — Get real-time metrics for all/specific project
+- `dashboard_get_project_metrics_history` — Get metrics time-series data
+- `dashboard_snapshot_project_metrics` — Create metrics snapshot
+- `dashboard_link_task_to_project` — Link task to project for auto-tracking
+- `dashboard_get_project_tasks` — Get tasks linked to project
+
+See `docs/project-metrics-system.md` for detailed documentation.
+
+### OKR System
+
+PostgreSQL-backed OKR (Objectives and Key Results) system for tracking quarterly/annual goals with measurable outcomes.
+
+**Database Schema:**
+- `sql/019_okr_system.sql` — 3 tables: `objectives`, `key_results`, `project_objectives`
+
+**Setup:**
+```bash
+psql life_dashboard < sql/019_okr_system.sql
+```
+
+**Core Library:**
+- `src/lib/okr.ts` — Full CRUD for objectives, key results, and project-OKR linkage
+
+**API Routes:**
+- `/api/okr/objectives` — List/create objectives
+- `/api/okr/objectives/[id]` — Get/update/delete objective (with key results)
+- `/api/okr/key-results` — Create key result
+- `/api/okr/key-results/[id]` — Get/update/delete key result
+- `/api/okr/projects/[projectId]/objectives` — Get/link project objectives
+- `/api/okr/projects/[projectId]/objectives/[objectiveId]` — Unlink project objective
+
+**Auto-Calculation Features:**
+- Key result `progress` auto-calculates from `current_value / target_value * 100`
+- Objective `overall_progress` auto-updates as weighted average of key results
+- Metric types: `percentage`, `number`, `boolean`, `currency`
+
+**MCP Tools (for Claude Code agents):**
+- `dashboard_get_objectives` — List objectives (optional status filter)
+- `dashboard_get_objective` — Get objective with key results
+- `dashboard_create_objective` — Create objective
+- `dashboard_update_objective` — Update objective
+- `dashboard_create_key_result` — Create key result
+- `dashboard_update_key_result` — Update key result (auto-recalculates progress)
+- `dashboard_link_project_objective` — Link project to objective
+- `dashboard_get_project_objectives` — Get project's objectives
+
+See `docs/okr-system.md` for detailed documentation.
+
+### Conversation Sessions System
+
+PostgreSQL-backed conversation session system for context-aware multi-agent communication with message threading and read status tracking.
+
+**Database Schema:**
+- `sql/022_conversation_sessions.sql` — 3 tables: `conversations`, `conversation_messages`, `conversation_read_status`, plus views and triggers
+
+**Setup:**
+```bash
+psql life_dashboard < sql/022_conversation_sessions.sql
+```
+
+**Core Library:**
+- `src/lib/conversations.ts` — Full CRUD for conversations, messages, read status, and threading
+
+**API Routes:**
+- `/api/conversations` — List/create conversations
+- `/api/conversations/[id]` — Get/update/delete conversation (with optional stats)
+- `/api/conversations/[id]/messages` — Get/add messages with threading support
+- `/api/conversations/[id]/read-status` — Update read status
+
+**Key Features:**
+- **Session Context Management** — Store project info, goals, and metadata per conversation
+- **Message Threading** — Parent-child message relationships for structured discussions
+- **Per-Agent Read Status** — Track which messages each participant has read
+- **Auto-Unread Calculation** — Triggers automatically update unread counts
+- **Status Lifecycle** — `active` → `completed` / `archived`
+
+**MCP Tools (for Claude Code agents):**
+- `dashboard_create_conversation` — Create conversation with title, participants, context
+- `dashboard_get_conversations` — List conversations (filter by participant, status, creator)
+- `dashboard_get_conversation` — Get conversation (with optional statistics)
+- `dashboard_update_conversation` — Update title, context, or status
+- `dashboard_delete_conversation` — Delete conversation and all messages
+- `dashboard_add_conversation_message` — Add message with threading support
+- `dashboard_get_conversation_messages` — Get messages (pagination, since timestamp, threading)
+- `dashboard_update_conversation_read_status` — Mark messages as read
+- `dashboard_get_unread_conversations` — Get all conversations with unread messages
+
+**Example Usage:**
+```typescript
+// Create a conversation for a project
+const conversation = await createConversation({
+  title: "Project Alpha Planning",
+  participants: ["dev-agent", "pm-agent", "user"],
+  context: {
+    projectId: "uuid",
+    goal: "Plan project architecture",
+    deadline: "2024-12-31",
+  },
+  createdBy: "user",
+});
+
+// Add threaded messages
+const rootMessage = await addConversationMessage({
+  conversationId: conversation.id,
+  from: "user",
+  content: "What's the best database for this project?",
+  type: "question",
+});
+
+const reply = await addConversationMessage({
+  conversationId: conversation.id,
+  from: "dev-agent",
+  content: "PostgreSQL would be ideal because...",
+  type: "answer",
+  parentMessageId: rootMessage.id, // Thread support
+  metadata: { model: "sonnet", tokens: 450 },
+});
+
+// Update read status
+await updateConversationReadStatus(
+  conversation.id,
+  "dev-agent",
+  reply.id
+);
+```
+
+See `docs/conversation-sessions.md` for detailed documentation.
+
+### SSE Real-time Synchronization
+
+Server-Sent Events (SSE) system for real-time updates without client polling.
+
+**Core Components:**
+- `src/lib/sse-broadcaster.ts` — Singleton broadcaster managing SSE connections, broadcasting events to all/specific clients
+- `src/app/api/sse/route.ts` — SSE endpoint (`GET /api/sse`), establishes authenticated event stream
+- `src/hooks/useSSE.ts` — Base React hook for SSE connection management with auto-reconnect
+- `src/hooks/useProjectSSE.ts` — High-level hook for project-related events
+- `src/hooks/useOKRSSE.ts` — High-level hook for OKR-related events
+
+**Supported Events:**
+- `project:created`, `project:updated`, `project:deleted` — Project CRUD
+- `project:metrics:updated` — Metrics snapshot created
+- `okr:objective:created`, `okr:objective:updated`, `okr:objective:deleted` — Objective CRUD
+- `okr:key-result:created`, `okr:key-result:updated`, `okr:key-result:deleted` — Key result CRUD
+- `heartbeat` — Connection keepalive (30s interval)
+
+**Client Usage:**
+```typescript
+import { useProjectSSE } from "@/hooks/useProjectSSE";
+
+useProjectSSE({
+  onProjectCreated: ({ project }) => setProjects(prev => [...prev, project]),
+  onProjectUpdated: ({ project }) => setProjects(prev => prev.map(p => p.id === project.id ? project : p)),
+  onProjectDeleted: ({ projectId }) => setProjects(prev => prev.filter(p => p.id !== projectId)),
+  onMetricsUpdated: ({ projectId, metrics }) => console.log("Metrics updated:", projectId),
+});
+```
+
+**Features:**
+- Auto-connect on mount, auto-disconnect on unmount
+- Auto-reconnect with backoff (max 10 attempts, 3s interval)
+- Heartbeat keepalive every 30 seconds
+- Authentication required (JWT session)
+- Graceful cleanup on server shutdown
+
+See `docs/sse-realtime-sync.md` for detailed documentation.
+
 ### Path Alias
 
 `@/*` maps to `./src/*` (configured in `tsconfig.json`).

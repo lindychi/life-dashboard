@@ -16,7 +16,8 @@ interface PendingReply {
     | "message_received"
     | "status_change"
     | "command_received"
-    | "output";
+    | "output"
+    | "gateway_restart";
   content: string;
   timestamp: string;
   metadata?: Record<string, unknown>;
@@ -61,7 +62,7 @@ const PendingReplyCard = React.memo<PendingReplyCardProps>(
     );
 
     return (
-      <div className="bg-white/5 border border-yellow-500/20 rounded-lg p-2.5 sm:p-3">
+      <div className="bg-white/5 border border-yellow-500/20 rounded-lg p-2.5 sm:p-3 lg:p-2">
         <div className="flex items-start justify-between gap-2 sm:gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5 sm:gap-2 mb-1">
@@ -131,9 +132,9 @@ const PendingRepliesBanner = React.memo<PendingRepliesBannerProps>(
     if (pendingReplies.length === 0) return null;
 
     return (
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 sm:p-4 mb-4 sm:mb-6">
-        <div className="mb-2 sm:mb-3">
-          <h3 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
+      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 sm:p-4 lg:p-3 mb-4 sm:mb-6 lg:mb-3">
+        <div className="mb-2 sm:mb-3 lg:mb-2">
+          <h3 className="text-base sm:text-lg lg:text-base font-semibold text-white flex items-center gap-2">
             <span>⏳</span>
             <span>응답 대기 ({pendingReplies.length})</span>
           </h3>

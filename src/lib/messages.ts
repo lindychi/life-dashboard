@@ -316,6 +316,7 @@ export async function getAllAgentsOverview(): Promise<
 
   // Single query: for each agent, get unread count and latest message
   // For broadcasts, compute per-agent read status via message_read_status
+  // FIXED: Latest message read status must also consider broadcast read status
   const rows = await query<{
     agent_id: string;
     unread_count: string;
@@ -337,7 +338,8 @@ export async function getAllAgentsOverview(): Promise<
        lm.type as latest_type,
        CASE
          WHEN lm.to_id = 'broadcast' THEN (lm_mrs.message_id IS NOT NULL)
-         ELSE COALESCE(lm.read, FALSE)
+         WHEN lm.to_id = a.agent_id THEN COALESCE(lm.read, FALSE)
+         ELSE FALSE
        END as latest_read,
        lm.created_at as latest_created_at
      FROM unnest($1::text[]) AS a(agent_id)
@@ -355,12 +357,14 @@ export async function getAllAgentsOverview(): Promise<
      LEFT JOIN LATERAL (
        SELECT id, from_id, to_id, content, type, read, created_at
        FROM messages
-       WHERE to_id = a.agent_id OR to_id = 'broadcast'
+       WHERE (to_id = a.agent_id OR to_id = 'broadcast')
+         AND from_id != a.agent_id
        ORDER BY created_at DESC
        LIMIT 1
      ) lm ON true
      LEFT JOIN message_read_status lm_mrs
-       ON lm.id = lm_mrs.message_id AND lm_mrs.agent_id = a.agent_id`,
+       ON lm.id = lm_mrs.message_id AND lm_mrs.agent_id = a.agent_id
+       AND lm.to_id = 'broadcast'`,
     [agentIds]
   );
 

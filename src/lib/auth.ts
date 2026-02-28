@@ -86,3 +86,71 @@ export async function clearAuthCookie(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete("auth-token");
 }
+
+/**
+ * Verify authentication from NextRequest
+ * Returns authentication result with user email if authenticated
+ */
+export async function verifyAuth(
+  request: Request
+): Promise<{ authenticated: boolean; email?: string }> {
+  // Check cookie first
+  const cookieHeader = request.headers.get("cookie");
+  if (cookieHeader) {
+    const cookies = cookieHeader.split(";").map((c) => c.trim());
+    const authCookie = cookies.find((c) => c.startsWith("auth-token="));
+    if (authCookie) {
+      const token = authCookie.split("=")[1];
+      const user = await verifyToken(token);
+      if (user) {
+        return { authenticated: true, email: user.email };
+      }
+    }
+  }
+
+  // Check Authorization header (for API clients)
+  const authHeader = request.headers.get("authorization");
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    const user = await verifyToken(token);
+    if (user) {
+      return { authenticated: true, email: user.email };
+    }
+  }
+
+  return { authenticated: false };
+}
+
+/**
+ * Authenticate request with either session cookie or relay key
+ * Returns true if authenticated via either method
+ * Used for API routes that support both user sessions and agent automation
+ */
+export function authenticateRequest(request: Request): Promise<boolean> {
+  return authenticateRequestWithDetails(request).then((result) => result.authenticated);
+}
+
+/**
+ * Authenticate request with either session cookie or relay key
+ * Returns authentication details including the method used
+ */
+export async function authenticateRequestWithDetails(
+  request: Request
+): Promise<{ authenticated: boolean; method?: "session" | "relay-key"; email?: string }> {
+  // Check relay key first (for agent automation)
+  const relayKey = request.headers.get("x-relay-key");
+  if (relayKey) {
+    const RELAY_API_KEY = process.env.RELAY_API_KEY || "";
+    if (relayKey === RELAY_API_KEY && RELAY_API_KEY.length > 0) {
+      return { authenticated: true, method: "relay-key" };
+    }
+  }
+
+  // Check user session
+  const user = await getCurrentUser();
+  if (user) {
+    return { authenticated: true, method: "session", email: user.email };
+  }
+
+  return { authenticated: false };
+}

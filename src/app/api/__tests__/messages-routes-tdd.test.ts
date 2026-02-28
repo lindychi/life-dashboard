@@ -12,10 +12,10 @@
  *    - 인증 체크, messageId 검증, 정상 처리, 404, DB 에러
  *
  * Bug-revealing tests:
- * - POST with content=" " (whitespace) passes validation (BUG: only checks falsy)
- * - GET with since param passes through to getConversation (never tested)
+ * - POST with content=" " (whitespace) is now rejected after trim (FIXED)
+ * - GET with since param passes through to getConversation (tested)
  * - GET /api/messages returns 200 (not 503) on DB error (graceful fallback)
- * - PATCH returns 503 on DB error (not graceful)
+ * - PATCH returns 503 on DB error (intentional for write ops)
  *
  * Mock Pattern: vi.mock('@/lib/db') + vi.mock('pg')
  * Buffer: Using Uint8Array instead of Buffer per Next.js 16 compatibility
@@ -49,6 +49,11 @@ vi.mock("@/lib/messages", () => ({
   markAsRead: vi.fn(),
   getAllAgentsOverview: vi.fn(),
   getUnreadCount: vi.fn(),
+  isValidAgentId: vi.fn((id: string) => ["pm", "dev", "reviewer", "user"].includes(id)),
+  isValidISOTimestamp: vi.fn(() => true),
+  isValidUUID: vi.fn(() => true),
+  VALID_MESSAGE_TYPES: ["text", "task", "result", "question", "answer"],
+  MAX_CONTENT_LENGTH: 100_000,
 }));
 
 // Mock attachments (transitive dependency)
@@ -208,10 +213,10 @@ describe("POST /api/messages", () => {
     });
 
     /**
-     * BUG DETECTOR: The route checks `!content` which is falsy check.
-     * Whitespace-only content like " " is truthy and passes validation.
+     * FIXED: The route now trims content before checking.
+     * Whitespace-only content like " " is rejected with 400.
      */
-    it("should accept whitespace-only content (BUG: route only checks falsy, not trimmed)", async () => {
+    it("should reject whitespace-only content (FIXED: route trims before validation)", async () => {
       mockAuthenticated();
       (sendMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: "msg-1",
@@ -229,8 +234,8 @@ describe("POST /api/messages", () => {
       });
 
       const res = await POST(req);
-      // Current behavior: passes through (whitespace is truthy)
-      expect(res.status).toBe(200);
+      // Fixed behavior: whitespace-only content is now rejected after trim
+      expect(res.status).toBe(400);
     });
   });
 
@@ -579,7 +584,7 @@ describe("GET /api/messages/[agentId]", () => {
     });
 
     /**
-     * NEVER TESTED BEFORE: since parameter with conversation query
+     * since parameter with conversation query (added in TDD phase)
      */
     it("should pass since parameter to getConversation", async () => {
       mockAuthenticated();

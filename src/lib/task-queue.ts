@@ -557,6 +557,14 @@ export async function expireTimedOutTasks(): Promise<Task[]> {
  * 반환값: 이번 사이클에서 디스패치된 태스크 목록
  */
 export async function dispatchTasks(): Promise<Task[]> {
+  // 0. 게이트웨이 연결 상태 확인 (연결된 게이트웨이가 없으면 디스패치 건너뛰기)
+  const { getConnectedGateways } = await import("./relay");
+  const connectedGateways = await getConnectedGateways();
+  if (connectedGateways.length === 0) {
+    // 게이트웨이가 없으면 디스패치 스킵 (silent, 로그 생략)
+    return [];
+  }
+
   // 1. 타임아웃된 태스크 정리
   const expired = await expireTimedOutTasks();
   if (expired.length > 0) {

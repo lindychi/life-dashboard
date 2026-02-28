@@ -33,7 +33,16 @@ function createECONNREFUSED() {
   return new AggregateError([inner], "AggregateError");
 }
 
-import { queueCommand, getAndClearCommands, getQueueStats, cleanupExpiredCommands } from "../relay";
+import {
+  queueCommand,
+  getAndClearCommands,
+  getQueueStats,
+  cleanupExpiredCommands,
+  getLiveOutputCacheSize,
+  cleanupStaleLiveOutput,
+  startAutoCleanup,
+  stopAutoCleanup,
+} from "../relay";
 
 describe("relay in-memory queue size limits", () => {
   beforeEach(() => {
@@ -435,6 +444,168 @@ describe("relay in-memory queue size limits", () => {
 
     it("should not throw if called on empty queue", async () => {
       await expect(cleanupExpiredCommands()).resolves.not.toThrow();
+    });
+  });
+
+  describe("P0: memory leak prevention", () => {
+    describe("queueCommand should purge expired items on insert", () => {
+      it("should remove expired commands when queueing new ones", async () => {
+        vi.useFakeTimers();
+        const gatewayId = "ql-gw-purge-1";
+
+        // Queue 5 commands at T=0
+        for (let i = 1; i <= 5; i++) {
+          await queueCommand(gatewayId, {
+            type: "spawn",
+            payload: { old: true, index: i },
+          });
+        }
+
+        // Advance past TTL (6 min)
+        vi.advanceTimersByTime(6 * 60 * 1000);
+
+        // Queue 1 new command — should purge the 5 expired ones
+        await queueCommand(gatewayId, {
+          type: "spawn",
+          payload: { fresh: true },
+        });
+
+        // Stats should show only 1 command, not 6
+        const stats = await getQueueStats();
+        // totalCommands counts ALL gateways so just check retrieval
+        const retrieved = await getAndClearCommands(gatewayId);
+        expect(retrieved).toHaveLength(1);
+        expect(retrieved[0].payload).toEqual({ fresh: true });
+      });
+
+      it("should purge expired commands even when queue is under capacity", async () => {
+        vi.useFakeTimers();
+        const gatewayId = "ql-gw-purge-2";
+
+        // Queue 3 commands
+        for (let i = 1; i <= 3; i++) {
+          await queueCommand(gatewayId, {
+            type: "spawn",
+            payload: { batch: "old", index: i },
+          });
+        }
+
+        // Expire them
+        vi.advanceTimersByTime(6 * 60 * 1000);
+
+        // Queue 2 more
+        await queueCommand(gatewayId, {
+          type: "spawn",
+          payload: { batch: "new", index: 1 },
+        });
+        await queueCommand(gatewayId, {
+          type: "spawn",
+          payload: { batch: "new", index: 2 },
+        });
+
+        const retrieved = await getAndClearCommands(gatewayId);
+        expect(retrieved).toHaveLength(2);
+        expect(retrieved[0].payload).toEqual({ batch: "new", index: 1 });
+        expect(retrieved[1].payload).toEqual({ batch: "new", index: 2 });
+      });
+
+      it("should remove empty gateway map entries after purging all expired commands", async () => {
+        vi.useFakeTimers();
+
+        // Queue commands to 3 gateways
+        for (let i = 1; i <= 3; i++) {
+          await queueCommand(`ql-gw-purge-empty-${i}`, {
+            type: "spawn",
+            payload: { index: i },
+          });
+        }
+
+        // Expire all
+        vi.advanceTimersByTime(6 * 60 * 1000);
+
+        // Queue to only 1 gateway — the other 2 should be cleaned up
+        await queueCommand("ql-gw-purge-empty-1", {
+          type: "spawn",
+          payload: { fresh: true },
+        });
+
+        // Run explicit cleanup to clear orphaned gateways
+        await cleanupExpiredCommands();
+
+        const stats = await getQueueStats();
+        // Only gateway-1 should remain (with fresh command), gateways 2 and 3 should be gone
+        expect(stats.totalGateways).toBe(1);
+        expect(stats.totalCommands).toBe(1);
+      });
+    });
+
+    describe("liveOutputCache TTL enforcement", () => {
+      it("should expose getLiveOutputCacheSize for monitoring", async () => {
+        // Import the function — if it doesn't exist yet, this test will fail (RED)
+        expect(typeof getLiveOutputCacheSize).toBe("function");
+        const size = getLiveOutputCacheSize();
+        expect(typeof size).toBe("number");
+        expect(size).toBeGreaterThanOrEqual(0);
+      });
+
+      it("should expose cleanupStaleLiveOutput to evict stale entries", async () => {
+        expect(typeof cleanupStaleLiveOutput).toBe("function");
+      });
+    });
+
+    describe("auto-cleanup interval", () => {
+      it("should export startAutoCleanup and stopAutoCleanup", async () => {
+        expect(typeof startAutoCleanup).toBe("function");
+        expect(typeof stopAutoCleanup).toBe("function");
+      });
+
+      it("startAutoCleanup should run cleanupExpiredCommands periodically", async () => {
+        vi.useFakeTimers();
+
+        const gatewayId = "ql-gw-auto-cleanup";
+
+        // Queue a command
+        await queueCommand(gatewayId, {
+          type: "spawn",
+          payload: { autoClean: true },
+        });
+
+        // Start auto-cleanup with 1-minute interval
+        startAutoCleanup(60_000);
+
+        // Advance past TTL
+        vi.advanceTimersByTime(6 * 60 * 1000);
+
+        // The interval should have fired and cleaned up
+        const stats = await getQueueStats();
+        expect(stats.totalCommands).toBe(0);
+        expect(stats.totalGateways).toBe(0);
+
+        stopAutoCleanup();
+      });
+
+      it("stopAutoCleanup should stop the periodic cleanup", async () => {
+        vi.useFakeTimers();
+
+        startAutoCleanup(60_000);
+        stopAutoCleanup();
+
+        // Queue and expire
+        await queueCommand("ql-gw-stop-cleanup", {
+          type: "spawn",
+          payload: { shouldStay: true },
+        });
+
+        vi.advanceTimersByTime(10 * 60 * 1000);
+
+        // Without auto-cleanup, expired commands should still be in queue
+        // (they'll be filtered on getAndClearCommands, but getQueueStats counts raw)
+        const stats = await getQueueStats();
+        expect(stats.totalCommands).toBe(1); // Still in memory (not cleaned up)
+
+        // Clean up for next test
+        await cleanupExpiredCommands();
+      });
     });
   });
 });

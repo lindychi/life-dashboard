@@ -30,6 +30,9 @@ export const MAX_COMMANDS_PER_GATEWAY = 100;
 export const MAX_GATEWAYS_IN_MEMORY = 50;
 export const COMMAND_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const MAX_LIVE_OUTPUT_ENTRIES = 200;
+export const MAX_RECENT_EVENTS_PER_AGENT = 50;
+export const MAX_LAST_CHUNK_CHARS = 10_000;
+export const LIVE_OUTPUT_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 let _relayApiKey: string | null = null;
 
@@ -46,6 +49,7 @@ function getRelayApiKey(): string {
 // In-memory fallback when DB is unavailable
 const inMemoryCommands = new Map<string, RelayCommand[]>();
 let dbAvailable = true;
+let autoCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 // In-memory cache for live output (too frequent for DB writes)
 const liveOutputCache = new Map<
@@ -62,6 +66,7 @@ const liveOutputCache = new Map<
       target?: string;
       content?: string;
     }>;
+    cachedAt: number;
   }
 >();
 
@@ -246,14 +251,21 @@ export async function queueCommand(
         status: "pending",
       };
       const queue = inMemoryCommands.get(gatewayId) || [];
-      queue.push(cmd);
+
+      // Purge expired commands before adding new one
+      const now = Date.now();
+      const freshQueue = queue.filter(
+        (c) => now - new Date(c.createdAt).getTime() < COMMAND_TTL_MS
+      );
+
+      freshQueue.push(cmd);
 
       // FIFO eviction: keep only latest MAX_COMMANDS_PER_GATEWAY
-      if (queue.length > MAX_COMMANDS_PER_GATEWAY) {
-        queue.splice(0, queue.length - MAX_COMMANDS_PER_GATEWAY);
+      if (freshQueue.length > MAX_COMMANDS_PER_GATEWAY) {
+        freshQueue.splice(0, freshQueue.length - MAX_COMMANDS_PER_GATEWAY);
       }
 
-      inMemoryCommands.set(gatewayId, queue);
+      inMemoryCommands.set(gatewayId, freshQueue);
 
       // Gateway eviction: keep only MAX_GATEWAYS_IN_MEMORY
       if (inMemoryCommands.size > MAX_GATEWAYS_IN_MEMORY) {
@@ -392,7 +404,25 @@ export async function updateAgentStatuses(
   for (const agent of agents) {
     const cacheKey = `${gatewayId}:${agent.id}`;
     if (agent.liveOutput) {
-      liveOutputCache.set(cacheKey, agent.liveOutput);
+      // Truncate recentEvents to prevent unbounded growth
+      let recentEvents = agent.liveOutput.recentEvents;
+      if (recentEvents && recentEvents.length > MAX_RECENT_EVENTS_PER_AGENT) {
+        recentEvents = recentEvents.slice(-MAX_RECENT_EVENTS_PER_AGENT);
+      }
+
+      // Truncate lastChunk (keep tail — most recent output is more useful)
+      let lastChunk = agent.liveOutput.lastChunk;
+      if (lastChunk.length > MAX_LAST_CHUNK_CHARS) {
+        lastChunk = lastChunk.slice(-MAX_LAST_CHUNK_CHARS);
+      }
+
+      liveOutputCache.set(cacheKey, {
+        ...agent.liveOutput,
+        lastChunk,
+        recentEvents,
+        cachedAt: Date.now(),
+      });
+
       // Evict oldest entries if cache exceeds limit
       if (liveOutputCache.size > MAX_LIVE_OUTPUT_ENTRIES) {
         const firstKey = liveOutputCache.keys().next().value;
@@ -483,7 +513,7 @@ export async function getAllAgentStatuses(): Promise<
         currentTask: r.current_task || undefined,
         sessionKey: r.session_key || undefined,
         updatedAt: r.updated_at,
-        ...(cachedLiveOutput ? { liveOutput: cachedLiveOutput } : {}),
+        ...(cachedLiveOutput ? { liveOutput: (() => { const { cachedAt: _, ...rest } = cachedLiveOutput; return rest; })() } : {}),
       });
     }
 
@@ -947,4 +977,148 @@ export async function cleanupExpiredCommands(): Promise<void> {
       inMemoryCommands.set(gatewayId, filtered);
     }
   }
+}
+
+// Get live output cache size for monitoring
+export function getLiveOutputCacheSize(): number {
+  return liveOutputCache.size;
+}
+
+// Remove stale entries from liveOutputCache
+export function cleanupStaleLiveOutput(): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [key, entry] of liveOutputCache.entries()) {
+    const age = now - new Date(entry.lastActivityAt).getTime();
+    if (age > LIVE_OUTPUT_TTL_MS) {
+      liveOutputCache.delete(key);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+// Start periodic cleanup of expired in-memory commands and stale live output
+export function startAutoCleanup(intervalMs: number = 60_000): void {
+  stopAutoCleanup(); // Clear existing interval if any
+  autoCleanupInterval = setInterval(() => {
+    // Note: cleanupExpiredCommands is async but we don't await it here
+    // In tests with fake timers, this needs to complete synchronously
+    void cleanupExpiredCommands();
+    cleanupStaleLiveOutput();
+  }, intervalMs);
+  // Don't block process exit
+  if (autoCleanupInterval && typeof autoCleanupInterval === 'object' && 'unref' in autoCleanupInterval) {
+    autoCleanupInterval.unref();
+  }
+}
+
+// Stop periodic cleanup
+export function stopAutoCleanup(): void {
+  if (autoCleanupInterval) {
+    clearInterval(autoCleanupInterval);
+    autoCleanupInterval = null;
+  }
+}
+
+// Clear all in-memory state (for testing)
+export function clearAllInMemoryState(): void {
+  inMemoryCommands.clear();
+  liveOutputCache.clear();
+  stopAutoCleanup();
+}
+
+// Get live output for a specific agent (for testing and internal use)
+export function getLiveOutputForAgent(
+  gatewayId: string,
+  agentId: string
+): {
+  lastChunk: string;
+  totalChars: number;
+  lastActivityAt: string;
+  chunksReceived: number;
+  recentEvents?: Array<{
+    type: "tool_use" | "text" | "health" | "warning" | "stderr";
+    timestamp: string;
+    tool?: string;
+    target?: string;
+    content?: string;
+  }>;
+} | undefined {
+  const cacheKey = `${gatewayId}:${agentId}`;
+  const entry = liveOutputCache.get(cacheKey);
+  if (!entry) return undefined;
+  // Return without cachedAt (internal field)
+  const { cachedAt, ...rest } = entry;
+  return rest;
+}
+
+// Clean up both expired commands and stale liveOutput entries
+export async function cleanupAllInMemory(): Promise<{
+  commandsRemoved: number;
+  liveOutputRemoved: number;
+}> {
+  // 1. Clean expired commands
+  const statsBefore = await getQueueStats();
+  await cleanupExpiredCommands();
+  const statsAfter = await getQueueStats();
+  const commandsRemoved = statsBefore.totalCommands - statsAfter.totalCommands;
+
+  // 2. Clean stale liveOutput entries (TTL-based)
+  const now = Date.now();
+  let liveOutputRemoved = 0;
+  for (const [key, entry] of liveOutputCache.entries()) {
+    if (now - entry.cachedAt > LIVE_OUTPUT_TTL_MS) {
+      liveOutputCache.delete(key);
+      liveOutputRemoved++;
+    }
+  }
+
+  if (commandsRemoved > 0 || liveOutputRemoved > 0) {
+    console.log(
+      `[relay] Cleanup: ${commandsRemoved} expired commands, ${liveOutputRemoved} stale liveOutput entries removed`
+    );
+  }
+
+  return { commandsRemoved, liveOutputRemoved };
+}
+
+// Estimate worst-case memory usage based on configured limits
+export function getMemoryBoundsEstimate(): {
+  maxCommands: number;
+  maxLiveOutputEntries: number;
+  maxRecentEventsPerAgent: number;
+  maxLastChunkChars: number;
+  estimatedMaxMemoryBytes: number;
+  estimatedMaxMemoryMB: number;
+} {
+  const maxCommands = MAX_COMMANDS_PER_GATEWAY * MAX_GATEWAYS_IN_MEMORY;
+  const maxLiveOutputEntries = MAX_LIVE_OUTPUT_ENTRIES;
+  const maxRecentEventsPerAgent = MAX_RECENT_EVENTS_PER_AGENT;
+  const maxLastChunkChars = MAX_LAST_CHUNK_CHARS;
+
+  // Estimate per-command: ~500 bytes (UUID + type + small payload + timestamps)
+  const commandBytes = maxCommands * 500;
+
+  // Estimate per-liveOutput entry:
+  //   lastChunk: MAX_LAST_CHUNK_CHARS * 2 (UTF-16)
+  //   recentEvents: MAX_RECENT_EVENTS_PER_AGENT * ~200 bytes each
+  //   overhead: ~200 bytes
+  const perLiveOutputBytes =
+    maxLastChunkChars * 2 +
+    maxRecentEventsPerAgent * 200 +
+    200;
+  const liveOutputBytes = maxLiveOutputEntries * perLiveOutputBytes;
+
+  const estimatedMaxMemoryBytes = commandBytes + liveOutputBytes;
+  const estimatedMaxMemoryMB = Math.ceil(estimatedMaxMemoryBytes / (1024 * 1024));
+
+  return {
+    maxCommands,
+    maxLiveOutputEntries,
+    maxRecentEventsPerAgent,
+    maxLastChunkChars,
+    estimatedMaxMemoryBytes,
+    estimatedMaxMemoryMB,
+  };
 }

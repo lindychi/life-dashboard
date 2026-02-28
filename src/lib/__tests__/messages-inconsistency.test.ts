@@ -154,7 +154,7 @@ vi.mock("@/lib/db", () => {
 
         // Find latest message for this agent
         const agentMessages = mockStorage.messages
-          .filter((m) => m.to_id === agentId || m.to_id === "broadcast")
+          .filter((m) => (m.to_id === agentId || m.to_id === "broadcast") && m.from_id !== agentId)
           .sort(
             (a, b) =>
               new Date(b.created_at).getTime() -
@@ -445,17 +445,27 @@ describe("Phase 1 Edge Case: Empty and null handling", () => {
     }
   });
 
-  it("sendMessage should handle empty content string", async () => {
-    // The current implementation does NOT validate content emptiness
-    // This might be an issue if empty messages are not desired
-    const result = await sendMessage({
-      from: "dev",
-      to: "pm",
-      content: "",
-      type: "text",
-    });
+  it("sendMessage should reject empty content string", async () => {
+    // Library-level validation rejects empty content (falsy check on required fields)
+    await expect(
+      sendMessage({
+        from: "dev",
+        to: "pm",
+        content: "",
+        type: "text",
+      })
+    ).rejects.toThrow("missing required fields");
+  });
 
-    // Current behavior: allows empty content
-    expect(result.content).toBe("");
+  it("getAllAgentsOverview should not show agent's own sent messages as latest", async () => {
+    // pm sends a message to dev
+    await sendMessage({ from: "pm", to: "dev", content: "task for dev", type: "task" });
+
+    const overview = await getAllAgentsOverview();
+
+    // pm should NOT see this as their latest message (they sent it)
+    expect(overview.pm.latest).toBeUndefined();
+    // dev SHOULD see this as their latest
+    expect(overview.dev.latest?.content).toBe("task for dev");
   });
 });
