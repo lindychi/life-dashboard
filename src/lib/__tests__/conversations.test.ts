@@ -767,14 +767,12 @@ describe("conversations module", () => {
       await createConversation({
         title: "PM Session",
         participants: ["user", "pm"],
-        status: "active",
         createdBy: "user",
       });
 
       await createConversation({
         title: "Dev Session",
         participants: ["user", "dev"],
-        status: "active",
         createdBy: "pm",
       });
 

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * SSE (Server-Sent Events) Stability Tests
  *
@@ -81,8 +82,9 @@ describe("SSE Stability Tests", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Clear any existing clients
-    if (sseBroadcaster.clients instanceof Map) {
-      sseBroadcaster.clients.clear();
+    const broadcaster = sseBroadcaster as unknown as { clients: Map<string, unknown> };
+    if (broadcaster.clients instanceof Map) {
+      broadcaster.clients.clear();
     }
   });
 
@@ -97,7 +99,7 @@ describe("SSE Stability Tests", () => {
     it("인증되지 않은 요청은 401 반환", async () => {
       mockVerifyAuth.mockResolvedValueOnce({
         authenticated: false,
-        email: null,
+        email: undefined,
       });
 
       const request = new NextRequest("http://localhost/api/sse");
@@ -326,7 +328,7 @@ describe("SSE Stability Tests", () => {
     it("인증 실패 시 스트림 생성 안 됨", async () => {
       mockVerifyAuth.mockResolvedValueOnce({
         authenticated: false,
-        email: null,
+        email: undefined,
       });
 
       const request = new NextRequest("http://localhost/api/sse");

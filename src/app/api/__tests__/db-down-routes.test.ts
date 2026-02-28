@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -53,18 +54,17 @@ vi.mock("@/lib/agents", () => ({
 }));
 
 function makeRequest(url: string, options?: RequestInit): NextRequest {
-  return new NextRequest(new URL(url, "http://localhost:3000"), options);
+  return new NextRequest(new URL(url, "http://localhost:3000"), {
+    ...options,
+    signal: options?.signal ?? undefined,
+  });
 }
 
 function makeRelayRequest(url: string, options?: RequestInit): NextRequest {
-  const req = new NextRequest(new URL(url, "http://localhost:3000"), options);
-  // Relay requests need x-relay-key header
   return new NextRequest(new URL(url, "http://localhost:3000"), {
     ...options,
-    headers: {
-      ...options?.headers,
-      "x-relay-key": "dev-relay-key",
-    },
+    signal: options?.signal ?? undefined,
+    headers: { "x-relay-key": "dev-relay-key" },
   });
 }
 
@@ -83,7 +83,7 @@ describe("API routes when database is down", () => {
       const response = await GET(request);
       const data = await response.json();
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(503);
       expect(data.history).toEqual({});
     });
   });

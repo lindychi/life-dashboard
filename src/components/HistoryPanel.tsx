@@ -303,6 +303,9 @@ export default function HistoryPanel({
 
         const data: TimelineResponse = await res.json();
 
+        // Skip state updates if request was aborted (component unmounted)
+        if (controller.signal.aborted) return;
+
         if (cursor) {
           // Append to existing entries
           setTimelineEntries((prev) => [...prev, ...data.entries]);
@@ -326,7 +329,9 @@ export default function HistoryPanel({
         }
         setError(true);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     },
     [filterAgent, filterType, debouncedSearch, dateFrom, dateTo, hideOutput, filterRequestGroupId]
@@ -334,17 +339,25 @@ export default function HistoryPanel({
 
   // ----- Initial load and filter change handling -----
   useEffect(() => {
+    let active = true;
     setInitialLoading(true);
     setTimelineEntries([]);
     setNextCursor(null);
     setError(false);
-    fetchTimeline().finally(() => setInitialLoading(false));
+    fetchTimeline().finally(() => {
+      if (active) setInitialLoading(false);
+    });
+    return () => {
+      active = false;
+      abortRef.current?.abort();
+    };
   }, [fetchTimeline]);
 
   // ----- Fetch grouped data when in grouped view mode -----
   useEffect(() => {
     if (viewMode !== "grouped") return;
 
+    let active = true;
     setGroupedLoading(true);
 
     // Build query params for both requests
@@ -361,6 +374,7 @@ export default function HistoryPanel({
       fetch(`/api/history/timeline?${timelineParams.toString()}`).then((res) => res.json()),
     ])
       .then(([groupedResult, timelineResult]) => {
+        if (!active) return;
         const groups: GroupedHistoryEntry[] = groupedResult.groups || [];
         setGroupedData(groups);
 
@@ -384,7 +398,12 @@ export default function HistoryPanel({
         setUngroupedEntries(ungrouped);
       })
       .catch((err) => console.error("Grouped fetch error:", err))
-      .finally(() => setGroupedLoading(false));
+      .finally(() => {
+        if (active) setGroupedLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [viewMode, filterAgent]);
 
   // ----- Debounced search -----

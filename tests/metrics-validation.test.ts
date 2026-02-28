@@ -438,7 +438,7 @@ describe('Data Integrity and Synchronization', () => {
 
     it('should update projects.progress field', async () => {
       // Given: 프로젝트 진행률 업데이트
-      vi.mocked(query).mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      vi.mocked(query).mockResolvedValueOnce([]);
 
       // When: update_project_progress 호출
       await query(`SELECT update_project_progress($1)`, ['project-id']);
@@ -546,17 +546,17 @@ describe('Edge Cases and Error Handling', () => {
   });
 
   it('should handle concurrent updates gracefully', async () => {
-    // Given: 동시에 여러 태스크 업데이트
+    // Given: 동시에 여러 태스크 업데이트 (mock은 호출 전에 설정)
+    vi.mocked(queryOne)
+      .mockResolvedValueOnce({ id: 'task-1', status: 'completed' })
+      .mockResolvedValueOnce({ id: 'task-2', status: 'completed' })
+      .mockResolvedValueOnce({ id: 'task-3', status: 'failed' });
+
     const updates = [
       queryOne(`UPDATE task_executions SET status = 'completed' WHERE id = $1`, ['task-1']),
       queryOne(`UPDATE task_executions SET status = 'completed' WHERE id = $2`, ['task-2']),
       queryOne(`UPDATE task_executions SET status = 'failed' WHERE id = $3`, ['task-3']),
     ];
-
-    vi.mocked(queryOne)
-      .mockResolvedValueOnce({ id: 'task-1', status: 'completed' })
-      .mockResolvedValueOnce({ id: 'task-2', status: 'completed' })
-      .mockResolvedValueOnce({ id: 'task-3', status: 'failed' });
 
     // When: 동시 업데이트
     await Promise.all(updates);

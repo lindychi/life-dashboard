@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Mock pg to prevent native Pool from loading
@@ -52,6 +53,7 @@ import {
   getConversation,
   markAsRead,
   getAllAgentsOverview,
+  isValidISOTimestamp,
 } from "@/lib/messages";
 import { isDbConnectionError } from "@/lib/db";
 

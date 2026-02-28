@@ -139,7 +139,7 @@ describe("clipboard", () => {
       items: Array<{ kind: string; type: string; data?: Blob }>
     ): ClipboardEvent => {
       const clipboardItems: DataTransferItem[] = items.map((item) => ({
-        kind: item.kind as DataTransferItemKind,
+        kind: item.kind,
         type: item.type,
         getAsFile: vi.fn().mockReturnValue(
           item.data

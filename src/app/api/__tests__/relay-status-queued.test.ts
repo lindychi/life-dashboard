@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -44,13 +45,9 @@ vi.mock("@/lib/auth", () => ({
   getCurrentUser: vi.fn().mockResolvedValue({ email: "test@test.com" }),
 }));
 
-function makeRelayRequest(url: string, options?: RequestInit): NextRequest {
+function makeRelayRequest(url: string): NextRequest {
   return new NextRequest(new URL(url, "http://localhost:3000"), {
-    ...options,
-    headers: {
-      ...options?.headers,
-      "x-relay-key": "dev-relay-key",
-    },
+    headers: { "x-relay-key": "dev-relay-key" },
   });
 }
 

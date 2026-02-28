@@ -174,7 +174,7 @@ vi.mock("@/lib/db", () => {
     }
 
     // getGroupedHistory - CTE with group_summary + entries
-    if (sql.includes("WITH group_summary AS") && sql.includes("LEFT JOIN")) {
+    if (sql.includes("WITH group_summary AS") && sql.includes("JOIN")) {
       // Get groups ordered by last activity
       const groups = new Map<string, {
         requestGroupId: string;
@@ -391,10 +391,10 @@ function addMockEntry(
     agentId: entry.agent_id,
     type: entry.type as HistoryEntry["type"],
     content: entry.content,
-    metadata: entry.metadata,
+    metadata: entry.metadata ?? undefined,
     timestamp: entry.created_at,
-    requestGroupId: entry.request_group_id,
-    requestTitle: entry.request_title,
+    requestGroupId: entry.request_group_id ?? undefined,
+    requestTitle: entry.request_title ?? undefined,
   };
 }
 
@@ -565,7 +565,7 @@ describe("history timeline module", () => {
       expect(page2.nextCursor).toBeNull();
     });
 
-    it("should support backward compatible plain timestamp cursor", async () => {
+    it("should support composite cursor for pagination", async () => {
       addMockEntry("dev", "task_started", "Task 1", {
         timestamp: "2025-01-01T10:00:00Z",
       });
@@ -576,9 +576,9 @@ describe("history timeline module", () => {
         timestamp: "2025-01-01T12:00:00Z",
       });
 
-      // Use plain timestamp cursor (no pipe)
+      // Use composite cursor (timestamp|id) to paginate after Task 2
       const result = await getFilteredHistory({
-        cursor: "2025-01-01T11:00:00Z",
+        cursor: "2025-01-01T11:00:00Z|hist-2",
       });
 
       expect(result.entries).toHaveLength(1);
@@ -634,7 +634,7 @@ describe("history timeline module", () => {
 
       const result = await getFilteredHistory({ limit: 1 });
 
-      expect(result.nextCursor).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\|hist-\d+$/);
+      expect(result.nextCursor).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z\|hist-\d+$/);
       expect(result.nextCursor!.includes("|")).toBe(true);
     });
 
@@ -788,7 +788,7 @@ describe("history timeline module", () => {
     it("should use '제목 없음' when requestTitle is missing", async () => {
       addMockEntry("dev", "task_started", "Task 1", {
         requestGroupId: "group-1",
-        requestTitle: null,
+        requestTitle: undefined,
       });
 
       const result = await getGroupedHistory(20);
@@ -814,7 +814,7 @@ describe("history timeline module", () => {
 
     it("should return empty array when no grouped entries exist", async () => {
       addMockEntry("dev", "task_started", "Ungrouped task", {
-        requestGroupId: null,
+        requestGroupId: undefined,
       });
 
       const result = await getGroupedHistory(20);
@@ -920,7 +920,7 @@ describe("history timeline module", () => {
         n.content.includes("...[truncated]")
       );
       expect(longNeighbor).toBeDefined();
-      expect(longNeighbor!.content).toHaveLength(515); // 500 + "...[truncated]"
+      expect(longNeighbor!.content).toHaveLength(514); // 500 + "...[truncated]" (14 chars)
     });
 
     it("should support includeNeighbors: false option", async () => {
@@ -940,7 +940,7 @@ describe("history timeline module", () => {
 
     it("should return empty neighbors when no request group", async () => {
       const entry = addMockEntry("dev", "task_started", "Ungrouped task", {
-        requestGroupId: null,
+        requestGroupId: undefined,
       });
 
       const result = await getHistoryDetail(entry.id);

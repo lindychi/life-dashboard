@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * SSE Integration Tests
  *
@@ -23,11 +24,24 @@ vi.mock("@/lib/db", () => ({
   pool: {},
 }));
 
-// Mock auth
-vi.mock("@/lib/auth", () => ({
-  getCurrentUser: vi.fn(),
-  verifyAuth: vi.fn(),
-}));
+// Mock auth — authenticateRequest delegates to getCurrentUser so that
+// tests which mock getCurrentUser to return null automatically get 401.
+vi.mock("@/lib/auth", () => {
+  const _getCurrentUser = vi.fn();
+  return {
+    getCurrentUser: _getCurrentUser,
+    verifyAuth: vi.fn(),
+    authenticateRequest: vi.fn().mockImplementation(async () => {
+      const user = await _getCurrentUser();
+      return user !== null;
+    }),
+    authenticateRequestWithDetails: vi.fn().mockImplementation(async () => {
+      const user = await _getCurrentUser();
+      if (user !== null) return { authenticated: true, method: "session" as const };
+      return { authenticated: false };
+    }),
+  };
+});
 
 // Track SSE broadcasts
 const mockBroadcastCalls: Array<{
@@ -69,7 +83,8 @@ describe("SSE Integration Tests", () => {
     // Default auth mock
     mockGetCurrentUser.mockResolvedValue({
       email: "test@example.com",
-      name: "Test User",
+      iat: 0,
+      exp: 0,
     });
   });
 
@@ -358,8 +373,8 @@ describe("SSE Integration Tests", () => {
       await createProject(request2 as any);
 
       expect(mockBroadcast).toHaveBeenCalledTimes(2);
-      expect(mockBroadcast.mock.calls[0][0].data.project.id).toBe("proj-1");
-      expect(mockBroadcast.mock.calls[1][0].data.project.id).toBe("proj-2");
+      expect((mockBroadcast.mock.calls[0][0] as any).data.project.id).toBe("proj-1");
+      expect((mockBroadcast.mock.calls[1][0] as any).data.project.id).toBe("proj-2");
     });
   });
 

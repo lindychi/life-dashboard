@@ -402,7 +402,7 @@ export async function getConversationMessages(
   options?: {
     limit?: number;
     since?: string; // ISO timestamp
-    parentMessageId?: string; // 특정 메시지의 답장만 조회
+    parentMessageId?: string | null; // 특정 메시지의 답장만 조회 (null = 루트 메시지만)
   }
 ): Promise<ConversationMessage[]> {
   let sql = `SELECT id, conversation_id, from_id, content, type, metadata, parent_message_id, created_at

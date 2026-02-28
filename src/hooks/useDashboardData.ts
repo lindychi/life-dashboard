@@ -335,7 +335,10 @@ export function useMessageOverview() {
 
 // ===== Hook: usePendingReplies =====
 
-export function usePendingReplies(historyData: Record<string, HistoryEntry[]>) {
+export function usePendingReplies(
+  historyData: Record<string, HistoryEntry[]>,
+  agentMap?: Record<string, { emoji: string; name: string }>
+) {
   return useMemo(() => {
     const allEntries = Object.values(historyData).flat();
     const sorted = [...allEntries].sort(
@@ -347,6 +350,16 @@ export function usePendingReplies(historyData: Record<string, HistoryEntry[]>) {
     const agentReplied: Set<string> = new Set();
 
     for (const entry of sorted) {
+      // Skip entries with no agentId or invalid agents
+      if (!entry.agentId) {
+        continue;
+      }
+
+      // Skip if agentMap provided and agent not found
+      if (agentMap && !agentMap[entry.agentId]) {
+        continue;
+      }
+
       if (
         (entry.type === "output" || entry.type === "task_completed") &&
         looksLikeQuestion(entry.content)
@@ -360,9 +373,15 @@ export function usePendingReplies(historyData: Record<string, HistoryEntry[]>) {
     }
 
     return Object.entries(agentLastQuestion)
-      .filter(([agentId]) => !agentReplied.has(agentId))
+      .filter(([agentId]) => {
+        // Filter out if already replied
+        if (agentReplied.has(agentId)) return false;
+        // Filter out if agentMap is provided but agent not found
+        if (agentMap && !agentMap[agentId]) return false;
+        return true;
+      })
       .map(([, entry]) => entry);
-  }, [historyData]);
+  }, [historyData, agentMap]);
 }
 
 // ===== Hook: useProjects =====

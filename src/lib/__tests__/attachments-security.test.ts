@@ -7,7 +7,7 @@
  * 3. Authentication enforcement on all attachment routes
  * 4. refKey format validation (injection prevention)
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock pg to prevent native Pool from loading
 vi.mock("pg", () => ({

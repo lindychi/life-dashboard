@@ -245,7 +245,6 @@ describe("Unit Tests: addHistoryEntry with requestGroupId", () => {
     }]);
 
     const result = await addHistoryEntry("dev", {
-      agentId: "dev",
       type: "task_started",
       content: "Starting build",
       requestGroupId: testGroupId,
@@ -280,7 +279,6 @@ describe("Unit Tests: addHistoryEntry with requestGroupId", () => {
     }]);
 
     await addHistoryEntry("dev", {
-      agentId: "dev",
       type: "output",
       content: "Some output",
     });
