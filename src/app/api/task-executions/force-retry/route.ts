@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db";
 import { queueCommand } from "@/lib/relay";
-import { RELAY_API_KEY } from "@/lib/config";
+import { getRelayApiKey } from "@/lib/config";
 
 export async function POST(req: NextRequest) {
   // Auth check
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  if (authHeader && authHeader !== RELAY_API_KEY) {
+  if (authHeader && authHeader !== getRelayApiKey()) {
     return NextResponse.json({ error: "Invalid relay key" }, { status: 401 });
   }
 

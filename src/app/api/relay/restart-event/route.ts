@@ -7,11 +7,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { RELAY_API_KEY } from "@/lib/config";
+import { getRelayApiKey } from "@/lib/config";
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get("x-relay-key");
-  if (authHeader !== RELAY_API_KEY) {
+  if (authHeader !== getRelayApiKey()) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -73,11 +73,15 @@ if [[ ${#MISSING_TESTS[@]} -gt 0 ]]; then
     echo -e "  ${YELLOW}→ $missing${RESET}"
   done
   echo -e "\n${YELLOW}Consider adding tests before committing (TDD principle).${RESET}"
-  echo -e "${YELLOW}Continue anyway? [y/N]${RESET} "
-  read -r response
-  if [[ ! "$response" =~ ^[Yy]$ ]]; then
-    echo -e "${RED}✗ Commit aborted${RESET}"
-    exit 1
+  if [ -t 0 ]; then
+    echo -e "${YELLOW}Continue anyway? [y/N]${RESET} "
+    read -r response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+      echo -e "${RED}✗ Commit aborted${RESET}"
+      exit 1
+    fi
+  else
+    echo -e "${YELLOW}(Non-interactive mode: continuing automatically)${RESET}"
   fi
 else
   echo -e "${GREEN}✓ All production code has corresponding tests${RESET}"

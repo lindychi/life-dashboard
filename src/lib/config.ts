@@ -15,5 +15,4 @@ export function getRelayApiKey(): string {
   return _relayApiKey;
 }
 
-// Re-export as constant for backward compatibility
-export const RELAY_API_KEY = getRelayApiKey();
+// Use getRelayApiKey() inside request handlers, not at module level
