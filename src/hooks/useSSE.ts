@@ -27,6 +27,8 @@ export type SSEEventType =
   | "permission:approval:created"
   | "permission:approval:updated"
   | "permission:approval:responded"
+  | "relay:status"
+  | "agent:stats:updated"
   | "heartbeat";
 
 export interface SSEEvent {
@@ -58,6 +60,7 @@ export function useSSE(options: SSEOptions = {}) {
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isIntentionalCloseRef = useRef(false);
+  const connectRef = useRef<() => void>(() => {});
 
   const connect = useCallback(() => {
     // Clean up existing connection
@@ -109,6 +112,8 @@ export function useSSE(options: SSEOptions = {}) {
       "permission:approval:created",
       "permission:approval:updated",
       "permission:approval:responded",
+      "relay:status",
+      "agent:stats:updated",
       "heartbeat",
     ];
 
@@ -137,7 +142,7 @@ export function useSSE(options: SSEOptions = {}) {
           );
 
           reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
+            connectRef.current();
           }, reconnectInterval);
         } else {
           console.error("[SSE] Max reconnect attempts reached");
@@ -155,6 +160,10 @@ export function useSSE(options: SSEOptions = {}) {
     reconnectInterval,
     maxReconnectAttempts,
   ]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   const disconnect = useCallback(() => {
     console.log("[SSE] Disconnecting...");

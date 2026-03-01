@@ -33,6 +33,8 @@ export type SSEEventType =
   | "youtube:video:analyzed"
   | "youtube:analysis:started"
   | "youtube:video:analysis_failed"
+  | "relay:status"
+  | "agent:stats:updated"
   | "heartbeat";
 
 export interface SSEEvent {
@@ -83,7 +85,7 @@ class SSEBroadcaster {
     if (client) {
       try {
         client.controller.close();
-      } catch (err) {
+      } catch {
         // Ignore close errors
       }
       this.clients.delete(clientId);
