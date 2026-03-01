@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { useOKRSSE } from "@/hooks/useOKRSSE";
 
 // Types
 export interface KeyResult {
@@ -45,63 +46,66 @@ export default function OKRView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Helper to convert snake_case from API to camelCase for component
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const transformObjectiveData = (apiObjective: Record<string, any>): Objective => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const keyResults: KeyResult[] = apiObjective.key_results.map((kr: Record<string, any>) => ({
-      id: kr.id,
-      title: kr.title,
-      description: kr.description,
-      currentValue: kr.current_value,
-      targetValue: kr.target_value,
-      unit: kr.unit,
-      metricType: kr.metric_type,
-      progress: kr.progress,
-      status: kr.status,
-      weight: kr.weight,
-    }));
-
-    return {
-      id: apiObjective.id,
-      title: apiObjective.title,
-      description: apiObjective.description,
-      periodType: apiObjective.period_type,
-      startDate: apiObjective.start_date,
-      endDate: apiObjective.end_date,
-      status: apiObjective.status,
-      owner: apiObjective.owner,
-      tags: apiObjective.tags,
-      keyResults: keyResults,
-      overallProgress: apiObjective.overall_progress,
-    };
-  };
+  const fetchObjectives = useCallback(async () => {
+    try {
+      setLoading(true);
+      const response = await fetch("/api/okr/objectives");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const transformedObjectives = data.objectives.map((obj: Record<string, any>) => ({
+        id: obj.id,
+        title: obj.title,
+        description: obj.description,
+        periodType: obj.period_type,
+        startDate: obj.start_date,
+        endDate: obj.end_date,
+        status: obj.status,
+        owner: obj.owner,
+        tags: obj.tags,
+        overallProgress: obj.overall_progress,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        keyResults: obj.key_results.map((kr: Record<string, any>) => ({
+          id: kr.id,
+          title: kr.title,
+          description: kr.description,
+          currentValue: kr.current_value,
+          targetValue: kr.target_value,
+          unit: kr.unit,
+          metricType: kr.metric_type,
+          progress: kr.progress,
+          status: kr.status,
+          weight: kr.weight,
+        })),
+      }));
+      setObjectives(transformedObjectives);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to fetch objectives");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const fetchObjectives = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch("/api/okr/objectives");
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
-        const transformedObjectives = data.objectives.map(transformObjectiveData);
-        setObjectives(transformedObjectives);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to fetch objectives");
-      } finally {
-        setLoading(false);
-      }
-    };
-
     if (initialObjectives.length === 0) {
       fetchObjectives();
     } else {
       // If initial objectives are provided, use them and set loading to false
       setLoading(false);
     }
-  }, [initialObjectives]);
+  }, [initialObjectives, fetchObjectives]);
+
+  // Re-fetch when OKR SSE events arrive
+  useOKRSSE({
+    onObjectiveCreated: () => fetchObjectives(),
+    onObjectiveUpdated: () => fetchObjectives(),
+    onObjectiveDeleted: () => fetchObjectives(),
+    onKeyResultCreated: () => fetchObjectives(),
+    onKeyResultUpdated: () => fetchObjectives(),
+    onKeyResultDeleted: () => fetchObjectives(),
+  });
   const [expandedObjectives, setExpandedObjectives] = useState<Set<string>>(
     new Set()
   );

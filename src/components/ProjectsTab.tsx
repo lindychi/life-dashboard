@@ -5,6 +5,7 @@ import type { Project } from "@/hooks/useDashboardData";
 import ProjectModal, { type ProjectFormData } from "./ProjectModal";
 import KPIDashboard from "./KPIDashboard";
 import OKRView from "./OKRView";
+import { useProjectSSE } from "@/hooks/useProjectSSE";
 
 interface ProjectsTabProps {
   projects: Project[];
@@ -24,7 +25,12 @@ export default function ProjectsTab({
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [_selectedProject, setSelectedProject] = useState<Project | null>(null);
 
-  // KPI and OKR components now fetch their own data internally
+  // Connect SSE events to refresh projects list
+  useProjectSSE({
+    onProjectCreated: () => onRefresh(),
+    onProjectUpdated: () => onRefresh(),
+    onProjectDeleted: () => onRefresh(),
+  });
 
   const handleCreateProject = useCallback(async (data: ProjectFormData) => {
     try {
@@ -208,9 +214,21 @@ export default function ProjectsTab({
       ) : (
         <OKRView
           onObjectiveClick={(obj) => console.log("Objective clicked:", obj)}
-          onKeyResultUpdate={(objId, krId, value) =>
-            console.log("Key result updated:", objId, krId, value)
-          }
+          onKeyResultUpdate={async (_objId, krId, value) => {
+            try {
+              const res = await fetch(`/api/okr/key-results/${krId}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ currentValue: value }),
+              });
+              if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.error || "Key result 저장 실패");
+              }
+            } catch (error) {
+              console.error("Failed to update key result:", error);
+            }
+          }}
         />
       )}
 

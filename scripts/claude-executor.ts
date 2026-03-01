@@ -35,13 +35,18 @@ export interface ExecutionResult {
   modelUsed?: string; // Actual model used (from --model flag)
 }
 
-// Safe tools whitelist: file operations + MCP tools, NO Bash execution
+// Safe tools whitelist: file operations + MCP tools + non-destructive web/task tools, NO Bash execution
 export const ALLOWED_TOOLS = [
   "Read",
   "Write",
   "Edit",
   "Glob",
   "Grep",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "TodoWrite",
+  "NotebookEdit",
   "mcp__life-dashboard",
 ].join(",");
 
@@ -56,6 +61,11 @@ export function buildAllowedTools(options?: { allowBash?: boolean; enableBrowser
     "Edit",
     "Glob",
     "Grep",
+    "WebFetch",
+    "WebSearch",
+    "Task",
+    "TodoWrite",
+    "NotebookEdit",
     "mcp__life-dashboard",
   ];
   if (options?.allowBash) {

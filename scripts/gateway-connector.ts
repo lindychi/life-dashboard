@@ -975,24 +975,6 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         return { success: true, agentId, message: "Task started" };
       }
 
-      case "send": {
-        const { sessionKey, message } = command.payload as {
-          sessionKey: string;
-          message: string;
-        };
-        console.log(`   📤 Sending to session: ${sessionKey}`);
-        console.log(`   💬 Message: ${message}`);
-
-        // Add history entry
-        const agent = Array.from(agentStatusMap.values()).find((a) => a.sessionKey === sessionKey);
-        if (agent) {
-          addHistory(agent.id, "message_sent", `Message sent: ${message}`);
-        }
-
-        // TODO: Actually call OpenClaw sessions_send
-        return { success: true, sessionKey };
-      }
-
       case "status": {
         // Add history entry for status check
         addHistory("system", "status_change", "Gateway status checked");

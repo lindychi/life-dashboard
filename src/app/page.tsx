@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { HistoryEntry } from "@/lib/frontend-types";
 import AgentDashboard from "@/components/AgentDashboard";
@@ -14,7 +14,6 @@ import type { AttachedFile, UploadedAttachment } from "@/components/FileAttachme
 import {
   useAgents,
   useUser,
-  useGatewayStatus,
   useLiveAgentStatuses,
   useHistoryData,
   useMessageOverview,
@@ -63,7 +62,7 @@ export default function Home() {
   // Custom hooks
   const { agents, setAgents, agentMap } = useAgents();
   const user = useUser();
-  const { connectedGateways, dbConnected, setDbConnected } = useGatewayStatus();
+  const [dbConnected, setDbConnected] = useState(true);
   const {
     liveAgentStatuses,
     isOrchestrating,
@@ -71,6 +70,7 @@ export default function Home() {
     pendingCount,
     queuedCommands,
     queuedCommandsCount,
+    connectedGateways,
   } = useLiveAgentStatuses(setAgents, setDbConnected);
   const { historyData, setHistoryData } = useHistoryData(isOrchestrating);
   const { agentOverview, totalUnread, fetchMessageOverview } = useMessageOverview();
@@ -83,6 +83,32 @@ export default function Home() {
     hasPendingApprovals,
     pendingCount: approvalCount,
   } = usePermissionApprovals();
+
+  // Compute completedToday from historyData and merge into agents
+  useEffect(() => {
+    const todayStr = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const countByAgent: Record<string, number> = {};
+    for (const entries of Object.values(historyData)) {
+      for (const entry of entries) {
+        if (
+          entry.type === "task_completed" &&
+          entry.timestamp.slice(0, 10) === todayStr
+        ) {
+          countByAgent[entry.agentId] = (countByAgent[entry.agentId] ?? 0) + 1;
+        }
+      }
+    }
+    setAgents((prev) => {
+      let changed = false;
+      const next = prev.map((agent) => {
+        const count = countByAgent[agent.config.id] ?? 0;
+        if (agent.completedToday === count) return agent;
+        changed = true;
+        return { ...agent, completedToday: count };
+      });
+      return changed ? next : prev;
+    });
+  }, [historyData, setAgents]);
 
   const today = new Date().toLocaleDateString("ko-KR", {
     year: "numeric",

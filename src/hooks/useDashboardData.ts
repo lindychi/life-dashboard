@@ -108,35 +108,8 @@ export function useUser() {
   return user;
 }
 
-// ===== Hook: useGatewayStatus =====
-
-export function useGatewayStatus() {
-  const [gateways, setGateways] = useState<GatewayConnection[]>([]);
-  const [dbConnected, setDbConnected] = useState(true);
-
-  useEffect(() => {
-    const fetchStatus = () => {
-      fetch("/api/relay/status")
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.gateways) setGateways(data.gateways);
-          if (data.dbConnected !== undefined) setDbConnected(data.dbConnected);
-        })
-        .catch(console.error);
-    };
-
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const connectedGateways = useMemo(
-    () => gateways.filter((g) => g.status === "connected"),
-    [gateways]
-  );
-
-  return { gateways, connectedGateways, dbConnected, setDbConnected };
-}
+// ===== Hook: useGatewayStatus (deprecated — use useLiveAgentStatuses) =====
+// Kept for backward compatibility. useLiveAgentStatuses now returns gateways too.
 
 // ===== Hook: useLiveAgentStatuses =====
 
@@ -154,12 +127,14 @@ export function useLiveAgentStatuses(
     Record<string, QueuedCommand[]>
   >({});
   const [queuedCommandsCount, setQueuedCommandsCount] = useState(0);
+  const [gateways, setGateways] = useState<GatewayConnection[]>([]);
 
   useEffect(() => {
     const fetchStatuses = () => {
       fetch("/api/relay/status")
         .then((res) => res.json())
         .then((data) => {
+          if (data.gateways) setGateways(data.gateways);
           if (data.agents) {
             const all = Object.values(
               data.agents as Record<string, LiveAgentStatus[]>
@@ -218,6 +193,11 @@ export function useLiveAgentStatuses(
     return () => clearInterval(interval);
   }, [isOrchestrating, setAgents, setDbConnected]);
 
+  const connectedGateways = useMemo(
+    () => gateways.filter((g) => g.status === "connected"),
+    [gateways]
+  );
+
   return {
     liveAgentStatuses,
     isOrchestrating,
@@ -226,6 +206,8 @@ export function useLiveAgentStatuses(
     pendingCount,
     queuedCommands,
     queuedCommandsCount,
+    gateways,
+    connectedGateways,
   };
 }
 
