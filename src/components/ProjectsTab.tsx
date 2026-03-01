@@ -285,7 +285,7 @@ function ProjectCard({
             text-gray-400 hover:text-white
             rounded-lg hover:bg-gray-700
             transition-colors duration-150
-            opacity-0 group-hover:opacity-100
+            opacity-100 sm:opacity-0 sm:group-hover:opacity-100
             focus:opacity-100
           "
           aria-label="메뉴"

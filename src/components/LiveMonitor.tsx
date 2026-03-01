@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { relativeTime } from "@/lib/format-utils";
 import { STATUS_STYLES } from "@/lib/ui-constants";
+import LiveOutputRenderer from "@/components/LiveOutputRenderer";
 import type { HistoryEntry } from "@/lib/frontend-types";
 
 /**
@@ -40,36 +41,6 @@ interface LiveMonitorProps {
 
 // STATUS_STYLES imported from @/lib/ui-constants
 
-/**
- * Render a single line of live output with appropriate styling.
- * Detects tool call lines (emoji-prefixed) and applies color coding.
- */
-function LiveOutputLine({ line }: { line: string }) {
-  const isToolLine = /^[📖✏️🔧🔍📂💻📝🚀🌐🔎🔌]/.test(line);
-
-  if (isToolLine) {
-    const colonIdx = line.indexOf(":");
-    const toolPart = colonIdx > 0 ? line.slice(0, colonIdx) : line;
-    const detailPart = colonIdx > 0 ? line.slice(colonIdx + 1).trim() : "";
-    return (
-      <div className="flex items-baseline gap-1 text-blue-300 leading-tight">
-        <span className="flex-shrink-0">{toolPart}</span>
-        {detailPart && (
-          <>
-            <span className="text-gray-600">:</span>
-            <span className="text-gray-400 truncate">{detailPart}</span>
-          </>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="text-green-400/80 leading-tight whitespace-pre-wrap break-words">
-      {line}
-    </div>
-  );
-}
 
 export default function LiveMonitor({ agentStatuses, historyData, agentMap }: LiveMonitorProps) {
   const activeAgents = agentStatuses.filter((a) => a.status === "running");
@@ -155,41 +126,12 @@ export default function LiveMonitor({ agentStatuses, historyData, agentMap }: Li
                 {agent.liveOutput && (agent.liveOutput.recentEvents?.length || agent.liveOutput.lastChunk) ? (
                   <div className="bg-gray-800/80 rounded px-2 py-1.5 font-mono text-[10px] sm:text-[11px] overflow-hidden">
                     <div className="max-h-24 sm:max-h-28 overflow-y-auto overflow-x-hidden space-y-0.5">
-                      {agent.liveOutput.recentEvents && agent.liveOutput.recentEvents.length > 0 ? (
-                        /* Structured events (newest first in data, reverse for chronological) */
-                        [...agent.liveOutput.recentEvents].reverse().slice(-8).map((evt, i) => {
-                          if (evt.type === "tool_use") {
-                            return (
-                              <div key={i} className="flex items-baseline gap-1 text-blue-300 leading-tight">
-                                <span className="flex-shrink-0 text-blue-400">🔧 {evt.tool || "tool"}</span>
-                                {evt.target && (
-                                  <>
-                                    <span className="text-gray-600">→</span>
-                                    <span className="text-gray-400 truncate">{evt.target}</span>
-                                  </>
-                                )}
-                              </div>
-                            );
-                          }
-                          if (evt.type === "text") {
-                            return (
-                              <div key={i} className="text-green-400/80 leading-tight truncate">
-                                {(evt.content || "").slice(0, 120)}
-                              </div>
-                            );
-                          }
-                          return null;
-                        })
-                      ) : (
-                        /* Fallback: parse lastChunk text */
-                        agent.liveOutput.lastChunk
-                          .split("\n")
-                          .filter(Boolean)
-                          .slice(-8)
-                          .map((line, i) => (
-                            <LiveOutputLine key={i} line={line} />
-                          ))
-                      )}
+                      <LiveOutputRenderer
+                        recentEvents={agent.liveOutput.recentEvents}
+                        lastChunk={agent.liveOutput.lastChunk}
+                        maxItems={8}
+                        maxTextChars={120}
+                      />
                     </div>
                     <div className="flex items-center justify-between mt-1 text-[10px] text-gray-600">
                       <span>{agent.liveOutput.chunksReceived} chunks</span>
