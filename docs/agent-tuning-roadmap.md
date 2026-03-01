@@ -520,8 +520,8 @@ $$ LANGUAGE plpgsql;
 
 ### 즉시 (이번 주)
 - [x] `psql life_dashboard < sql/020_metrics_improvements.sql` 실행
-- [ ] `pnpm test tests/metrics-validation.test.ts` 통과 확인
-- [ ] `pnpm add better-sqlite3 && pnpm add -D @types/better-sqlite3`
+- [x] `src/lib/__tests__/metrics-improvements.test.ts` (34 tests) 통과 확인
+- [x] PostgreSQL 기반 `agent-intelligence.ts`로 대체 구현 (better-sqlite3 불필요)
 - [x] `gateway-connector.ts` L813, L854에 `recordTaskResult()` 호출 추가
 - [x] `agents.json` — qa 시스템 프롬프트 완료 프로토콜 추가
 - [x] `agents.json` — learner 기본 모델 opus → sonnet 변경

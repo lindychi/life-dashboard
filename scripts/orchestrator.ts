@@ -29,6 +29,7 @@ export interface SubTask {
   task: string;
   priority: number;
   category?: DelegationCategory;
+  modelTier?: "low" | "medium" | "high";
 }
 
 export interface OrchestrationPlan {
@@ -99,7 +100,7 @@ ${agentList}
 Return a JSON object with this structure:
 {
   "subtasks": [
-    { "agentId": "architect", "task": "description", "priority": 1, "category": "standard" }
+    { "agentId": "architect", "task": "description", "priority": 1, "category": "standard", "modelTier": "medium" }
   ],
   "reasoning": "explanation of the plan"
 }
@@ -112,6 +113,11 @@ Category (required): classify each subtask's complexity for model selection:
 - "standard": code implementation, bug fixes, reviews, tests
 - "visual": UI/UX work, styling, design, frontend components
 - "ultrabrain": architecture design, security analysis, complex debugging, system optimization
+
+ModelTier (required): specify resource level for cost optimization:
+- "low" (haiku, ~$0.001/min): status checks, summaries, simple lookups
+- "medium" (sonnet, ~$0.005/min): code implementation, reviews, documentation
+- "high" (opus, ~$0.025/min): architecture design, complex debugging, security analysis
 
 Return ONLY valid JSON, no additional text.`;
 

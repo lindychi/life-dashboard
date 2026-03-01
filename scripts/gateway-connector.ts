@@ -257,7 +257,7 @@ async function gracefulRestart(reason: string): Promise<void> {
   // 4. Flush pending history entries before shutdown
   try {
     if (pendingHistoryEntries.length > 0) {
-      await apiCall("/poll", "POST", {
+      await apiCall("/poll?timeout=0", "POST", {
         gatewayId: GATEWAY_ID,
         agents: getAgentsList(),
         historyEntries: [...pendingHistoryEntries],
@@ -451,7 +451,7 @@ function apiCall(
           "x-relay-key": RELAY_API_KEY,
           ...(bodyStr ? { "Content-Length": Buffer.byteLength(bodyStr).toString() } : {}),
         },
-        timeout: 30000, // 30s timeout — poll interval is 3s so this gives ample margin
+        timeout: 35000, // 35s timeout — long-poll server holds up to 25s, so 35s gives ample margin
       },
       (res) => {
         let data = "";
@@ -1398,7 +1398,7 @@ async function pollLoop(): Promise<void> {
     const entriesToSend = [...pendingHistoryEntries];
     pendingHistoryEntries.length = 0;
 
-    const result = (await apiCall("/poll", "POST", {
+    const result = (await apiCall("/poll?timeout=25000", "POST", {
       gatewayId: GATEWAY_ID,
       agents: getAgentsList(),
       historyEntries: entriesToSend,
@@ -1411,6 +1411,14 @@ async function pollLoop(): Promise<void> {
     }
   } catch (error) {
     console.error("⚠️ Poll error:", error);
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL)); // Error backoff
+  }
+}
+
+async function longPollLoop(): Promise<void> {
+  while (true) {
+    await pollLoop();
+    // No sleep on success — long-poll server holds connection for up to 25s
   }
 }
 
@@ -1532,11 +1540,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Poll loop
-  setInterval(pollLoop, POLL_INTERVAL);
-  
-  // Initial poll
-  await pollLoop();
+  // Start long-poll loop (replaces setInterval — server holds connection for up to 25s)
+  longPollLoop().catch(console.error);
 }
 
 main().catch(console.error);
