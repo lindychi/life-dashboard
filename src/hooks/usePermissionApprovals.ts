@@ -13,6 +13,8 @@ export interface UsePermissionApprovalsOptions {
   autoFetch?: boolean;
 }
 
+const SSE_CONNECTED_POLL_INTERVAL = 30000; // 30 s when SSE is active
+
 export function usePermissionApprovals(
   options: UsePermissionApprovalsOptions = {}
 ) {
@@ -21,6 +23,7 @@ export function usePermissionApprovals(
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sseConnected, setSseConnected] = useState(false);
 
   // Fetch pending approvals
   const fetchPendingApprovals = useCallback(async () => {
@@ -93,8 +96,10 @@ export function usePermissionApprovals(
     }
   }, []);
 
-  // Listen to SSE events for new approvals
+  // Listen to SSE events for new approvals; track connection state to adjust poll interval
   useSSE({
+    onConnect: () => setSseConnected(true),
+    onDisconnect: () => setSseConnected(false),
     onEvent: (event) => {
       if (event.type === "permission:approval:created") {
         // New approval request created
@@ -109,17 +114,20 @@ export function usePermissionApprovals(
     },
   });
 
-  // Auto-fetch on mount and poll periodically
+  // Auto-fetch on mount and poll periodically.
+  // When SSE is connected, fall back to a 30 s interval (SSE handles real-time updates).
+  // When SSE is disconnected, poll at the shorter configured interval.
   useEffect(() => {
     if (!autoFetch) return;
 
     fetchPendingApprovals();
 
-    if (pollInterval > 0) {
-      const interval = setInterval(fetchPendingApprovals, pollInterval);
+    const effectiveInterval = sseConnected ? SSE_CONNECTED_POLL_INTERVAL : pollInterval;
+    if (effectiveInterval > 0) {
+      const interval = setInterval(fetchPendingApprovals, effectiveInterval);
       return () => clearInterval(interval);
     }
-  }, [autoFetch, pollInterval, fetchPendingApprovals]);
+  }, [autoFetch, pollInterval, sseConnected, fetchPendingApprovals]);
 
   return {
     pendingApprovals,

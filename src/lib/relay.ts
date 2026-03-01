@@ -2,6 +2,7 @@
 
 import { query, queryOne, isDbConnectionError } from "./db";
 import { randomUUID } from "crypto";
+import * as fs from "fs";
 import type {
   GatewayConnection,
   RelayCommand,
@@ -50,6 +51,54 @@ function getRelayApiKey(): string {
 const inMemoryCommands = new Map<string, RelayCommand[]>();
 let dbAvailable = true;
 let autoCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+// Backup file for persisting in-memory commands across server restarts
+const IN_MEMORY_BACKUP_PATH = "/tmp/relay-commands-backup.json";
+
+// On module load: restore in-memory commands from backup if it exists
+(function restoreInMemoryBackup() {
+  try {
+    if (fs.existsSync(IN_MEMORY_BACKUP_PATH)) {
+      const raw = fs.readFileSync(IN_MEMORY_BACKUP_PATH, "utf-8");
+      const entries: [string, RelayCommand[]][] = JSON.parse(raw);
+      const now = Date.now();
+      for (const [gatewayId, commands] of entries) {
+        // Filter out expired commands during restore
+        const fresh = commands.filter(
+          (c) => now - new Date(c.createdAt).getTime() < COMMAND_TTL_MS
+        );
+        if (fresh.length > 0) {
+          inMemoryCommands.set(gatewayId, fresh);
+        }
+      }
+      fs.unlinkSync(IN_MEMORY_BACKUP_PATH);
+      if (inMemoryCommands.size > 0) {
+        console.log(`[relay] Restored in-memory commands from backup: ${inMemoryCommands.size} gateway(s)`);
+      }
+    }
+  } catch {
+    // Best-effort — don't block startup
+  }
+})();
+
+// On shutdown: persist in-memory commands so they survive a server restart
+function persistInMemoryBackup() {
+  try {
+    if (inMemoryCommands.size === 0) return;
+    const entries = [...inMemoryCommands.entries()];
+    fs.writeFileSync(IN_MEMORY_BACKUP_PATH, JSON.stringify(entries), "utf-8");
+    console.log(`[relay] Persisted in-memory commands to backup: ${inMemoryCommands.size} gateway(s)`);
+  } catch {
+    // Best-effort
+  }
+}
+
+// Register once — guard against multiple imports re-registering
+if (!(globalThis as Record<string, unknown>).__relayShutdownRegistered) {
+  (globalThis as Record<string, unknown>).__relayShutdownRegistered = true;
+  process.on("SIGTERM", persistInMemoryBackup);
+  process.on("beforeExit", persistInMemoryBackup);
+}
 
 // In-memory cache for live output (too frequent for DB writes)
 const liveOutputCache = new Map<
@@ -513,7 +562,7 @@ export async function getAllAgentStatuses(): Promise<
         currentTask: r.current_task || undefined,
         sessionKey: r.session_key || undefined,
         updatedAt: r.updated_at,
-        ...(cachedLiveOutput ? { liveOutput: (() => { const { cachedAt: _, ...rest } = cachedLiveOutput; return rest; })() } : {}),
+        ...(cachedLiveOutput ? { liveOutput: (() => { const { cachedAt: _cachedAt, ...rest } = cachedLiveOutput; return rest; })() } : {}),
       });
     }
 
@@ -1049,7 +1098,7 @@ export function getLiveOutputForAgent(
   const entry = liveOutputCache.get(cacheKey);
   if (!entry) return undefined;
   // Return without cachedAt (internal field)
-  const { cachedAt, ...rest } = entry;
+  const { cachedAt: _cachedAt, ...rest } = entry;
   return rest;
 }
 
@@ -1064,11 +1113,11 @@ export async function cleanupAllInMemory(): Promise<{
   const statsAfter = await getQueueStats();
   const commandsRemoved = statsBefore.totalCommands - statsAfter.totalCommands;
 
-  // 2. Clean stale liveOutput entries (TTL-based)
+  // 2. Clean stale liveOutput entries (TTL-based, consistent with cleanupStaleLiveOutput)
   const now = Date.now();
   let liveOutputRemoved = 0;
   for (const [key, entry] of liveOutputCache.entries()) {
-    if (now - entry.cachedAt > LIVE_OUTPUT_TTL_MS) {
+    if (now - new Date(entry.lastActivityAt).getTime() > LIVE_OUTPUT_TTL_MS) {
       liveOutputCache.delete(key);
       liveOutputRemoved++;
     }

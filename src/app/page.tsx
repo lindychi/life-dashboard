@@ -379,17 +379,17 @@ export default function Home() {
           {/* Tabs */}
           <div className="flex gap-1 sm:gap-2 mt-3 sm:mt-4 lg:mt-2 overflow-x-auto pb-1 -mb-1 scrollbar-none" role="tablist">
             <TabButton active={activeTab === "agents"} onClick={() => setActiveTab("agents")}>
-              🤖 <span className="hidden sm:inline">Agents</span><span className="sm:hidden">에이전트</span>
+              🤖 에이전트
             </TabButton>
             <TabButton active={activeTab === "projects"} onClick={() => setActiveTab("projects")}>
-              🚀 <span className="hidden sm:inline">Projects</span><span className="sm:hidden">프로젝트</span>
+              🚀 프로젝트
             </TabButton>
             <TabButton active={activeTab === "finance"} onClick={() => setActiveTab("finance")}>
-              💰 <span className="hidden sm:inline">Finance</span><span className="sm:hidden">재정</span>
+              💰 재무
             </TabButton>
             <TabButton active={activeTab === "messages"} onClick={() => setActiveTab("messages")}>
               <span className="relative">
-                💬 <span className="hidden sm:inline">Messages</span><span className="sm:hidden">메시지</span>
+                💬 메시지
                 {totalUnread > 0 && (
                   <span className="absolute -top-2 -right-3 sm:-right-2 bg-red-500 text-white text-[10px] rounded-full px-1.5 py-0.5 min-w-[18px] text-center leading-none">
                     {totalUnread > 99 ? "99+" : totalUnread}
@@ -398,10 +398,10 @@ export default function Home() {
               </span>
             </TabButton>
             <TabButton active={activeTab === "sessions"} onClick={() => setActiveTab("sessions")}>
-              💭 <span className="hidden sm:inline">Sessions</span><span className="sm:hidden">세션</span>
+              💭 세션
             </TabButton>
             <TabButton active={activeTab === "cronjobs"} onClick={() => setActiveTab("cronjobs")}>
-              ⏰ <span className="hidden sm:inline">Cron Jobs</span><span className="sm:hidden">크론</span>
+              ⏰ 크론잡
             </TabButton>
           </div>
         </div>

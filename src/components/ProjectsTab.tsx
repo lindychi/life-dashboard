@@ -23,7 +23,6 @@ export default function ProjectsTab({
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
-  const [_selectedProject, setSelectedProject] = useState<Project | null>(null);
 
   // Connect SSE events to refresh projects list
   useProjectSSE({
@@ -204,7 +203,7 @@ export default function ProjectsTab({
                 project={project}
                 onEdit={() => openEditModal(project)}
                 onDelete={() => handleDeleteProject(project.id)}
-                onClick={() => setSelectedProject(project)}
+                onClick={() => openEditModal(project)}
               />
             ))}
           </div>

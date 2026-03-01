@@ -12,7 +12,6 @@ import remarkGfm from "remark-gfm";
 import { relativeTime } from "@/lib/format-utils";
 import { useSessionSSE } from "@/hooks/useSessionSSE";
 import type {
-  Conversation,
   ConversationMessage,
   ConversationStats,
   ConversationStatus,
@@ -353,8 +352,8 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
 
   return (
     <div className="flex flex-col md:flex-row gap-0 min-h-[560px] bg-gray-900 rounded-2xl border border-gray-700/50 overflow-hidden shadow-lg">
-      {/* Left Sidebar: Conversation List */}
-      <div className="md:w-80 flex-shrink-0 border-r border-gray-700/50 bg-gray-850 flex flex-col">
+      {/* Left Sidebar: Conversation List — hidden on mobile when a conversation is selected */}
+      <div className={`md:w-80 flex-shrink-0 border-r border-gray-700/50 bg-gray-850 flex flex-col ${selectedConversationId ? "hidden md:flex" : "flex"}`}>
         {/* Header */}
         <div className="p-3 border-b border-gray-700/50 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -458,6 +457,17 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
           <>
             {/* Header */}
             <div className="px-4 py-3 border-b border-gray-700/50 bg-gray-800/30 flex items-center justify-between">
+              {/* Back button — mobile only */}
+              <button
+                onClick={() => setSelectedConversationId(null)}
+                className="md:hidden mr-2 flex-shrink-0 flex items-center gap-1 text-sm text-gray-400 hover:text-white transition-colors"
+                aria-label="목록으로"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                목록
+              </button>
               <div className="flex-1 min-w-0">
                 <h3 className="text-base font-bold text-white truncate">
                   {selectedConversation.title}
@@ -530,7 +540,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
               </form>
               {selectedConversation.status !== "active" && (
                 <p className="text-xs text-amber-500 mt-2">
-                  This conversation is {selectedConversation.status}. Set status to "active" to send messages.
+                  This conversation is {selectedConversation.status}. Set status to &quot;active&quot; to send messages.
                 </p>
               )}
             </div>
