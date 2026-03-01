@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useState, memo, useMemo } from "react";
+import React, { useState, memo, useMemo, useCallback } from "react";
 import { useToastContext } from "@/contexts/ToastContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { relativeTime } from "@/lib/format-utils";
 import { HISTORY_TYPE_LABELS } from "@/lib/ui-constants";
+import StarRating from "@/components/StarRating";
+import FeedbackCategoryTags from "@/components/FeedbackCategoryTags";
 
 // ===== Tool Call Types & Display =====
 
@@ -246,6 +248,127 @@ function AttachmentBadge({ refKey }: { refKey: string }) {
   );
 }
 
+// ===== Inline Feedback Row =====
+
+interface FeedbackState {
+  rating: number;
+  categories: Record<string, number>;
+  comment: string;
+  submitted: boolean;
+  showComment: boolean;
+  submitting: boolean;
+}
+
+function InlineFeedbackRow({ entryId, agentId }: { entryId: string; agentId: string }) {
+  const { addToast } = useToastContext();
+  const [feedback, setFeedback] = useState<FeedbackState>({
+    rating: 0,
+    categories: {},
+    comment: "",
+    submitted: false,
+    showComment: false,
+    submitting: false,
+  });
+
+  const handleSubmit = useCallback(async () => {
+    if (feedback.rating === 0) return;
+    setFeedback((prev) => ({ ...prev, submitting: true }));
+
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          historyEntryId: entryId,
+          agentId,
+          rating: feedback.rating,
+          categories: Object.keys(feedback.categories).length > 0 ? feedback.categories : undefined,
+          comment: feedback.comment.trim() || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      setFeedback((prev) => ({ ...prev, submitted: true, submitting: false }));
+      addToast("피드백이 저장되었습니다", "success");
+    } catch (err) {
+      setFeedback((prev) => ({ ...prev, submitting: false }));
+      addToast(
+        `피드백 저장 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
+        "error"
+      );
+    }
+  }, [feedback.rating, feedback.categories, feedback.comment, entryId, agentId, addToast]);
+
+  // Submitted: show readonly rating with colored left border
+  if (feedback.submitted) {
+    const borderClass =
+      feedback.rating >= 4
+        ? "border-l-2 border-l-amber-500/60"
+        : feedback.rating === 3
+        ? "border-l-2 border-l-blue-500/40"
+        : "border-l-2 border-l-red-500/30";
+
+    return (
+      <div className={`mt-2 pl-2 py-1 ${borderClass}`}>
+        <StarRating rating={feedback.rating} readonly size="sm" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 pt-2 border-t border-gray-700/40 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <StarRating
+          rating={feedback.rating}
+          onChange={(r) => setFeedback((prev) => ({ ...prev, rating: r }))}
+          size="sm"
+        />
+        <FeedbackCategoryTags
+          selected={feedback.categories}
+          onChange={(cats) => setFeedback((prev) => ({ ...prev, categories: cats }))}
+          compact
+        />
+        <button
+          type="button"
+          onClick={() => setFeedback((prev) => ({ ...prev, showComment: !prev.showComment }))}
+          className="text-gray-500 hover:text-gray-300 transition-colors p-1"
+          title="코멘트 작성"
+          data-testid="feedback-comment-toggle"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+          </svg>
+        </button>
+        {feedback.rating > 0 && (
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={feedback.submitting}
+            className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-50 transition-colors ml-auto"
+            data-testid="feedback-submit"
+          >
+            {feedback.submitting ? "저장 중..." : "저장"}
+          </button>
+        )}
+      </div>
+      {feedback.showComment && (
+        <textarea
+          value={feedback.comment}
+          onChange={(e) => setFeedback((prev) => ({ ...prev, comment: e.target.value }))}
+          placeholder="피드백 코멘트..."
+          className="w-full px-2 py-1.5 rounded bg-gray-900 border border-gray-700 text-white text-xs resize-none focus:outline-none focus:ring-2 focus:ring-amber-500"
+          rows={2}
+          data-testid="feedback-comment"
+        />
+      )}
+    </div>
+  );
+}
+
 interface HistoryEntryCardProps {
   entry: {
     id: string;
@@ -386,6 +509,11 @@ const HistoryEntryCard = memo(function HistoryEntryCard({
               </button>
             )}
           </div>
+          {/* Inline feedback row for output/completed entries */}
+          {showReplyButton && (
+            <InlineFeedbackRow entryId={entry.id} agentId={entry.agentId} />
+          )}
+
           {isReplying && (
             <form onSubmit={handleReplySubmit} className="mt-2 sm:mt-3 space-y-2">
               <textarea

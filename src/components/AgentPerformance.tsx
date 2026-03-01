@@ -57,6 +57,7 @@ export default function AgentPerformance() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [feedbackScores, setFeedbackScores] = useState<Record<string, number>>({});
 
   const handleDaysChange = (d: number) => {
     setLoading(true);
@@ -87,6 +88,31 @@ export default function AgentPerformance() {
       cancelled = true;
     };
   }, [days]);
+
+  // Fetch feedback scores for all agents
+  useEffect(() => {
+    if (!data?.agents) return;
+    let cancelled = false;
+
+    Promise.allSettled(
+      data.agents.map((agent) =>
+        fetch(`/api/feedback/summary?agentId=${agent.id}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => (d ? { id: agent.id, avg: d.data?.averageRating ?? d.averageRating } : null))
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const scores: Record<string, number> = {};
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value && typeof r.value.avg === "number" && r.value.avg > 0) {
+          scores[r.value.id] = r.value.avg;
+        }
+      }
+      setFeedbackScores(scores);
+    });
+
+    return () => { cancelled = true; };
+  }, [data?.agents]);
 
   const toggleAgent = (id: string) => {
     setExpandedAgents((prev) => {
@@ -195,6 +221,11 @@ export default function AgentPerformance() {
                       <span>{agent.avgDurationSec}초</span>
                       <span className={`font-medium ${rateColor(agent.successRate)}`}>
                         {agent.successRate.toFixed(1)}%
+                      </span>
+                      <span className="text-amber-400 font-medium">
+                        {feedbackScores[agent.id]
+                          ? `★ ${feedbackScores[agent.id].toFixed(1)}`
+                          : "– –"}
                       </span>
                     </div>
                   </div>

@@ -10,6 +10,7 @@ import SessionsPanel from "@/components/SessionsPanel";
 import PermissionApprovalBanner from "@/components/PermissionApprovalBanner";
 import ProjectsTab from "@/components/ProjectsTab";
 import FinanceTab from "@/components/FinanceTab";
+import ImprovementTracker from "@/components/ImprovementTracker";
 import { uploadFiles } from "@/components/FileAttachment";
 import type { AttachedFile, UploadedAttachment } from "@/components/FileAttachment";
 import {
@@ -62,7 +63,7 @@ export default function Home() {
 function HomeContent() {
   const { addToast } = useToastContext();
   const [activeTab, setActiveTab] = useState<
-    "agents" | "projects" | "finance" | "messages" | "sessions" | "cronjobs"
+    "agents" | "projects" | "finance" | "messages" | "sessions" | "improvements" | "cronjobs"
   >("agents");
   const [orchestrateInput, setOrchestrateInput] = useState("");
   const [queuedNotification, setQueuedNotification] = useState<string | null>(null);
@@ -410,6 +411,9 @@ function HomeContent() {
             <TabButton active={activeTab === "sessions"} onClick={() => setActiveTab("sessions")}>
               💭 세션
             </TabButton>
+            <TabButton active={activeTab === "improvements"} onClick={() => setActiveTab("improvements")}>
+              📈 개선
+            </TabButton>
             <TabButton active={activeTab === "cronjobs"} onClick={() => setActiveTab("cronjobs")}>
               ⏰ 크론잡
             </TabButton>
@@ -508,6 +512,8 @@ function HomeContent() {
         )}
 
         {activeTab === "sessions" && <SessionsPanel agentMap={agentMap} />}
+
+        {activeTab === "improvements" && <ImprovementTracker />}
 
         {activeTab === "cronjobs" && <CronJobsPanel />}
       </main>

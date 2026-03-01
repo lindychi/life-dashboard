@@ -37,6 +37,10 @@ export type SSEEventType =
   | "youtube:video:analysis_failed"
   | "relay:status"
   | "agent:stats:updated"
+  | "feedback:submitted"
+  | "improvement:proposed"
+  | "improvement:applied"
+  | "preferences:updated"
   | "heartbeat";
 
 export interface SSEEvent {
