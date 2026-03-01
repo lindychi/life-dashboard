@@ -33,8 +33,8 @@ export async function GET(req: NextRequest) {
         SUM(total_cost_usd) AS total_cost_usd,
         SUM(tool_calls_count) AS total_tool_calls
       FROM task_metrics
-      WHERE completed_at >= NOW() - INTERVAL '${days} days'
-    `);
+      WHERE completed_at >= NOW() - ($1 * INTERVAL '1 day')
+    `, [days]);
 
     // By agent
     const byAgentResult = await query(`
@@ -46,10 +46,10 @@ export async function GET(req: NextRequest) {
         ROUND(AVG(duration_ms) / 1000.0, 1) AS avg_duration_sec,
         SUM(total_cost_usd) AS total_cost_usd
       FROM task_metrics
-      WHERE completed_at >= NOW() - INTERVAL '${days} days'
+      WHERE completed_at >= NOW() - ($1 * INTERVAL '1 day')
       GROUP BY agent_id
       ORDER BY total_tasks DESC
-    `);
+    `, [days]);
 
     // By model tier
     const byModelResult = await query(`
@@ -60,10 +60,10 @@ export async function GET(req: NextRequest) {
         ROUND(AVG(duration_ms) / 1000.0, 1) AS avg_duration_sec,
         SUM(total_cost_usd) AS total_cost_usd
       FROM task_metrics
-      WHERE completed_at >= NOW() - INTERVAL '${days} days'
+      WHERE completed_at >= NOW() - ($1 * INTERVAL '1 day')
       GROUP BY model_tier
       ORDER BY total_tasks DESC
-    `);
+    `, [days]);
 
     // Daily trend (past 7 days)
     const trendResult = await query(`
@@ -87,12 +87,12 @@ export async function GET(req: NextRequest) {
         ROUND(100.0 * SUM(CASE WHEN status IN ('failed', 'timeout', 'hung') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 2) AS failure_rate,
         ARRAY_AGG(DISTINCT status) FILTER (WHERE status IN ('failed', 'timeout', 'hung')) AS failure_types
       FROM task_metrics
-      WHERE completed_at >= NOW() - INTERVAL '${days} days'
+      WHERE completed_at >= NOW() - ($1 * INTERVAL '1 day')
       GROUP BY agent_id
       HAVING SUM(CASE WHEN status IN ('failed', 'timeout', 'hung') THEN 1 ELSE 0 END) > 0
       ORDER BY failure_rate DESC
       LIMIT 10
-    `);
+    `, [days]);
 
     return NextResponse.json({
       success: true,

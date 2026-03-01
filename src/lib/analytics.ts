@@ -92,7 +92,7 @@ export async function analyzeAgentPerformance(
         MAX(CASE WHEN type = 'task_completed' THEN created_at END) as completed_at,
         MAX(CASE WHEN type = 'task_failed' THEN created_at END) as failed_at
       FROM agent_history
-      WHERE created_at >= NOW() - INTERVAL '$1 days'
+      WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
         AND type IN ('task_started', 'task_completed', 'task_failed')
         AND request_group_id IS NOT NULL
       GROUP BY agent_id, request_group_id
@@ -179,7 +179,7 @@ export async function analyzeTaskTypes(
         assigned_agent,
         EXTRACT(EPOCH FROM (completed_at - started_at)) / 60 as duration_minutes
       FROM task_queue
-      WHERE created_at >= NOW() - INTERVAL '$1 days'
+      WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
     )
     SELECT
       task_type,
@@ -247,7 +247,7 @@ export async function analyzeTimePatterns(
         request_group_id,
         type
       FROM agent_history
-      WHERE created_at >= NOW() - INTERVAL '$1 days'
+      WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
         AND type IN ('task_started', 'task_completed')
         AND request_group_id IS NOT NULL
     )
@@ -309,7 +309,7 @@ export async function analyzeFailurePatterns(
         (jsonb_array_elements(retry_errors)->>'timestamp')::TIMESTAMPTZ as error_time
       FROM task_queue
       WHERE status IN ('failed', 'dead_letter')
-        AND created_at >= NOW() - INTERVAL '$1 days'
+        AND created_at >= NOW() - ($1 * INTERVAL '1 day')
         AND jsonb_array_length(retry_errors) > 0
     ),
     error_keywords AS (
@@ -384,7 +384,7 @@ export async function generateAnalyticsSummary(
           COUNT(*) FILTER (WHERE type = 'task_completed') as completed_tasks,
           COUNT(*) FILTER (WHERE type = 'task_failed') as failed_tasks
         FROM agent_history
-        WHERE created_at >= NOW() - INTERVAL '$1 days'
+        WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
           AND request_group_id IS NOT NULL
           AND type IN ('task_started', 'task_completed', 'task_failed')
       ),
@@ -392,7 +392,7 @@ export async function generateAnalyticsSummary(
         SELECT
           AVG(EXTRACT(EPOCH FROM (completed_at - started_at)) / 60) as avg_duration_minutes
         FROM task_queue
-        WHERE created_at >= NOW() - INTERVAL '$1 days'
+        WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
           AND status = 'completed'
           AND started_at IS NOT NULL
           AND completed_at IS NOT NULL

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 
 // Types
 export interface KeyResult {
@@ -31,16 +31,77 @@ export interface Objective {
 }
 
 interface OKRViewProps {
-  objectives: Objective[];
+  initialObjectives?: Objective[]; // Make optional as data will be fetched
   onObjectiveClick?: (objective: Objective) => void;
   onKeyResultUpdate?: (objectiveId: string, keyResultId: string, newValue: number) => void;
 }
 
 export default function OKRView({
-  objectives,
+  initialObjectives = [],
   onObjectiveClick,
   onKeyResultUpdate,
 }: OKRViewProps) {
+  const [objectives, setObjectives] = useState<Objective[]>(initialObjectives);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Helper to convert snake_case from API to camelCase for component
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const transformObjectiveData = (apiObjective: Record<string, any>): Objective => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const keyResults: KeyResult[] = apiObjective.key_results.map((kr: Record<string, any>) => ({
+      id: kr.id,
+      title: kr.title,
+      description: kr.description,
+      currentValue: kr.current_value,
+      targetValue: kr.target_value,
+      unit: kr.unit,
+      metricType: kr.metric_type,
+      progress: kr.progress,
+      status: kr.status,
+      weight: kr.weight,
+    }));
+
+    return {
+      id: apiObjective.id,
+      title: apiObjective.title,
+      description: apiObjective.description,
+      periodType: apiObjective.period_type,
+      startDate: apiObjective.start_date,
+      endDate: apiObjective.end_date,
+      status: apiObjective.status,
+      owner: apiObjective.owner,
+      tags: apiObjective.tags,
+      keyResults: keyResults,
+      overallProgress: apiObjective.overall_progress,
+    };
+  };
+
+  useEffect(() => {
+    const fetchObjectives = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch("/api/okr/objectives");
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        const transformedObjectives = data.objectives.map(transformObjectiveData);
+        setObjectives(transformedObjectives);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Failed to fetch objectives");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (initialObjectives.length === 0) {
+      fetchObjectives();
+    } else {
+      // If initial objectives are provided, use them and set loading to false
+      setLoading(false);
+    }
+  }, [initialObjectives]);
   const [expandedObjectives, setExpandedObjectives] = useState<Set<string>>(
     new Set()
   );
@@ -62,7 +123,46 @@ export default function OKRView({
     [objectives]
   );
 
-  if (objectives.length === 0) {
+    if (loading) {
+      return (
+        <div className="flex flex-col items-center justify-center py-16 lg:py-12 text-center text-white">
+          <svg
+            className="animate-spin -ml-1 mr-3 h-8 w-8 text-white"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            ></circle>
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+            ></path>
+          </svg>
+          <p className="mt-4 text-lg">OKR 불러오는 중...</p>
+        </div>
+      );
+    }
+
+    if (error) {
+      return (
+        <div className="flex flex-col items-center justify-center py-16 lg:py-12 text-center text-red-400">
+          <span className="text-4xl mb-4">🚨</span>
+          <h3 className="text-lg font-semibold mb-2">오류 발생</h3>
+          <p className="text-sm">{error}</p>
+          <p className="text-sm mt-2">OKR을 불러오는데 실패했습니다. 나중에 다시 시도해주세요.</p>
+        </div>
+      );
+    }
+
+    if (objectives.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 lg:py-12 text-center">
         <div className="w-16 h-16 lg:w-12 lg:h-12 flex items-center justify-center bg-gray-800 rounded-full mb-4">
@@ -159,7 +259,7 @@ function ObjectiveCard({
   objective,
   isExpanded,
   onToggle,
-  onClick,
+  onClick: _onClick,
   onKeyResultUpdate,
 }: {
   objective: Objective;
@@ -467,96 +567,3 @@ function countAtRiskKeyResults(objectives: Objective[]): number {
   }, 0);
 }
 
-// Sample data generator
-export function generateSampleOKRs(): Objective[] {
-  return [
-    {
-      id: "okr-1",
-      title: "Life Dashboard 런칭 및 초기 사용자 확보",
-      description: "제품을 성공적으로 출시하고 초기 사용자 기반을 구축합니다.",
-      periodType: "quarterly",
-      startDate: "2025-01-01",
-      endDate: "2025-03-31",
-      status: "active",
-      owner: "한치",
-      tags: ["Product", "Growth"],
-      overallProgress: 67,
-      keyResults: [
-        {
-          id: "kr-1-1",
-          title: "MVP 개발 완료 및 배포",
-          description: "핵심 기능을 포함한 최소 실행 가능 제품을 개발하고 배포합니다.",
-          currentValue: 85,
-          targetValue: 100,
-          unit: "완료율",
-          metricType: "percentage",
-          progress: 85,
-          status: "active",
-          weight: 40,
-        },
-        {
-          id: "kr-1-2",
-          title: "활성 사용자 100명 달성",
-          description: "주간 활성 사용자(WAU) 100명을 확보합니다.",
-          currentValue: 45,
-          targetValue: 100,
-          unit: "명",
-          metricType: "number",
-          progress: 45,
-          status: "at_risk",
-          weight: 30,
-        },
-        {
-          id: "kr-1-3",
-          title: "사용자 만족도 4.0 이상",
-          description: "NPS 또는 사용자 피드백 점수 4.0 이상 달성합니다.",
-          currentValue: 4.2,
-          targetValue: 5.0,
-          unit: "점",
-          metricType: "number",
-          progress: 84,
-          status: "active",
-          weight: 30,
-        },
-      ],
-    },
-    {
-      id: "okr-2",
-      title: "수익화 모델 검증",
-      description: "지속 가능한 비즈니스 모델을 확립하고 초기 매출을 창출합니다.",
-      periodType: "quarterly",
-      startDate: "2025-01-01",
-      endDate: "2025-03-31",
-      status: "active",
-      owner: "한치",
-      tags: ["Revenue", "Business"],
-      overallProgress: 32,
-      keyResults: [
-        {
-          id: "kr-2-1",
-          title: "유료 플랜 출시",
-          description: "프리미엄 기능을 포함한 유료 플랜을 출시합니다.",
-          currentValue: 1,
-          targetValue: 1,
-          unit: "완료",
-          metricType: "boolean",
-          progress: 100,
-          status: "completed",
-          weight: 50,
-        },
-        {
-          id: "kr-2-2",
-          title: "월 수익 100만원 달성",
-          description: "첫 분기에 월 100만원의 반복 수익을 달성합니다.",
-          currentValue: 0,
-          targetValue: 1000000,
-          unit: "원",
-          metricType: "currency",
-          progress: 0,
-          status: "off_track",
-          weight: 50,
-        },
-      ],
-    },
-  ];
-}

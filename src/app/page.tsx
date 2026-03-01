@@ -8,6 +8,7 @@ import CronJobsPanel from "@/components/CronJobsPanel";
 import MessagesPanel from "@/components/MessagesPanel";
 import SessionsPanel from "@/components/SessionsPanel";
 import PermissionApprovalBanner from "@/components/PermissionApprovalBanner";
+import ProjectsTab from "@/components/ProjectsTab";
 import { uploadFiles } from "@/components/FileAttachment";
 import type { AttachedFile, UploadedAttachment } from "@/components/FileAttachment";
 import {
@@ -19,66 +20,10 @@ import {
   useMessageOverview,
   usePendingReplies,
   useProjects,
-  type Project,
 } from "@/hooks/useDashboardData";
 import { usePermissionApprovals } from "@/hooks/usePermissionApprovals";
 
 // ===== Components =====
-function ProgressBar({ progress }: { progress: number }) {
-  return (
-    <div className="w-full bg-gray-700 rounded-full h-2">
-      <div
-        className="bg-green-500 h-2 rounded-full transition-all"
-        style={{ width: `${progress}%` }}
-      />
-    </div>
-  );
-}
-
-function ProjectCard({ project }: { project: Project }) {
-  return (
-    <div className="bg-gray-800 rounded-xl p-5 lg:p-3.5 hover:bg-gray-750 transition-colors border border-gray-700">
-      <div className="flex justify-between items-start mb-3 lg:mb-2">
-        <div>
-          <h2 className="text-lg lg:text-base font-bold text-white">{project.name}</h2>
-          <p className="text-gray-400 text-xs">{project.description}</p>
-        </div>
-        <span className="text-sm">{project.status}</span>
-      </div>
-
-      <div className="mb-3 lg:mb-2">
-        <div className="flex justify-between text-xs text-gray-400 mb-1">
-          <span>진행률</span>
-          <span>{project.progress}%</span>
-        </div>
-        <ProgressBar progress={project.progress} />
-      </div>
-
-      {project.kpis && project.kpis.length > 0 && (
-        <div className="space-y-1 lg:space-y-0.5">
-          {project.kpis.map((kpi, i) => (
-            <div key={i} className="flex justify-between text-sm">
-              <span className="text-gray-400">{kpi.label}</span>
-              <span className="text-white">{kpi.value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {project.url && (
-        <a
-          href={project.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-3 block text-center text-sm text-blue-400 hover:text-blue-300"
-        >
-          방문하기 →
-        </a>
-      )}
-    </div>
-  );
-}
-
 function TabButton({
   active,
   onClick,
@@ -129,8 +74,8 @@ export default function Home() {
   } = useLiveAgentStatuses(setAgents, setDbConnected);
   const { historyData, setHistoryData } = useHistoryData(isOrchestrating);
   const { agentOverview, totalUnread, fetchMessageOverview } = useMessageOverview();
-  const pendingReplies = usePendingReplies(historyData);
-  const { projects, isLoading: projectsLoading } = useProjects();
+  const pendingReplies = usePendingReplies(historyData, agentMap);
+  const { projects, isLoading: projectsLoading, refetch: refetchProjects } = useProjects();
   const {
     pendingApprovals,
     approveRequest,
@@ -507,45 +452,36 @@ export default function Home() {
         )}
 
         {activeTab === "projects" && (
-          <div>
-            {projectsLoading ? (
-              <div className="text-center text-gray-400 py-8">프로젝트 로딩 중...</div>
-            ) : projects.length === 0 ? (
-              <div className="text-center text-gray-400 py-8">프로젝트가 없습니다</div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {projects.map((project) => (
-                  <ProjectCard key={project.id} project={project} />
-                ))}
-              </div>
-            )}
-          </div>
+          <ProjectsTab
+            projects={projects}
+            isLoading={projectsLoading}
+            onRefresh={refetchProjects}
+          />
         )}
 
         {activeTab === "finance" && (
-          <div className="space-y-6 lg:space-y-4">
-            <div className="bg-gray-800 rounded-xl p-6 lg:p-4 border border-gray-700">
-              <h3 className="text-lg font-bold mb-4 lg:mb-3">🎯 재정 목표</h3>
-              <div className="space-y-4 lg:space-y-3">
-                <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-gray-400">MumMum $10K MRR</span>
-                    <span className="text-white">0%</span>
-                  </div>
-                  <ProgressBar progress={0} />
-                </div>
-                <p className="text-gray-500 text-sm">
-                  크레딧컨설팅 연동 예정
-                </p>
-              </div>
+          <div className="flex flex-col items-center justify-center py-20 lg:py-16 text-center">
+            <div className="w-20 h-20 lg:w-16 lg:h-16 flex items-center justify-center bg-gray-800 border border-gray-700 rounded-2xl mb-6">
+              <svg
+                className="w-10 h-10 lg:w-8 lg:h-8 text-gray-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
             </div>
-
-            <div className="bg-gray-800 rounded-xl p-6 lg:p-4 border border-gray-700">
-              <h3 className="text-lg font-bold mb-4 lg:mb-3">💸 이번 달 지출</h3>
-              <p className="text-gray-500 text-sm">
-                Supabase 연동 후 데이터 표시
-              </p>
-            </div>
+            <h3 className="text-xl lg:text-lg font-bold text-white mb-2">
+              재정 추적 기능 준비 중
+            </h3>
+            <p className="text-sm text-gray-400 max-w-sm">
+              크레딧컨설팅, 수입/지출 추적 등의 기능이 추가될 예정입니다.
+            </p>
           </div>
         )}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useEffect, useState } from "react";
 
 export interface KPIMetric {
   id: string;
@@ -13,6 +13,86 @@ export interface KPIMetric {
   target?: number; // Optional target value
 }
 
+interface ProjectMetricsSummary {
+  project_id: string;
+  project_name: string;
+  metrics: {
+    total_tasks: number;
+    completed_tasks: number;
+    failed_tasks: number;
+    running_tasks: number;
+    completion_rate: number;
+    success_rate: number;
+    avg_task_duration_seconds: number | null;
+    total_execution_time_seconds: number;
+    project_progress: number;
+  };
+}
+
+function transformMetricsToKPIs(data: ProjectMetricsSummary[]): KPIMetric[] {
+  if (data.length === 0) return [];
+
+  const totalTasks = data.reduce((sum, p) => sum + (p.metrics.total_tasks ?? 0), 0);
+  const completedTasks = data.reduce((sum, p) => sum + (p.metrics.completed_tasks ?? 0), 0);
+  const _failedTasks = data.reduce((sum, p) => sum + (p.metrics.failed_tasks ?? 0), 0);
+  const runningTasks = data.reduce((sum, p) => sum + (p.metrics.running_tasks ?? 0), 0);
+  const avgCompletion =
+    data.length > 0
+      ? Math.round(data.reduce((sum, p) => sum + (p.metrics.completion_rate ?? 0), 0) / data.length)
+      : 0;
+  const avgSuccess =
+    data.length > 0
+      ? Math.round(data.reduce((sum, p) => sum + (p.metrics.success_rate ?? 0), 0) / data.length)
+      : 0;
+
+  return [
+    {
+      id: "total-projects",
+      label: "전체 프로젝트",
+      value: data.length,
+      icon: "📁",
+      format: "number",
+    },
+    {
+      id: "completion-rate",
+      label: "평균 완료율",
+      value: avgCompletion,
+      icon: "📊",
+      format: "percentage",
+      target: 100,
+    },
+    {
+      id: "success-rate",
+      label: "평균 성공률",
+      value: avgSuccess,
+      icon: "✅",
+      format: "percentage",
+    },
+    {
+      id: "total-tasks",
+      label: "전체 작업",
+      value: totalTasks,
+      icon: "📝",
+      format: "number",
+    },
+    {
+      id: "completed-tasks",
+      label: "완료된 작업",
+      value: completedTasks,
+      icon: "✔️",
+      format: "number",
+      target: totalTasks > 0 ? totalTasks : undefined,
+    },
+    {
+      id: "active-tasks",
+      label: "실행 중 작업",
+      value: runningTasks,
+      icon: "⚡",
+      format: "number",
+    },
+  ];
+}
+
 interface KPIDashboardProps {
   metrics: KPIMetric[];
   layout?: "grid" | "compact";
@@ -20,15 +100,56 @@ interface KPIDashboardProps {
 }
 
 export default function KPIDashboard({
-  metrics,
+  metrics: propMetrics,
   layout = "grid",
   columns = 3,
 }: KPIDashboardProps) {
+  const [fetchedMetrics, setFetchedMetrics] = useState<KPIMetric[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/projects/metrics")
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((json: { success: boolean; data: ProjectMetricsSummary[] }) => {
+        if (!cancelled) {
+          setFetchedMetrics(transformMetricsToKPIs(json.data ?? []));
+          setError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load metrics");
+          setFetchedMetrics(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const metrics = fetchedMetrics ?? propMetrics;
+
   const gridCols = useMemo(() => {
     if (columns === 2) return "grid-cols-1 sm:grid-cols-2";
     if (columns === 4) return "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4";
     return "grid-cols-1 md:grid-cols-2 lg:grid-cols-3"; // default: 3
   }, [columns]);
+
+  if (isLoading && propMetrics.length === 0) {
+    return <div className="text-center py-8 text-gray-400">KPI 로딩 중...</div>;
+  }
+
+  if (error && propMetrics.length === 0) {
+    return <div className="text-center py-8 text-red-400">{error}</div>;
+  }
 
   if (layout === "compact") {
     return (

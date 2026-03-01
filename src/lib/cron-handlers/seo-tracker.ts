@@ -1,7 +1,7 @@
 // SEO Tracker Cron Handler
 // Google Search Console 및 SERP API를 통한 일일 SEO 모니터링
 
-import type { CronHandler, CronHandlerResult } from "../cron-handlers";
+import type { CronHandler } from "../cron-handlers";
 import { query, queryOne } from "../db";
 
 interface GoogleSearchConsoleData {
@@ -219,10 +219,11 @@ async function generateSeoReport(period: "daily" | "weekly" | "monthly"): Promis
          ROUND(AVG(ctr)::numeric, 2) as avg_ctr,
          ROUND(AVG(avg_position)::numeric, 2) as avg_position
        FROM seo_metrics
-       WHERE source = 'gsc' AND metric_date >= (CURRENT_DATE - INTERVAL '${daysAgo} days')
+       WHERE source = 'gsc' AND metric_date >= (CURRENT_DATE - ($1 * INTERVAL '1 day'))
        GROUP BY keyword
        ORDER BY avg_clicks DESC
-       LIMIT 10`
+       LIMIT 10`,
+      [daysAgo]
     );
 
     // 순위 변동 키워드
@@ -236,10 +237,11 @@ async function generateSeoReport(period: "daily" | "weekly" | "monthly"): Promis
          ROUND(AVG(serp_rank)::numeric, 2) as avg_rank,
          COUNT(*) as count
        FROM seo_metrics
-       WHERE source = 'serp' AND metric_date >= (CURRENT_DATE - INTERVAL '${daysAgo} days')
+       WHERE source = 'serp' AND metric_date >= (CURRENT_DATE - ($1 * INTERVAL '1 day'))
        GROUP BY keyword
        ORDER BY avg_rank ASC
-       LIMIT 20`
+       LIMIT 20`,
+      [daysAgo]
     );
 
     // 전체 요약
@@ -255,7 +257,8 @@ async function generateSeoReport(period: "daily" | "weekly" | "monthly"): Promis
          ROUND(AVG(ctr)::numeric, 2) as avg_ctr,
          ROUND(AVG(avg_position)::numeric, 2) as avg_position
        FROM seo_metrics
-       WHERE source = 'gsc' AND metric_date >= (CURRENT_DATE - INTERVAL '${daysAgo} days')`
+       WHERE source = 'gsc' AND metric_date >= (CURRENT_DATE - ($1 * INTERVAL '1 day'))`,
+      [daysAgo]
     );
 
     return {

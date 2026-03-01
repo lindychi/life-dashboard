@@ -3,8 +3,8 @@
 import { useState, useCallback } from "react";
 import type { Project } from "@/hooks/useDashboardData";
 import ProjectModal, { type ProjectFormData } from "./ProjectModal";
-import KPIDashboard, { type KPIMetric, generateSampleKPIs } from "./KPIDashboard";
-import OKRView, { type Objective, generateSampleOKRs } from "./OKRView";
+import KPIDashboard from "./KPIDashboard";
+import OKRView from "./OKRView";
 
 interface ProjectsTabProps {
   projects: Project[];
@@ -22,11 +22,9 @@ export default function ProjectsTab({
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [_selectedProject, setSelectedProject] = useState<Project | null>(null);
 
-  // Mock data for KPI and OKR (replace with real API calls)
-  const [kpiMetrics] = useState<KPIMetric[]>(generateSampleKPIs());
-  const [objectives] = useState<Objective[]>(generateSampleOKRs());
+  // KPI and OKR components now fetch their own data internally
 
   const handleCreateProject = useCallback(async (data: ProjectFormData) => {
     try {
@@ -206,10 +204,9 @@ export default function ProjectsTab({
           </div>
         )
       ) : viewMode === "kpi" ? (
-        <KPIDashboard metrics={kpiMetrics} columns={3} />
+        <KPIDashboard metrics={[]} columns={3} />
       ) : (
         <OKRView
-          objectives={objectives}
           onObjectiveClick={(obj) => console.log("Objective clicked:", obj)}
           onKeyResultUpdate={(objId, krId, value) =>
             console.log("Key result updated:", objId, krId, value)

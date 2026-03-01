@@ -522,11 +522,11 @@ export async function getIncompleteTasks(
   const limit = Math.max(1, Math.min(100, filters?.limit || 50));
 
   // Build parameterized WHERE clause
+  const params: unknown[] = [days];
   const conditions: string[] = [
     `ah.type IN ('task_started', 'task_completed', 'task_failed')`,
-    `ah.created_at >= NOW() - INTERVAL '${days} days'`,
+    `ah.created_at >= NOW() - ($1 * INTERVAL '1 day')`,
   ];
-  const params: unknown[] = [];
 
   if (agentId) {
     conditions.push(`ah.agent_id = $${params.length + 1}`);

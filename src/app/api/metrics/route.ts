@@ -29,9 +29,10 @@ export async function GET(req: NextRequest) {
 
     switch (view) {
       case "daily_agent":
+        params.push(days);
         sql = `
           SELECT * FROM daily_agent_metrics
-          WHERE date >= CURRENT_DATE - INTERVAL '${days} days'
+          WHERE date >= CURRENT_DATE - ($1 * INTERVAL '1 day')
           ${agentId ? `AND agent_id = $${params.push(agentId)}` : ""}
           ORDER BY date DESC, agent_id
           LIMIT $${params.push(limit)}
@@ -49,7 +50,8 @@ export async function GET(req: NextRequest) {
       case "raw":
       default:
         // Raw task_metrics query with filters
-        const conditions: string[] = [`completed_at >= NOW() - INTERVAL '${days} days'`];
+        params.push(days);
+        const conditions: string[] = [`completed_at >= NOW() - ($1 * INTERVAL '1 day')`];
         if (agentId) conditions.push(`agent_id = $${params.push(agentId)}`);
         if (modelTier) conditions.push(`model_tier = $${params.push(modelTier)}`);
         if (status) conditions.push(`status = $${params.push(status)}`);

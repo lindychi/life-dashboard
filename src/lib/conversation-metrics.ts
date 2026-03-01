@@ -396,9 +396,9 @@ export async function getMetricsHistory(
     `SELECT id, sessions_json, messages_json, performance_json,
             participants_json, health_json, collected_at
     FROM conversation_metrics_history
-    WHERE collected_at > NOW() - INTERVAL '${hoursBack} hours'
+    WHERE collected_at > NOW() - ($1 * INTERVAL '1 hour')
     ORDER BY collected_at DESC`,
-    []
+    [hoursBack]
   );
 
   return results.map((row) => ({
@@ -451,9 +451,9 @@ export async function getLatestMetrics(): Promise<ConversationMetrics | null> {
 export async function cleanupOldMetrics(daysOld: number = 90): Promise<number> {
   const result = await queryOne<{ count: number }>(
     `DELETE FROM conversation_metrics_history
-    WHERE collected_at < NOW() - INTERVAL '${daysOld} days'
+    WHERE collected_at < NOW() - ($1 * INTERVAL '1 day')
     RETURNING COUNT(*) as count`,
-    []
+    [daysOld]
   );
 
   return result?.count || 0;
