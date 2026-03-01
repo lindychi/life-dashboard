@@ -8,6 +8,8 @@ vi.mock("@/lib/relay", () => ({
   isDbAvailable: vi.fn().mockReturnValue(true),
   queueInstruction: vi.fn().mockResolvedValue({ id: "inst-1", position: 1 }),
   isAgentBusy: vi.fn().mockResolvedValue(false),
+  selectOptimalGateway: vi.fn().mockResolvedValue({ gatewayId: "gw-1", reason: "fallback" }),
+  linkAttachmentsToCommand: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({

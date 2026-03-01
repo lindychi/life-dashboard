@@ -533,11 +533,11 @@ $$ LANGUAGE plpgsql;
 - [x] Dashboard "Agent Performance" 탭 추가
 - [ ] 2026-03-08 `pnpm analyze:report` 실행 및 결과 문서화
 - [x] Gateway Long-Polling API 구현 (`/api/relay/poll?timeout=30000`)
-- [ ] gateway-connector.ts Long-Polling 전환
+- [x] gateway-connector.ts Long-Polling 전환
 
 ### 중기 (2~4주)
 - [x] `orchestrator.ts` — `modelTier` 필드 추가 (Ecomode)
-- [ ] `createPlan` 프롬프트 — modelTier 태깅 지시 추가
+- [x] `createPlan` 프롬프트 — modelTier 태깅 지시 추가
 - [ ] Gateway affinity matrix 구현
 - [x] Redis 또는 in-process LRU 캐싱 레이어 구현
 - [x] Dashboard 폴링 코드 → SSE 이벤트 전환

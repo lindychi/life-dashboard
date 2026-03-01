@@ -17,6 +17,8 @@ const queueInstructionMock = vi.fn();
 const isAgentBusyMock = vi.fn();
 const linkAttachmentsToCommandMock = vi.fn();
 
+const selectOptimalGatewayMock = vi.fn();
+
 vi.mock("@/lib/relay", () => ({
   queueCommand: (...args: unknown[]) => queueCommandMock(...args),
   getConnectedGateways: (...args: unknown[]) => getConnectedGatewaysMock(...args),
@@ -25,6 +27,7 @@ vi.mock("@/lib/relay", () => ({
   queueInstruction: (...args: unknown[]) => queueInstructionMock(...args),
   isAgentBusy: (...args: unknown[]) => isAgentBusyMock(...args),
   linkAttachmentsToCommand: (...args: unknown[]) => linkAttachmentsToCommandMock(...args),
+  selectOptimalGateway: (...args: unknown[]) => selectOptimalGatewayMock(...args),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -63,6 +66,7 @@ describe("POST /api/relay/command with attachments", () => {
     isAgentBusyMock.mockResolvedValue(false);
     queueCommandMock.mockResolvedValue({ id: "cmd-1", type: "spawn", payload: {} });
     linkAttachmentsToCommandMock.mockResolvedValue(undefined);
+    selectOptimalGatewayMock.mockResolvedValue({ gatewayId: "gw-1", reason: "fallback" });
     const mod = await import("@/app/api/relay/command/route");
     POST = mod.POST as unknown as (req: Request) => Promise<Response>;
   });

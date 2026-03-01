@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Agent Usage Analytics
  *
@@ -57,6 +58,22 @@ interface CostAnalysis {
   avg_cost_per_call: number;
   model_distribution: { haiku: number; sonnet: number; opus: number };
   ecomode_usage_rate: number;
+}
+
+interface RoadmapMetrics {
+  qa_success_rate: number;
+  overall_success_rate: number;
+  hung_timeout_rate: number;
+  opus_usage_rate: number;
+  total_tasks_in_window: number;
+}
+
+interface ModelPromotionSummary {
+  agent_id: string;
+  total_promotions: number;
+  last_promotion_at: Date | null;
+  from_model: string | null;
+  to_model: string | null;
 }
 
 async function getAgentWorkFrequency(): Promise<AgentWorkFrequency[]> {
@@ -193,6 +210,70 @@ async function getCostAnalysis(): Promise<CostAnalysis[]> {
   }));
 }
 
+async function getRoadmapMetrics(): Promise<RoadmapMetrics> {
+  // B-2 metrics: QA success rate, overall success rate, hung timeout rate, opus usage rate
+  // Uses agent_task_results table (populated by recordTaskResult in gateway-connector)
+  const result = await query<any>(`
+    SELECT
+      -- QA agent success rate
+      (COUNT(*) FILTER (WHERE agent_id = 'qa' AND status = 'success')::FLOAT
+        / NULLIF(COUNT(*) FILTER (WHERE agent_id = 'qa'), 0))::NUMERIC(5,4) AS qa_success_rate,
+      -- Overall success rate across all agents
+      (COUNT(*) FILTER (WHERE status = 'success')::FLOAT
+        / NULLIF(COUNT(*), 0))::NUMERIC(5,4) AS overall_success_rate,
+      -- Hung timeout rate: failures where model_used contains 'hung' or status is failure due to timeout
+      -- We track hung as failures in agent_task_results
+      (COUNT(*) FILTER (WHERE status = 'failure')::FLOAT
+        / NULLIF(COUNT(*), 0))::NUMERIC(5,4) AS failure_rate,
+      -- Opus usage rate across all calls
+      (COUNT(*) FILTER (WHERE model_used = 'opus')::FLOAT
+        / NULLIF(COUNT(*), 0))::NUMERIC(5,4) AS opus_usage_rate,
+      COUNT(*) AS total_tasks_in_window
+    FROM agent_task_results
+  `);
+
+  // Also pull hung timeout rate from task_queue (exit_code = -2 indicates hung in executor)
+  const hungResult = await query<any>(`
+    SELECT
+      (COUNT(*) FILTER (WHERE exit_code = -2)::FLOAT
+        / NULLIF(COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'dead_letter')), 0))::NUMERIC(5,4)
+        AS hung_timeout_rate
+    FROM task_executions
+  `);
+
+  const row = result.rows[0] || {};
+  const hungRow = hungResult.rows[0] || {};
+
+  return {
+    qa_success_rate: parseFloat(row.qa_success_rate ?? '0'),
+    overall_success_rate: parseFloat(row.overall_success_rate ?? '0'),
+    hung_timeout_rate: parseFloat(hungRow.hung_timeout_rate ?? row.failure_rate ?? '0'),
+    opus_usage_rate: parseFloat(row.opus_usage_rate ?? '0'),
+    total_tasks_in_window: parseInt(row.total_tasks_in_window ?? '0'),
+  };
+}
+
+async function getModelPromotions(): Promise<ModelPromotionSummary[]> {
+  const result = await query<any>(`
+    SELECT
+      agent_id,
+      COUNT(*) AS total_promotions,
+      MAX(promoted_at) AS last_promotion_at,
+      (ARRAY_AGG(from_model ORDER BY promoted_at DESC))[1] AS from_model,
+      (ARRAY_AGG(to_model ORDER BY promoted_at DESC))[1] AS to_model
+    FROM agent_model_promotions
+    GROUP BY agent_id
+    ORDER BY total_promotions DESC
+  `);
+  return result.rows.map((row: any) => ({
+    agent_id: row.agent_id,
+    total_promotions: parseInt(row.total_promotions),
+    last_promotion_at: row.last_promotion_at ? new Date(row.last_promotion_at) : null,
+    from_model: row.from_model ?? null,
+    to_model: row.to_model ?? null,
+  }));
+}
+
 async function analyzeAgentUsage() {
   console.log('📊 Agent Usage Analytics Report\n');
   console.log('=' .repeat(80));
@@ -312,8 +393,57 @@ async function analyzeAgentUsage() {
     );
   }
 
-  // 6. Key Insights
-  console.log('\n\n💡 6. KEY INSIGHTS\n');
+  // 6. B-2 Roadmap KPI Metrics
+  console.log('\n\n🎯 6. ROADMAP B-2 KPI METRICS\n');
+  let roadmapMetrics: RoadmapMetrics | null = null;
+  try {
+    roadmapMetrics = await getRoadmapMetrics();
+    const qaRate = (roadmapMetrics.qa_success_rate * 100).toFixed(1) + '%';
+    const overallRate = (roadmapMetrics.overall_success_rate * 100).toFixed(1) + '%';
+    const hungRate = (roadmapMetrics.hung_timeout_rate * 100).toFixed(1) + '%';
+    const opusRate = (roadmapMetrics.opus_usage_rate * 100).toFixed(1) + '%';
+
+    const qaStatus = roadmapMetrics.qa_success_rate >= 0.80 ? '✅' : '❌';
+    const overallStatus = roadmapMetrics.overall_success_rate >= 0.90 ? '✅' : '❌';
+    const hungStatus = roadmapMetrics.hung_timeout_rate <= 0.05 ? '✅' : '❌';
+    const opusStatus = roadmapMetrics.opus_usage_rate <= 0.20 ? '✅' : '❌';
+
+    console.log(`  Metric                        | Value   | Target | Status`);
+    console.log(`  ` + '-'.repeat(58));
+    console.log(`  QA Agent 성공률               | ${qaRate.padStart(7)} | >80%   | ${qaStatus}`);
+    console.log(`  전체 성공률                   | ${overallRate.padStart(7)} | >90%   | ${overallStatus}`);
+    console.log(`  Hung Timeout 비율             | ${hungRate.padStart(7)} | <5%    | ${hungStatus}`);
+    console.log(`  Opus 사용 비율                | ${opusRate.padStart(7)} | <20%   | ${opusStatus}`);
+    console.log(`  (기준: ${roadmapMetrics.total_tasks_in_window} tasks in agent_task_results)`);
+  } catch {
+    console.log('  agent_task_results / task_executions 테이블 없음 (마이그레이션 필요)');
+  }
+
+  // 7. Model Promotion History
+  console.log('\n\n🔼 7. MODEL PROMOTION HISTORY (agent_model_promotions)\n');
+  try {
+    const promotions = await getModelPromotions();
+    if (promotions.length === 0) {
+      console.log('  No model promotions recorded yet.');
+    } else {
+      console.log('  Agent ID                   | Promotions | Last Promotion         | Latest Change');
+      console.log('  ' + '-'.repeat(78));
+      for (const p of promotions) {
+        const lastAt = p.last_promotion_at
+          ? p.last_promotion_at.toISOString().replace('T', ' ').slice(0, 19)
+          : 'N/A';
+        const change = p.from_model && p.to_model ? `${p.from_model} → ${p.to_model}` : 'N/A';
+        console.log(
+          `  ${p.agent_id.padEnd(25)} | ${String(p.total_promotions).padStart(10)} | ${lastAt.padEnd(22)} | ${change}`
+        );
+      }
+    }
+  } catch {
+    console.log('  agent_model_promotions 테이블 없음 (마이그레이션 필요)');
+  }
+
+  // 8. Key Insights
+  console.log('\n\n💡 8. KEY INSIGHTS\n');
 
   const insights: string[] = [];
 
@@ -352,6 +482,22 @@ async function analyzeAgentUsage() {
   const totalPending = bottlenecks.reduce((sum, bn) => sum + bn.pending_tasks, 0);
   if (totalPending > 10) {
     insights.push(`  📦 High queue depth: ${totalPending} pending tasks across all agents`);
+  }
+
+  // B-2 KPI threshold alerts
+  if (roadmapMetrics) {
+    if (roadmapMetrics.qa_success_rate < 0.80) {
+      insights.push(`  🎯 QA 성공률 미달: ${(roadmapMetrics.qa_success_rate * 100).toFixed(1)}% (목표: >80%)`);
+    }
+    if (roadmapMetrics.overall_success_rate < 0.90) {
+      insights.push(`  🎯 전체 성공률 미달: ${(roadmapMetrics.overall_success_rate * 100).toFixed(1)}% (목표: >90%)`);
+    }
+    if (roadmapMetrics.hung_timeout_rate > 0.05) {
+      insights.push(`  🎯 Hung Timeout 비율 초과: ${(roadmapMetrics.hung_timeout_rate * 100).toFixed(1)}% (목표: <5%)`);
+    }
+    if (roadmapMetrics.opus_usage_rate > 0.20) {
+      insights.push(`  🎯 Opus 사용 비율 초과: ${(roadmapMetrics.opus_usage_rate * 100).toFixed(1)}% (목표: <20%)`);
+    }
   }
 
   if (insights.length === 0) {

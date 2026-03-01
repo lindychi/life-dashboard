@@ -1132,6 +1132,136 @@ export async function cleanupAllInMemory(): Promise<{
   return { commandsRemoved, liveOutputRemoved };
 }
 
+// ---------------------------------------------------------------------------
+// Gateway Affinity Matrix + Load Balancing
+// ---------------------------------------------------------------------------
+
+export interface GatewaySelection {
+  gatewayId: string;
+  /** How this gateway was chosen: "affinity" | "least-loaded" | "fallback" */
+  reason: string;
+}
+
+/**
+ * Get the number of commands currently in 'processing' state for a gateway.
+ * Returns 0 on DB error (safe fallback for load comparison).
+ */
+export async function getRunningTaskCount(gatewayId: string): Promise<number> {
+  try {
+    const result = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) as count FROM relay_commands WHERE gateway_id = $1 AND status = 'processing'`,
+      [gatewayId]
+    );
+    return result ? parseInt(result.count, 10) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Parse GATEWAY_AFFINITY env var (JSON object) into an agent→gatewayId map.
+ * Falls back to empty map on parse failure.
+ *
+ * Example: GATEWAY_AFFINITY='{"analyst":"mac-primary","researcher":"mac-primary"}'
+ */
+function parseAffinityMap(): Record<string, string> {
+  const raw = process.env.GATEWAY_AFFINITY;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+/** Overload threshold: a gateway with this many processing tasks is considered overloaded for affinity purposes. */
+const GATEWAY_OVERLOAD_THRESHOLD = 5;
+
+/**
+ * Select the optimal gateway for a given agent/command.
+ *
+ * Strategy:
+ * 1. If agentId has affinity to a specific gateway AND that gateway is connected
+ *    AND its running task count <= GATEWAY_OVERLOAD_THRESHOLD → prefer it ("affinity")
+ * 2. Pick the gateway with fewest running tasks ("least-loaded").
+ *    Tiebreaker: most recent lastHeartbeat wins.
+ * 3. Fallback: first element in connectedGateways list ("fallback").
+ *
+ * Throws if connectedGateways is empty.
+ */
+export async function selectOptimalGateway(
+  connectedGateways: GatewayConnection[],
+  agentId?: string
+): Promise<GatewaySelection> {
+  if (connectedGateways.length === 0) {
+    throw new Error("No connected gateways available");
+  }
+
+  // Only operate on gateways that are actually connected
+  const active = connectedGateways.filter((g) => g.status === "connected");
+  if (active.length === 0) {
+    throw new Error("No connected gateways available");
+  }
+
+  // Single gateway — skip DB queries
+  if (active.length === 1) {
+    return { gatewayId: active[0].id, reason: "fallback" };
+  }
+
+  // Fetch running task counts for all active gateways in parallel
+  let counts: Map<string, number>;
+  try {
+    const pairs = await Promise.all(
+      active.map(async (g) => [g.id, await getRunningTaskCount(g.id)] as [string, number])
+    );
+    counts = new Map(pairs);
+  } catch {
+    // DB completely unavailable — fall back to first gateway
+    return { gatewayId: active[0].id, reason: "fallback" };
+  }
+
+  // 1. Affinity check
+  if (agentId) {
+    const affinityMap = parseAffinityMap();
+    const preferredId = affinityMap[agentId];
+    if (preferredId) {
+      const preferred = active.find((g) => g.id === preferredId);
+      if (preferred) {
+        const load = counts.get(preferredId) ?? 0;
+        if (load <= GATEWAY_OVERLOAD_THRESHOLD) {
+          return { gatewayId: preferredId, reason: "affinity" };
+        }
+      }
+      // Preferred gateway missing or overloaded — fall through to least-loaded
+    }
+  }
+
+  // 2. Least-loaded (tiebreaker: most recent heartbeat)
+  let best = active[0];
+  let bestLoad = counts.get(best.id) ?? 0;
+
+  for (let i = 1; i < active.length; i++) {
+    const g = active[i];
+    const load = counts.get(g.id) ?? 0;
+    if (load < bestLoad) {
+      best = g;
+      bestLoad = load;
+    } else if (load === bestLoad) {
+      // Tiebreaker: most recent heartbeat
+      if (g.lastHeartbeat > best.lastHeartbeat) {
+        best = g;
+        bestLoad = load;
+      }
+    }
+  }
+
+  return { gatewayId: best.id, reason: "least-loaded" };
+}
+
 // Estimate worst-case memory usage based on configured limits
 export function getMemoryBoundsEstimate(): {
   maxCommands: number;

@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Agent Usage Report Generator
  *
@@ -17,6 +18,16 @@ interface AgentMetrics {
   bottlenecks: any[];
   costs: any[];
   timeSeriesData: any[];
+  roadmapKpis: RoadmapKpis | null;
+  modelPromotions: any[];
+}
+
+interface RoadmapKpis {
+  qa_success_rate: number;
+  overall_success_rate: number;
+  hung_timeout_rate: number;
+  opus_usage_rate: number;
+  total_tasks_in_window: number;
 }
 
 async function collectMetrics(): Promise<AgentMetrics> {
@@ -105,6 +116,60 @@ async function collectMetrics(): Promise<AgentMetrics> {
     ORDER BY day DESC, task_count DESC
   `);
 
+  // 7. B-2 Roadmap KPI metrics from agent_task_results + task_executions
+  let roadmapKpis: RoadmapKpis | null = null;
+  try {
+    const kpiResult = await query<any>(`
+      SELECT
+        (COUNT(*) FILTER (WHERE agent_id = 'qa' AND status = 'success')::FLOAT
+          / NULLIF(COUNT(*) FILTER (WHERE agent_id = 'qa'), 0))::NUMERIC(5,4) AS qa_success_rate,
+        (COUNT(*) FILTER (WHERE status = 'success')::FLOAT
+          / NULLIF(COUNT(*), 0))::NUMERIC(5,4) AS overall_success_rate,
+        (COUNT(*) FILTER (WHERE model_used = 'opus')::FLOAT
+          / NULLIF(COUNT(*), 0))::NUMERIC(5,4) AS opus_usage_rate,
+        COUNT(*) AS total_tasks_in_window
+      FROM agent_task_results
+    `);
+    const hungResult = await query<any>(`
+      SELECT
+        (COUNT(*) FILTER (WHERE exit_code = -2)::FLOAT
+          / NULLIF(COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'dead_letter')), 0))::NUMERIC(5,4)
+          AS hung_timeout_rate
+      FROM task_executions
+    `);
+    const krow = kpiResult.rows[0] || {};
+    const hrow = hungResult.rows[0] || {};
+    roadmapKpis = {
+      qa_success_rate: parseFloat(krow.qa_success_rate ?? '0'),
+      overall_success_rate: parseFloat(krow.overall_success_rate ?? '0'),
+      hung_timeout_rate: parseFloat(hrow.hung_timeout_rate ?? '0'),
+      opus_usage_rate: parseFloat(krow.opus_usage_rate ?? '0'),
+      total_tasks_in_window: parseInt(krow.total_tasks_in_window ?? '0'),
+    };
+  } catch {
+    // Tables may not exist yet; omit section from report
+    roadmapKpis = null;
+  }
+
+  // 8. Model Promotion History
+  let modelPromotions: any[] = [];
+  try {
+    const promoResult = await query<any>(`
+      SELECT
+        agent_id,
+        COUNT(*) AS total_promotions,
+        MAX(promoted_at) AS last_promotion_at,
+        (ARRAY_AGG(from_model ORDER BY promoted_at DESC))[1] AS from_model,
+        (ARRAY_AGG(to_model ORDER BY promoted_at DESC))[1] AS to_model
+      FROM agent_model_promotions
+      GROUP BY agent_id
+      ORDER BY total_promotions DESC
+    `);
+    modelPromotions = promoResult.rows;
+  } catch {
+    modelPromotions = [];
+  }
+
   return {
     workFrequency: workFrequency.rows,
     taskTypes: taskTypes.rows,
@@ -112,6 +177,8 @@ async function collectMetrics(): Promise<AgentMetrics> {
     bottlenecks: bottlenecks.rows,
     costs: costs.rows,
     timeSeriesData: timeSeriesData.rows,
+    roadmapKpis,
+    modelPromotions,
   };
 }
 
@@ -236,7 +303,7 @@ function generateMarkdown(metrics: AgentMetrics): string {
     md += `\n`;
 
     // Cost distribution pie chart (using mermaid)
-    const totalModelCalls = metrics.costs.reduce((sum, c) =>
+    const _totalModelCalls = metrics.costs.reduce((sum: number, c: Record<string, string>) =>
       sum + parseInt(c.haiku_calls) + parseInt(c.sonnet_calls) + parseInt(c.opus_calls), 0
     );
     const haikuTotal = metrics.costs.reduce((sum, c) => sum + parseInt(c.haiku_calls), 0);
@@ -274,7 +341,45 @@ function generateMarkdown(metrics: AgentMetrics): string {
     md += `\n`;
   }
 
-  // 7. Recommendations
+  // 7. B-2 Roadmap KPI Dashboard
+  md += `## 🎯 Roadmap B-2 KPI Dashboard\n\n`;
+  if (!metrics.roadmapKpis || metrics.roadmapKpis.total_tasks_in_window === 0) {
+    md += `> No data in \`agent_task_results\` yet. Run migrations (sql/026_agent_intelligence.sql) and let agents accumulate task results.\n\n`;
+  } else {
+    const kpis = metrics.roadmapKpis;
+    const qaStatus = kpis.qa_success_rate >= 0.80 ? '✅' : '❌';
+    const overallStatus = kpis.overall_success_rate >= 0.90 ? '✅' : '❌';
+    const hungStatus = kpis.hung_timeout_rate <= 0.05 ? '✅' : '❌';
+    const opusStatus = kpis.opus_usage_rate <= 0.20 ? '✅' : '❌';
+
+    md += `| Metric | Value | Target | Status |\n`;
+    md += `|--------|-------|--------|--------|\n`;
+    md += `| QA Agent 성공률 | ${(kpis.qa_success_rate * 100).toFixed(1)}% | >80% | ${qaStatus} |\n`;
+    md += `| 전체 성공률 | ${(kpis.overall_success_rate * 100).toFixed(1)}% | >90% | ${overallStatus} |\n`;
+    md += `| Hung Timeout 비율 | ${(kpis.hung_timeout_rate * 100).toFixed(1)}% | <5% | ${hungStatus} |\n`;
+    md += `| Opus 사용 비율 | ${(kpis.opus_usage_rate * 100).toFixed(1)}% | <20% | ${opusStatus} |\n`;
+    md += `\n`;
+    md += `*Based on ${kpis.total_tasks_in_window} tasks recorded in \`agent_task_results\`.*\n\n`;
+  }
+
+  // 8. Model Promotion History
+  md += `## 🔼 Model Promotion History\n\n`;
+  if (metrics.modelPromotions.length === 0) {
+    md += `No model promotions recorded yet. Promotions are triggered when an agent's failure rate exceeds 30% over the last 20 tasks.\n\n`;
+  } else {
+    md += `| Agent ID | Promotions | Last Promotion | Latest Change |\n`;
+    md += `|----------|------------|----------------|---------------|\n`;
+    for (const p of metrics.modelPromotions) {
+      const lastAt = p.last_promotion_at
+        ? new Date(p.last_promotion_at).toISOString().slice(0, 10)
+        : 'N/A';
+      const change = p.from_model && p.to_model ? `${p.from_model} → ${p.to_model}` : 'N/A';
+      md += `| ${p.agent_id} | ${p.total_promotions} | ${lastAt} | ${change} |\n`;
+    }
+    md += `\n`;
+  }
+
+  // 9. Recommendations
   md += `## 💡 Recommendations\n\n`;
   const recommendations: string[] = [];
 
@@ -312,6 +417,23 @@ function generateMarkdown(metrics: AgentMetrics): string {
     .filter(id => !collaboratingAgents.has(id));
   if (isolatedAgents.length > 0) {
     recommendations.push(`- **Isolated Agents**: The following agents have no message exchanges with others: ${isolatedAgents.join(', ')}. Consider enabling inter-agent communication for better coordination.`);
+  }
+
+  // B-2 KPI threshold alerts
+  if (metrics.roadmapKpis && metrics.roadmapKpis.total_tasks_in_window > 0) {
+    const kpis = metrics.roadmapKpis;
+    if (kpis.qa_success_rate < 0.80) {
+      recommendations.push(`- **B-2 QA 성공률 미달**: ${(kpis.qa_success_rate * 100).toFixed(1)}% (목표: >80%). QA 에이전트 systemPrompt 및 timeout 설정 재검토 필요.`);
+    }
+    if (kpis.overall_success_rate < 0.90) {
+      recommendations.push(`- **B-2 전체 성공률 미달**: ${(kpis.overall_success_rate * 100).toFixed(1)}% (목표: >90%). 실패 원인 분석 후 재시도 로직 강화 필요.`);
+    }
+    if (kpis.hung_timeout_rate > 0.05) {
+      recommendations.push(`- **B-2 Hung Timeout 초과**: ${(kpis.hung_timeout_rate * 100).toFixed(1)}% (목표: <5%). claude-executor staleTimeout 및 lsof 헬스체크 설정 재검토 필요.`);
+    }
+    if (kpis.opus_usage_rate > 0.20) {
+      recommendations.push(`- **B-2 Opus 사용 비율 초과**: ${(kpis.opus_usage_rate * 100).toFixed(1)}% (목표: <20%). Ecomode 활성화 또는 modelTier 태깅 강화 필요.`);
+    }
   }
 
   if (recommendations.length === 0) {

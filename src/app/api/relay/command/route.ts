@@ -8,9 +8,9 @@ import {
   queueInstruction,
   isAgentBusy,
   linkAttachmentsToCommand,
+  selectOptimalGateway,
 } from "@/lib/relay";
-import { isDbConnectionError } from "@/lib/db";
-import { saveAttachment, getAttachmentByRefKey } from "@/lib/attachments";
+import { getAttachmentByRefKey } from "@/lib/attachments";
 import type { RelayCommandType } from "@/lib/types";
 
 const VALID_COMMAND_TYPES: readonly RelayCommandType[] = [
@@ -64,7 +64,10 @@ export async function POST(request: NextRequest) {
           );
         }
       } else {
-        targetGateway = gateways[0].id;
+        const agentIdFromPayload = (payload as Record<string, unknown>)?.agentId as string | undefined;
+        const selection = await selectOptimalGateway(gateways, agentIdFromPayload);
+        targetGateway = selection.gatewayId;
+        console.log(`[relay] Gateway selected: ${selection.gatewayId} (${selection.reason})`);
       }
     }
 
