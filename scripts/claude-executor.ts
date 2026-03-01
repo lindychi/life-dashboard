@@ -1567,3 +1567,44 @@ export async function executeLlmTaskWithRetry(
   // Should not reach here, but TypeScript safety
   return executeLlmTask(options);
 }
+
+/**
+ * GREEN Phase: Calculate dynamic stale timeout based on task complexity
+ * Keywords that indicate complex tasks:
+ * - analyze, refactor, review, security, architect, debug, plan, comprehensive
+ *
+ * Default: 5 minutes (300000ms)
+ * Complex: 10+ minutes based on keywords
+ */
+export function calculateDynamicTimeout(task: string): number {
+  if (!task || task.length === 0) {
+    return 300000; // 5 minutes
+  }
+
+  const taskLower = task.toLowerCase();
+
+  // Define complexity levels and keywords
+  const complexityKeywords: Record<string, number> = {
+    architect: 1200000, // 20 minutes
+    comprehensive: 1200000, // 20 minutes
+    security: 1200000, // 20 minutes
+    review: 900000, // 15 minutes
+    refactor: 900000, // 15 minutes
+    analyze: 600000, // 10 minutes
+    debug: 600000, // 10 minutes
+    plan: 600000, // 10 minutes
+  };
+
+  let maxTimeout = 300000; // Base: 5 minutes
+
+  // Find the highest complexity keyword present in the task
+  for (const [keyword, timeout] of Object.entries(complexityKeywords)) {
+    if (taskLower.includes(keyword)) {
+      maxTimeout = Math.max(maxTimeout, timeout);
+    }
+  }
+
+  // Cap at 30 minutes
+  return Math.min(maxTimeout, 1800000);
+}
+

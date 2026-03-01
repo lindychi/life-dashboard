@@ -43,7 +43,7 @@ vi.mock("pg", () => ({
 }));
 
 vi.mock("@/lib/auth", () => ({
-  getCurrentUser: vi.fn(),
+  authenticateRequest: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -54,6 +54,7 @@ vi.mock("@/lib/db", () => ({
 vi.mock("@/lib/okr", () => ({
   getObjectives: vi.fn(),
   getObjective: vi.fn(),
+  getObjectiveWithKeyResults: vi.fn(),
   createObjective: vi.fn(),
   updateObjective: vi.fn(),
   deleteObjective: vi.fn(),
@@ -68,13 +69,14 @@ vi.mock("@/lib/sse-broadcaster", () => ({
   },
 }));
 
-import { getCurrentUser } from "@/lib/auth";
+import { authenticateRequest } from "@/lib/auth";
 import * as okrLib from "@/lib/okr";
 import { sseBroadcaster } from "@/lib/sse-broadcaster";
 
-const mockGetCurrentUser = vi.mocked(getCurrentUser);
+const mockAuthenticateRequest = vi.mocked(authenticateRequest);
 const mockGetObjectives = vi.mocked(okrLib.getObjectives);
 const mockGetObjective = vi.mocked(okrLib.getObjective);
+const mockGetObjectiveWithKeyResults = vi.mocked(okrLib.getObjectiveWithKeyResults);
 const mockCreateObjective = vi.mocked(okrLib.createObjective);
 const mockUpdateObjective = vi.mocked(okrLib.updateObjective);
 const mockDeleteObjective = vi.mocked(okrLib.deleteObjective);
@@ -83,12 +85,9 @@ const mockUpdateKeyResult = vi.mocked(okrLib.updateKeyResult);
 const mockDeleteKeyResult = vi.mocked(okrLib.deleteKeyResult);
 const mockBroadcast = vi.mocked(sseBroadcaster.broadcast);
 
-// TODO: Fix Next.js 15 params Promise type and other type incompatibilities
-describe.skip("OKR CRUD API Routes", () => {
+describe("OKR CRUD API Routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Most routes don't require auth in current implementation
-    mockGetCurrentUser.mockResolvedValue({ email: "test@example.com" });
   });
 
   describe("GET /api/okr/objectives", () => {
@@ -319,7 +318,7 @@ describe.skip("OKR CRUD API Routes", () => {
 
   describe("GET /api/okr/objectives/[id]", () => {
     it("목표 조회 성공 (Key Results 포함)", async () => {
-      mockGetObjective.mockResolvedValueOnce({
+      mockGetObjectiveWithKeyResults.mockResolvedValueOnce({
         id: "obj-1",
         title: "Q1 OKR",
         description: "Goals for Q1",
@@ -352,7 +351,7 @@ describe.skip("OKR CRUD API Routes", () => {
       });
 
       const request = new NextRequest("http://localhost/api/okr/objectives/obj-1");
-      const response = await getObjective(request, { params: { id: "obj-1" } });
+      const response = await getObjective(request, { params: Promise.resolve({ id: "obj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -362,10 +361,10 @@ describe.skip("OKR CRUD API Routes", () => {
     });
 
     it("존재하지 않는 목표는 404 반환", async () => {
-      mockGetObjective.mockResolvedValueOnce(null);
+      mockGetObjectiveWithKeyResults.mockResolvedValueOnce(null);
 
       const request = new NextRequest("http://localhost/api/okr/objectives/invalid-id");
-      const response = await getObjective(request, { params: { id: "invalid-id" } });
+      const response = await getObjective(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -373,10 +372,10 @@ describe.skip("OKR CRUD API Routes", () => {
     });
 
     it("데이터베이스 오류 시 500 반환", async () => {
-      mockGetObjective.mockRejectedValueOnce(new Error("DB error"));
+      mockGetObjectiveWithKeyResults.mockRejectedValueOnce(new Error("DB error"));
 
       const request = new NextRequest("http://localhost/api/okr/objectives/obj-1");
-      const response = await getObjective(request, { params: { id: "obj-1" } });
+      const response = await getObjective(request, { params: Promise.resolve({ id: "obj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -411,7 +410,7 @@ describe.skip("OKR CRUD API Routes", () => {
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateObjective(request, { params: { id: "obj-1" } });
+      const response = await updateObjective(request, { params: Promise.resolve({ id: "obj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -432,7 +431,7 @@ describe.skip("OKR CRUD API Routes", () => {
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateObjective(request, { params: { id: "invalid-id" } });
+      const response = await updateObjective(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -447,7 +446,7 @@ describe.skip("OKR CRUD API Routes", () => {
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateObjective(request, { params: { id: "obj-1" } });
+      const response = await updateObjective(request, { params: Promise.resolve({ id: "obj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -463,7 +462,7 @@ describe.skip("OKR CRUD API Routes", () => {
         method: "DELETE",
       });
 
-      const response = await deleteObjective(request, { params: { id: "obj-1" } });
+      const response = await deleteObjective(request, { params: Promise.resolve({ id: "obj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -482,7 +481,7 @@ describe.skip("OKR CRUD API Routes", () => {
         method: "DELETE",
       });
 
-      const response = await deleteObjective(request, { params: { id: "invalid-id" } });
+      const response = await deleteObjective(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -496,7 +495,7 @@ describe.skip("OKR CRUD API Routes", () => {
         method: "DELETE",
       });
 
-      const response = await deleteObjective(request, { params: { id: "obj-1" } });
+      const response = await deleteObjective(request, { params: Promise.resolve({ id: "obj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -716,7 +715,7 @@ describe.skip("OKR CRUD API Routes", () => {
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateKeyResult(request, { params: { id: "kr-1" } });
+      const response = await updateKeyResult(request, { params: Promise.resolve({ id: "kr-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -737,7 +736,7 @@ describe.skip("OKR CRUD API Routes", () => {
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateKeyResult(request, { params: { id: "invalid-id" } });
+      const response = await updateKeyResult(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -752,7 +751,7 @@ describe.skip("OKR CRUD API Routes", () => {
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateKeyResult(request, { params: { id: "kr-1" } });
+      const response = await updateKeyResult(request, { params: Promise.resolve({ id: "kr-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -768,7 +767,7 @@ describe.skip("OKR CRUD API Routes", () => {
         method: "DELETE",
       });
 
-      const response = await deleteKeyResult(request, { params: { id: "kr-1" } });
+      const response = await deleteKeyResult(request, { params: Promise.resolve({ id: "kr-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -787,7 +786,7 @@ describe.skip("OKR CRUD API Routes", () => {
         method: "DELETE",
       });
 
-      const response = await deleteKeyResult(request, { params: { id: "invalid-id" } });
+      const response = await deleteKeyResult(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -801,7 +800,7 @@ describe.skip("OKR CRUD API Routes", () => {
         method: "DELETE",
       });
 
-      const response = await deleteKeyResult(request, { params: { id: "kr-1" } });
+      const response = await deleteKeyResult(request, { params: Promise.resolve({ id: "kr-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);

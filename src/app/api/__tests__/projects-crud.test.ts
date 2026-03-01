@@ -34,7 +34,7 @@ vi.mock("pg", () => ({
 }));
 
 vi.mock("@/lib/auth", () => ({
-  getCurrentUser: vi.fn(),
+  authenticateRequest: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -56,11 +56,11 @@ vi.mock("@/lib/sse-broadcaster", () => ({
   },
 }));
 
-import { getCurrentUser } from "@/lib/auth";
+import { authenticateRequest } from "@/lib/auth";
 import * as projectsLib from "@/lib/projects";
 import { sseBroadcaster } from "@/lib/sse-broadcaster";
 
-const mockGetCurrentUser = vi.mocked(getCurrentUser);
+const mockAuthenticateRequest = vi.mocked(authenticateRequest);
 const mockGetProjects = vi.mocked(projectsLib.getProjects);
 const mockGetProjectById = vi.mocked(projectsLib.getProjectById);
 const mockCreateProject = vi.mocked(projectsLib.createProject);
@@ -68,17 +68,19 @@ const mockUpdateProject = vi.mocked(projectsLib.updateProject);
 const mockDeleteProject = vi.mocked(projectsLib.deleteProject);
 const mockBroadcast = vi.mocked(sseBroadcaster.broadcast);
 
-// TODO: Fix auth mock (authenticateRequest) and Next.js 15 params Promise type - fix in follow-up
-describe.skip("Projects CRUD API Routes", () => {
+describe("Projects CRUD API Routes", () => {
+  const makeRequest = (url: string, init?: RequestInit) =>
+    new NextRequest(url, init);
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   describe("GET /api/projects", () => {
     it("인증되지 않은 요청은 401 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce(null);
+      mockAuthenticateRequest.mockResolvedValueOnce(false);
 
-      const response = await listProjects();
+      const response = await listProjects(makeRequest("http://localhost/api/projects"));
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -87,7 +89,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("프로젝트 목록 조회 성공", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockGetProjects.mockResolvedValueOnce([
         {
           id: "proj-1",
@@ -102,7 +104,7 @@ describe.skip("Projects CRUD API Routes", () => {
         },
       ]);
 
-      const response = await listProjects();
+      const response = await listProjects(makeRequest("http://localhost/api/projects"));
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -111,10 +113,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("빈 프로젝트 목록 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockGetProjects.mockResolvedValueOnce([]);
 
-      const response = await listProjects();
+      const response = await listProjects(makeRequest("http://localhost/api/projects"));
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -122,10 +124,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("데이터베이스 오류 시 500 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockGetProjects.mockRejectedValueOnce(new Error("DB connection failed"));
 
-      const response = await listProjects();
+      const response = await listProjects(makeRequest("http://localhost/api/projects"));
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -144,9 +146,9 @@ describe.skip("Projects CRUD API Routes", () => {
     };
 
     it("인증되지 않은 요청은 401 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce(null);
+      mockAuthenticateRequest.mockResolvedValueOnce(false);
 
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(validProjectData),
       });
@@ -159,7 +161,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("유효한 데이터로 프로젝트 생성 성공", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockCreateProject.mockResolvedValueOnce({
         id: "proj-new",
         ...validProjectData,
@@ -167,7 +169,7 @@ describe.skip("Projects CRUD API Routes", () => {
         updated_at: new Date(),
       });
 
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(validProjectData),
       });
@@ -186,10 +188,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("필수 필드 누락 시 400 반환 - name 없음", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
       const invalidData = { ...validProjectData, name: "" };
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(invalidData),
       });
@@ -202,10 +204,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("필수 필드 누락 시 400 반환 - description 없음", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
       const invalidData = { ...validProjectData, description: "" };
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(invalidData),
       });
@@ -218,10 +220,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("progress 범위 초과 시 400 반환 - 음수", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
       const invalidData = { ...validProjectData, progress: -1 };
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(invalidData),
       });
@@ -234,10 +236,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("progress 범위 초과 시 400 반환 - 100 초과", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
       const invalidData = { ...validProjectData, progress: 101 };
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(invalidData),
       });
@@ -250,10 +252,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("progress가 NaN일 때 400 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
       const invalidData = { ...validProjectData, progress: "invalid" };
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(invalidData),
       });
@@ -266,10 +268,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("kpis가 배열이 아닐 때 400 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
       const invalidData = { ...validProjectData, kpis: "not-an-array" };
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(invalidData),
       });
@@ -282,10 +284,10 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("데이터베이스 오류 시 500 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockCreateProject.mockRejectedValueOnce(new Error("DB error"));
 
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(validProjectData),
       });
@@ -298,7 +300,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("경계값 테스트 - progress 0", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockCreateProject.mockResolvedValueOnce({
         id: "proj-new",
         ...validProjectData,
@@ -307,7 +309,7 @@ describe.skip("Projects CRUD API Routes", () => {
         updated_at: new Date(),
       });
 
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify({ ...validProjectData, progress: 0 }),
       });
@@ -320,7 +322,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("경계값 테스트 - progress 100", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockCreateProject.mockResolvedValueOnce({
         id: "proj-new",
         ...validProjectData,
@@ -329,7 +331,7 @@ describe.skip("Projects CRUD API Routes", () => {
         updated_at: new Date(),
       });
 
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify({ ...validProjectData, progress: 100 }),
       });
@@ -342,7 +344,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("선택적 필드 없이도 생성 가능", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockCreateProject.mockResolvedValueOnce({
         id: "proj-minimal",
         name: "Minimal",
@@ -360,7 +362,7 @@ describe.skip("Projects CRUD API Routes", () => {
         description: "Minimal project",
       };
 
-      const request = new NextRequest("http://localhost/api/projects", {
+      const request = makeRequest("http://localhost/api/projects", {
         method: "POST",
         body: JSON.stringify(minimalData),
       });
@@ -375,9 +377,9 @@ describe.skip("Projects CRUD API Routes", () => {
 
   describe("GET /api/projects/[id]", () => {
     it("인증되지 않은 요청은 401 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce(null);
+      mockAuthenticateRequest.mockResolvedValueOnce(false);
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1");
+      const request = makeRequest("http://localhost/api/projects/proj-1");
       const response = await getProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
@@ -386,7 +388,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("프로젝트 조회 성공", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockGetProjectById.mockResolvedValueOnce({
         id: "proj-1",
         name: "Project 1",
@@ -399,8 +401,8 @@ describe.skip("Projects CRUD API Routes", () => {
         updated_at: new Date(),
       });
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1");
-      const response = await getProject(request, { params: { id: "proj-1" } });
+      const request = makeRequest("http://localhost/api/projects/proj-1");
+      const response = await getProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -409,11 +411,11 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("존재하지 않는 프로젝트는 404 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
-      mockGetProject.mockResolvedValueOnce(null);
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
+      mockGetProjectById.mockResolvedValueOnce(null);
 
-      const request = new NextRequest("http://localhost/api/projects/invalid-id");
-      const response = await getProject(request, { params: { id: "invalid-id" } });
+      const request = makeRequest("http://localhost/api/projects/invalid-id");
+      const response = await getProject(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -421,11 +423,11 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("데이터베이스 오류 시 500 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
-      mockGetProject.mockRejectedValueOnce(new Error("DB error"));
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
+      mockGetProjectById.mockRejectedValueOnce(new Error("DB error"));
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1");
-      const response = await getProject(request, { params: { id: "proj-1" } });
+      const request = makeRequest("http://localhost/api/projects/proj-1");
+      const response = await getProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -433,21 +435,22 @@ describe.skip("Projects CRUD API Routes", () => {
     });
   });
 
-  describe("PATCH /api/projects/[id]", () => {
+  // Route exports PUT (not PATCH)
+  describe("PUT /api/projects/[id]", () => {
     const updateData = {
       name: "Updated Project",
       progress: 80,
     };
 
     it("인증되지 않은 요청은 401 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce(null);
+      mockAuthenticateRequest.mockResolvedValueOnce(false);
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
-        method: "PATCH",
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
+        method: "PUT",
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateProject(request, { params: { id: "proj-1" } });
+      const response = await updateProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -455,7 +458,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("프로젝트 업데이트 성공", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockUpdateProject.mockResolvedValueOnce({
         id: "proj-1",
         name: "Updated Project",
@@ -468,12 +471,12 @@ describe.skip("Projects CRUD API Routes", () => {
         updated_at: new Date(),
       });
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
-        method: "PATCH",
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
+        method: "PUT",
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateProject(request, { params: { id: "proj-1" } });
+      const response = await updateProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -487,15 +490,15 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("존재하지 않는 프로젝트 업데이트 시 404 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockUpdateProject.mockResolvedValueOnce(null);
 
-      const request = new NextRequest("http://localhost/api/projects/invalid-id", {
-        method: "PATCH",
+      const request = makeRequest("http://localhost/api/projects/invalid-id", {
+        method: "PUT",
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateProject(request, { params: { id: "invalid-id" } });
+      const response = await updateProject(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -503,14 +506,14 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("progress 범위 초과 시 400 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
-        method: "PATCH",
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
+        method: "PUT",
         body: JSON.stringify({ progress: 150 }),
       });
 
-      const response = await updateProject(request, { params: { id: "proj-1" } });
+      const response = await updateProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(400);
@@ -518,7 +521,7 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("빈 객체로 업데이트 시에도 정상 처리", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockUpdateProject.mockResolvedValueOnce({
         id: "proj-1",
         name: "Existing Project",
@@ -531,12 +534,12 @@ describe.skip("Projects CRUD API Routes", () => {
         updated_at: new Date(),
       });
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
-        method: "PATCH",
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
+        method: "PUT",
         body: JSON.stringify({}),
       });
 
-      const response = await updateProject(request, { params: { id: "proj-1" } });
+      const response = await updateProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -544,15 +547,15 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("데이터베이스 오류 시 500 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockUpdateProject.mockRejectedValueOnce(new Error("DB error"));
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
-        method: "PATCH",
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
+        method: "PUT",
         body: JSON.stringify(updateData),
       });
 
-      const response = await updateProject(request, { params: { id: "proj-1" } });
+      const response = await updateProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -562,13 +565,13 @@ describe.skip("Projects CRUD API Routes", () => {
 
   describe("DELETE /api/projects/[id]", () => {
     it("인증되지 않은 요청은 401 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce(null);
+      mockAuthenticateRequest.mockResolvedValueOnce(false);
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
         method: "DELETE",
       });
 
-      const response = await deleteProject(request, { params: { id: "proj-1" } });
+      const response = await deleteProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -576,14 +579,14 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("프로젝트 삭제 성공", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockDeleteProject.mockResolvedValueOnce(true);
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
         method: "DELETE",
       });
 
-      const response = await deleteProject(request, { params: { id: "proj-1" } });
+      const response = await deleteProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -596,14 +599,14 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("존재하지 않는 프로젝트 삭제 시 404 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockDeleteProject.mockResolvedValueOnce(false);
 
-      const request = new NextRequest("http://localhost/api/projects/invalid-id", {
+      const request = makeRequest("http://localhost/api/projects/invalid-id", {
         method: "DELETE",
       });
 
-      const response = await deleteProject(request, { params: { id: "invalid-id" } });
+      const response = await deleteProject(request, { params: Promise.resolve({ id: "invalid-id" }) });
       const data = await response.json();
 
       expect(response.status).toBe(404);
@@ -611,14 +614,14 @@ describe.skip("Projects CRUD API Routes", () => {
     });
 
     it("데이터베이스 오류 시 500 반환", async () => {
-      mockGetCurrentUser.mockResolvedValueOnce({ email: "test@example.com" });
+      mockAuthenticateRequest.mockResolvedValueOnce(true);
       mockDeleteProject.mockRejectedValueOnce(new Error("DB error"));
 
-      const request = new NextRequest("http://localhost/api/projects/proj-1", {
+      const request = makeRequest("http://localhost/api/projects/proj-1", {
         method: "DELETE",
       });
 
-      const response = await deleteProject(request, { params: { id: "proj-1" } });
+      const response = await deleteProject(request, { params: Promise.resolve({ id: "proj-1" }) });
       const data = await response.json();
 
       expect(response.status).toBe(500);

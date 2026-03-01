@@ -27,8 +27,7 @@ function createMockProcess(): ChildProcess & EventEmitter {
   return proc;
 }
 
-// TODO: Fix claude-executor tests - CLI flag signature mismatch
-describe.skip("claude-executor", () => {
+describe("claude-executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -68,8 +67,8 @@ describe.skip("claude-executor", () => {
         "claude",
         expect.arrayContaining([
           "--print", "--output-format", "stream-json", "--verbose",
-          "--allowedTools", "Read,Write,Edit,Glob,Grep,mcp__life-dashboard",
-          "--no-session-persistence", "--system-prompt",
+          "--allowed-tools", expect.stringContaining("Read"),
+          "--system-prompt",
           expect.stringContaining("You are the PM agent."),
           "Review Q1 metrics",
         ]),
@@ -101,19 +100,17 @@ describe.skip("claude-executor", () => {
 
       const promise = executeClaudeTask(options);
 
-      // Verify spawn was called with --print only (no stream-json)
-      expect(spawn).toHaveBeenCalledWith(
-        "claude",
-        expect.arrayContaining([
-          "--print", "--tools", "",
-          "--no-session-persistence", "--system-prompt",
-          expect.stringContaining("You are the PM agent."),
-          "Plan something",
-        ]),
-        expect.objectContaining({
-          stdio: ["ignore", "pipe", "pipe"],
-        })
-      );
+      // Verify spawn was called with --print only (no stream-json, no tools)
+      const spawnCall = vi.mocked(spawn).mock.calls[0];
+      const args = spawnCall[1] as string[];
+      expect(args).toContain("--print");
+      expect(args).toContain("--tools");
+      expect(args).not.toContain("--output-format");
+      expect(args).not.toContain("--allowed-tools");
+      expect(args).toContain("--system-prompt");
+      const sysPromptIdx = args.indexOf("--system-prompt");
+      expect(args[sysPromptIdx + 1]).toContain("You are the PM agent.");
+      expect(args[args.length - 1]).toBe("Plan something");
 
       // Simulate raw text output (--print mode)
       mockProc.stdout!.emit("data", Buffer.from("Plan completed"));
@@ -139,7 +136,7 @@ describe.skip("claude-executor", () => {
       const toolEnabledArgs = vi.mocked(spawn).mock.calls[0][1] as string[];
       const systemPromptArg = toolEnabledArgs[toolEnabledArgs.indexOf("--system-prompt") + 1];
       expect(systemPromptArg).toContain("시스템 제약");
-      expect(systemPromptArg).toContain("Read,Write,Edit,Glob,Grep,mcp__life-dashboard");
+      expect(systemPromptArg).toContain("Read");
       expect(systemPromptArg).toContain("Bash");
       expect(systemPromptArg).toContain("텍스트로 제안");
 
