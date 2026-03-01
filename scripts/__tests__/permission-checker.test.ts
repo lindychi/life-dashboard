@@ -98,7 +98,7 @@ describe("Permission Checker - Gateway Integration", () => {
       expect(result.reason).toContain("직접 수정 금지");
     });
 
-    it.skip("should request approval for .git/index.lock deletion", async () => {
+    it.skip("should request approval for .git/index.lock deletion — SKIP: .git/**/* pattern requires subdir level (e.g. .git/refs/x), so .git/index.lock (directly under .git/) is not matched by that rule and returns allowed=true. Test expectation assumes wrong rule match. Fix: add explicit .git/index.lock rule or adjust the test assertion.", async () => {
       const mockApproval = {
         approval: {
           id: "approval-123",

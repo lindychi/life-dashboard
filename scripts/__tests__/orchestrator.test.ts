@@ -267,13 +267,14 @@ describe("orchestrator", () => {
       expect(results[1].error).toBe("Failed");
     });
 
-    it.skip("should call executor with correct agentId and task", async () => {
+    it("should call executor with correct agentId and task", async () => {
       const mockExecutor = vi.fn().mockResolvedValue({ success: true });
 
       await executePlan(mockPlan, mockExecutor);
 
-      expect(mockExecutor).toHaveBeenNthCalledWith(1, "architect", "Design system", undefined);
-      expect(mockExecutor).toHaveBeenNthCalledWith(2, "executor", "Implement", undefined);
+      // executePlan calls executor(agentId, task, systemPrompt, category) — 4 args
+      expect(mockExecutor).toHaveBeenNthCalledWith(1, "architect", "Design system", undefined, undefined);
+      expect(mockExecutor).toHaveBeenNthCalledWith(2, "executor", "Implement", undefined, undefined);
     });
 
     it("should pass empty plan and return empty results", async () => {

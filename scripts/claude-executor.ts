@@ -51,10 +51,48 @@ export const ALLOWED_TOOLS = [
 ].join(",");
 
 /**
- * Build the allowed tools string dynamically based on options.
- * Extends the base whitelist with optional Bash and browser tools.
+ * Capability tiers for controlling agent tool access levels.
+ *
+ * - "read-only":   Read, Glob, Grep, mcp__life-dashboard only (conservative agents)
+ * - "workspace":   Full safe toolset — Read, Write, Edit, Glob, Grep, WebFetch, WebSearch,
+ *                  Task, TodoWrite, NotebookEdit, mcp__life-dashboard (default)
+ * - "full-access": workspace + Bash + mcp__chrome-devtools (dev/qa/devops/browser agents)
  */
-export function buildAllowedTools(options?: { allowBash?: boolean; enableBrowser?: boolean }): string {
+export type CapabilityTier = "read-only" | "workspace" | "full-access";
+
+/**
+ * Build the allowed tools string based on capabilityTier or legacy boolean flags.
+ *
+ * When capabilityTier is provided it takes full precedence over allowBash/enableBrowser.
+ * Legacy callers that pass allowBash/enableBrowser continue to work unchanged.
+ */
+export function buildAllowedTools(options?: {
+  capabilityTier?: CapabilityTier;
+  allowBash?: boolean;
+  enableBrowser?: boolean;
+}): string {
+  // Tier-based routing takes precedence
+  if (options?.capabilityTier) {
+    switch (options.capabilityTier) {
+      case "read-only":
+        return ["Read", "Glob", "Grep", "mcp__life-dashboard"].join(",");
+      case "full-access":
+        return [
+          "Read", "Write", "Edit", "Glob", "Grep",
+          "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
+          "mcp__life-dashboard", "Bash", "mcp__chrome-devtools",
+        ].join(",");
+      case "workspace":
+      default:
+        return [
+          "Read", "Write", "Edit", "Glob", "Grep",
+          "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
+          "mcp__life-dashboard",
+        ].join(",");
+    }
+  }
+
+  // Legacy flag-based path (backward compatible)
   const tools = [
     "Read",
     "Write",
@@ -122,8 +160,9 @@ export interface ClaudeExecutorOptions {
   onToolCall?: (toolCall: ToolCall) => void; // Called for each tool_use with input/result details
   disableTools?: boolean; // If true, disable all tools to avoid plan mode hanging
   mcpConfig?: string; // Path to MCP config file (optional, defaults to .mcp.json in project root)
-  allowBash?: boolean; // If true, include Bash in allowed tools (use with caution)
-  enableBrowser?: boolean; // If true, include chrome-devtools MCP tools in allowed tools
+  capabilityTier?: CapabilityTier; // Tool access tier: "read-only" | "workspace" (default) | "full-access"
+  allowBash?: boolean; // Legacy: include Bash in allowed tools (prefer capabilityTier)
+  enableBrowser?: boolean; // Legacy: include chrome-devtools MCP tools (prefer capabilityTier)
   maxRetries?: number; // Max retry attempts for hung/rate-limited failures (default 2)
   retryDelayMs?: number; // Delay between retries in ms (default 3000)
   enableTmux?: boolean; // Run Claude inside tmux for live terminal monitoring (default: false)
@@ -450,7 +489,7 @@ function formatToolCallLine(toolName: string, input?: Record<string, unknown>, r
 export function executeClaudeTask(
   options: ClaudeExecutorOptions
 ): Promise<ExecutionResult> {
-  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, allowBash, enableBrowser, enableTmux = false, model } = options;
+  const { agentId, task, systemPrompt, workDir, timeout = 0, staleTimeout = 300000, onOutput, onToolCall, disableTools, mcpConfig, capabilityTier, allowBash, enableBrowser, enableTmux = false, model } = options;
 
   return new Promise((resolve) => {
     const startTime = Date.now();
@@ -472,7 +511,7 @@ export function executeClaudeTask(
 
     // Security: use --allowed-tools whitelist instead of --dangerously-skip-permissions
     // This prevents arbitrary Bash execution if the relay server is compromised
-    const allowedTools = buildAllowedTools({ allowBash, enableBrowser });
+    const allowedTools = buildAllowedTools({ capabilityTier, allowBash, enableBrowser });
     if (disableTools) {
       // No-tool tasks (planner, summarizer): single API call, use --print for simplicity
       args.push("--print");

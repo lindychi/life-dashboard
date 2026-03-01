@@ -68,18 +68,22 @@ function buildMcpConfig(basePath: string, browserEndpoint?: string): string {
   return tmpPath;
 }
 
-// Load agent default models from agents.json (used for smart model routing)
+// Load agent default models and capability tiers from agents.json
 const AGENTS_JSON_PATH = path.resolve(__dirname, "..", "agents.json");
 const AGENT_DEFAULT_MODELS: Record<string, ModelTier> = {};
+const AGENT_CAPABILITY_TIERS: Record<string, import("./claude-executor").CapabilityTier> = {};
 try {
   const agentsRaw = JSON.parse(fs.readFileSync(AGENTS_JSON_PATH, "utf-8")) as Array<{
     id: string;
     defaultModel?: ModelTier;
+    capabilityTier?: import("./claude-executor").CapabilityTier;
   }>;
   for (const a of agentsRaw) {
     if (a.defaultModel) AGENT_DEFAULT_MODELS[a.id] = a.defaultModel;
+    if (a.capabilityTier) AGENT_CAPABILITY_TIERS[a.id] = a.capabilityTier;
   }
   console.log(`📋 Agent default models loaded: ${Object.entries(AGENT_DEFAULT_MODELS).map(([k, v]) => `${k}=${v}`).join(", ")}`);
+  console.log(`🔐 Agent capability tiers loaded: ${Object.entries(AGENT_CAPABILITY_TIERS).map(([k, v]) => `${k}=${v}`).join(", ")}`);
 } catch {
   console.warn("⚠️ Could not load agents.json for model defaults, will use auto-analysis only");
 }
@@ -761,6 +765,10 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
         const recentEvents: ProgressEventEntry[] = [];
         const HISTORY_INTERVAL = 10000; // Send history entries every 10s
 
+        // Resolve capability tier: agent config takes precedence, then legacy flags
+        const agentCapabilityTier = AGENT_CAPABILITY_TIERS[agentId];
+        console.log(`   🔐 Capability tier: ${agentCapabilityTier || "(legacy flags)"}`);
+
         executeLlmTaskWithRetry({
           agentId,
           task: finalTask,
@@ -769,8 +777,9 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           staleTimeout: finalStaleTimeout,
           maxRetries, // AR-1: Pass agent-specific maxRetries
           enableTmux: ENABLE_TMUX,
-          allowBash: allowBash || false,
-          enableBrowser: enableBrowser && !!dynamicMcpConfig,
+          capabilityTier: agentCapabilityTier,
+          allowBash: agentCapabilityTier ? undefined : (allowBash || false),
+          enableBrowser: agentCapabilityTier ? undefined : (enableBrowser && !!dynamicMcpConfig),
           model: modelFlag,
           onToolCall: (tc: ToolCall) => {
             taskToolCalls.push(tc);
@@ -1163,7 +1172,9 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
           // AR-1: Agent-specific maxRetries for orchestration subtasks
           const orchMaxRetries = agentId === "qa" ? 3 : 2;
 
-          console.log(`   🧠 ${agentName}: model=${orchModelFlag} (${routingSource}), timeout=${formatDuration(taskStaleTimeout)}, retries=${orchMaxRetries}`);
+          // Resolve capability tier for this orchestration subtask agent
+          const orchAgentCapabilityTier = AGENT_CAPABILITY_TIERS[agentId];
+          console.log(`   🧠 ${agentName}: model=${orchModelFlag} (${routingSource}), timeout=${formatDuration(taskStaleTimeout)}, retries=${orchMaxRetries}, tier=${orchAgentCapabilityTier || "legacy"}`);
 
           const result = await executeLlmTaskWithRetry({
             agentId,
@@ -1173,7 +1184,8 @@ async function executeCommand(command: RelayCommand): Promise<unknown> {
             staleTimeout: taskStaleTimeout,
             maxRetries: orchMaxRetries, // AR-1: Pass agent-specific maxRetries
             enableTmux: ENABLE_TMUX,
-            allowBash: orchAllowBash || false,
+            capabilityTier: orchAgentCapabilityTier,
+            allowBash: orchAgentCapabilityTier ? undefined : (orchAllowBash || false),
             model: orchModelFlag,
             onToolCall: (tc: ToolCall) => {
               orchToolCalls.push(tc);

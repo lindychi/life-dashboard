@@ -411,6 +411,247 @@ function LoadingSpinner() {
   );
 }
 
+// ===== Create Job Modal =====
+
+interface CreateJobModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}
+
+function CreateJobModal({ isOpen, onClose, onCreated }: CreateJobModalProps) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [form, setForm] = useState({
+    name: "",
+    description: "",
+    handlerType: "",
+    schedule: "0 9 * * *",
+    configJson: "{}",
+    enabled: true,
+  });
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  const schedulePreview = cronToHuman(form.schedule);
+  const isScheduleValid = schedulePreview !== form.schedule || form.schedule.trim().split(/\s+/).length === 5;
+
+  const handleConfigChange = (value: string) => {
+    setForm((p) => ({ ...p, configJson: value }));
+    try {
+      JSON.parse(value);
+      setConfigError(null);
+    } catch {
+      setConfigError("올바른 JSON 형식이 아닙니다");
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmitting || configError) return;
+
+    let handlerConfig: Record<string, unknown> = {};
+    try {
+      handlerConfig = JSON.parse(form.configJson);
+    } catch {
+      setConfigError("올바른 JSON 형식이 아닙니다");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch("/api/cron/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: form.name,
+          description: form.description || undefined,
+          handlerType: form.handlerType,
+          schedule: form.schedule,
+          handlerConfig,
+          enabled: form.enabled,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onCreated();
+      onClose();
+      setForm({ name: "", description: "", handlerType: "", schedule: "0 9 * * *", configJson: "{}", enabled: true });
+    } catch (err) {
+      alert(`작업 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  // Common cron presets
+  const presets = [
+    { label: "매일 오전 9시", value: "0 9 * * *" },
+    { label: "매시 정각", value: "0 * * * *" },
+    { label: "매주 월요일 9시", value: "0 9 * * 1" },
+    { label: "매월 1일 9시", value: "0 9 1 * *" },
+    { label: "매 30분", value: "*/30 * * * *" },
+    { label: "평일 오전 9시", value: "0 9 * * 1-5" },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="relative z-50 bg-gray-900 rounded-2xl border border-gray-700 shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+          <h2 className="text-lg font-bold text-white">새 크론 작업 추가</h2>
+          <button
+            onClick={onClose}
+            disabled={isSubmitting}
+            className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <form onSubmit={handleSubmit}>
+          <div className="px-6 py-5 overflow-y-auto max-h-[calc(90vh-140px)] space-y-4">
+            {/* Name */}
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1.5">
+                작업 이름 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={form.name}
+                onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="예: 일일 보고서 생성"
+                disabled={isSubmitting}
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 text-white placeholder-gray-500 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/50 focus:outline-none disabled:opacity-50"
+              />
+            </div>
+
+            {/* Description */}
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1.5">설명</label>
+              <input
+                type="text"
+                value={form.description}
+                onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
+                placeholder="작업에 대한 간단한 설명"
+                disabled={isSubmitting}
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 text-white placeholder-gray-500 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/50 focus:outline-none disabled:opacity-50"
+              />
+            </div>
+
+            {/* Handler Type */}
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1.5">
+                핸들러 유형 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={form.handlerType}
+                onChange={(e) => setForm((p) => ({ ...p, handlerType: e.target.value }))}
+                placeholder="예: daily-assistant, log, noop"
+                disabled={isSubmitting}
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 text-white placeholder-gray-500 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/50 focus:outline-none disabled:opacity-50"
+              />
+              <p className="mt-1 text-xs text-gray-500">등록된 핸들러: noop, log, daily-assistant, agent-improvement 등</p>
+            </div>
+
+            {/* Cron Expression */}
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1.5">
+                실행 주기 (Cron) <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={form.schedule}
+                onChange={(e) => setForm((p) => ({ ...p, schedule: e.target.value }))}
+                placeholder="분 시 일 월 요일"
+                disabled={isSubmitting}
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 text-white placeholder-gray-500 rounded-lg text-sm font-mono focus:border-blue-500 focus:ring-2 focus:ring-blue-500/50 focus:outline-none disabled:opacity-50"
+              />
+              {/* Korean preview */}
+              <div className={`mt-1.5 text-xs px-2 py-1 rounded inline-flex items-center gap-1.5 ${isScheduleValid ? "text-green-400 bg-green-500/10" : "text-gray-500"}`}>
+                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {schedulePreview !== form.schedule ? schedulePreview : "cron 표현식 미리보기"}
+              </div>
+              {/* Presets */}
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {presets.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, schedule: p.value }))}
+                    className="px-2 py-0.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded transition-colors"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Config JSON */}
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1.5">설정 (JSON)</label>
+              <textarea
+                rows={3}
+                value={form.configJson}
+                onChange={(e) => handleConfigChange(e.target.value)}
+                disabled={isSubmitting}
+                className={`w-full px-4 py-2.5 bg-gray-800 border text-white placeholder-gray-500 rounded-lg text-sm font-mono resize-none focus:ring-2 focus:outline-none disabled:opacity-50 ${configError ? "border-red-500 focus:border-red-500 focus:ring-red-500/50" : "border-gray-700 focus:border-blue-500 focus:ring-blue-500/50"}`}
+              />
+              {configError && <p className="mt-1 text-xs text-red-400">{configError}</p>}
+            </div>
+
+            {/* Enabled toggle */}
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-gray-400">활성화</label>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.enabled}
+                onClick={() => setForm((p) => ({ ...p, enabled: !p.enabled }))}
+                disabled={isSubmitting}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900 ${form.enabled ? "bg-blue-600" : "bg-gray-600"} disabled:opacity-50`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.enabled ? "translate-x-6" : "translate-x-1"}`} />
+              </button>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-700">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm border border-gray-700 rounded-lg transition-colors disabled:opacity-50"
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting || !form.name.trim() || !form.handlerType.trim() || !form.schedule.trim() || !!configError}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? "생성 중..." : "작업 생성"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ===== Main Component =====
 export default function CronJobsPanel() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
@@ -420,6 +661,7 @@ export default function CronJobsPanel() {
   const [jobRuns, setJobRuns] = useState<Record<string, CronJobRun[]>>({});
   const [runningJobs, setRunningJobs] = useState<Set<string>>(new Set());
   const [togglingJobs, setTogglingJobs] = useState<Set<string>>(new Set());
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   // Fetch all jobs
   const fetchJobs = useCallback(async () => {
@@ -582,25 +824,57 @@ export default function CronJobsPanel() {
   // Empty state
   if (jobs.length === 0) {
     return (
-      <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
-        <p className="text-gray-500 text-lg">등록된 크론 작업이 없습니다</p>
-        <p className="text-gray-600 text-sm mt-1">
-          크론 작업이 등록되면 여기에 표시됩니다
-        </p>
-      </div>
+      <>
+        <CreateJobModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          onCreated={() => { fetchJobs(); }}
+        />
+        <div className="bg-gray-800 rounded-xl p-8 border border-gray-700 text-center">
+          <p className="text-gray-500 text-lg">등록된 크론 작업이 없습니다</p>
+          <p className="text-gray-600 text-sm mt-1 mb-4">
+            크론 작업이 등록되면 여기에 표시됩니다
+          </p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            새 작업 추가
+          </button>
+        </div>
+      </>
     );
   }
 
   return (
     <div className="space-y-4">
+      <CreateJobModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCreated={() => { fetchJobs(); }}
+      />
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold text-white">
           예약 작업
         </h2>
-        <span className="text-xs text-gray-500">
-          {jobs.filter((j) => j.enabled).length}/{jobs.length} 활성
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">
+            {jobs.filter((j) => j.enabled).length}/{jobs.length} 활성
+          </span>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            새 작업
+          </button>
+        </div>
       </div>
 
       {/* Job Table */}
