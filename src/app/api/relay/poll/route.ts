@@ -15,7 +15,21 @@ import { isDbConnectionError } from "@/lib/db";
 let lastStaleRecoveryAt = 0;
 const STALE_RECOVERY_INTERVAL_MS = 60_000;
 
-// Gateway가 주기적으로 호출 (polling)
+// Long-polling configuration
+const MAX_LONG_POLL_MS = 30_000;
+const LONG_POLL_INTERVAL_MS = 500;
+
+// Parse and clamp the ?timeout= query param.
+// Returns 0 for absent, invalid, or negative values.
+function parseLongPollTimeout(request: NextRequest): number {
+  const raw = request.nextUrl.searchParams.get("timeout");
+  if (raw === null) return 0;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(parsed, MAX_LONG_POLL_MS);
+}
+
+// Gateway가 주기적으로 호출 (polling). Supports long-polling via ?timeout=<ms>.
 export async function POST(request: NextRequest) {
   const apiKey = request.headers.get("x-relay-key");
 
@@ -90,27 +104,66 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Get pending commands (has fallback for DB down)
-    const commands = await getAndClearCommands(gatewayId);
+    // Determine idle agent IDs for queue draining (used in every poll iteration)
+    const idleAgentIds: string[] =
+      agents && Array.isArray(agents)
+        ? agents
+            .filter((a: { status: string }) => a.status === "idle")
+            .map((a: { id: string }) => a.id)
+        : [];
 
-    // Drain queued instructions for idle agents
-    if (agents && Array.isArray(agents)) {
-      const idleAgentIds = agents
-        .filter((a: { status: string }) => a.status === "idle")
-        .map((a: { id: string }) => a.id);
-
-      try {
-        const drained = await drainQueueForIdleAgents(gatewayId, idleAgentIds);
-        commands.push(...drained);
-      } catch {
-        // Queue drain is best-effort
+    // Helper: fetch commands + drain idle-agent queue in one shot
+    async function fetchCommands(): Promise<import("@/lib/relay").RelayCommand[]> {
+      const commands = await getAndClearCommands(gatewayId);
+      if (idleAgentIds.length > 0) {
+        try {
+          const drained = await drainQueueForIdleAgents(gatewayId, idleAgentIds);
+          commands.push(...drained);
+        } catch {
+          // Queue drain is best-effort
+        }
       }
+      return commands;
     }
 
-    return NextResponse.json({
-      commands,
-      timestamp: new Date().toISOString(),
-    });
+    // Determine long-poll duration (0 = return immediately)
+    const longPollMs = parseLongPollTimeout(request);
+
+    if (longPollMs === 0) {
+      // Backward-compatible: return immediately
+      const commands = await fetchCommands();
+      return NextResponse.json({
+        commands,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Long-poll loop: check every LONG_POLL_INTERVAL_MS until we have
+    // commands or the timeout elapses.
+    const deadline = Date.now() + longPollMs;
+
+    while (true) {
+      const commands = await fetchCommands();
+      if (commands.length > 0) {
+        return NextResponse.json({
+          commands,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        // Timeout elapsed — return empty
+        return NextResponse.json({
+          commands: [],
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Sleep for the lesser of LONG_POLL_INTERVAL_MS and remaining time
+      const sleepMs = Math.min(LONG_POLL_INTERVAL_MS, remaining);
+      await new Promise<void>((resolve) => setTimeout(resolve, sleepMs));
+    }
   } catch (error) {
     console.error("Poll error:", error);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

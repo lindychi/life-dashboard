@@ -7,6 +7,7 @@ import LiveMonitor from "@/components/LiveMonitor";
 import PendingRepliesBanner from "@/components/PendingRepliesBanner";
 import FileAttachment from "@/components/FileAttachment";
 import AgentAnalytics from "@/components/AgentAnalytics";
+import AgentPerformance from "@/components/AgentPerformance";
 import type { AttachedFile } from "@/components/FileAttachment";
 import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 import { sendAgentReply } from "@/lib/agent-actions";
@@ -77,7 +78,7 @@ export default function AgentDashboard({
   onStartTask,
   onPendingReply,
 }: AgentDashboardProps) {
-  const [viewMode, setViewMode] = useState<"agents" | "timeline" | "analytics">("agents");
+  const [viewMode, setViewMode] = useState<"agents" | "timeline" | "analytics" | "performance">("agents");
   const [categoryFilter, setCategoryFilter] = useState<
     "all" | "dev" | "business" | "ops"
   >("all");
@@ -331,6 +332,18 @@ export default function AgentDashboard({
           >
             분석
           </button>
+          <button
+            role="tab"
+            aria-selected={viewMode === "performance"}
+            onClick={() => setViewMode("performance")}
+            className={`px-3 sm:px-4 py-2 sm:py-2 rounded-md text-xs sm:text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 min-h-[38px] sm:min-h-0 ${
+              viewMode === "performance"
+                ? "bg-blue-600 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            성능
+          </button>
         </div>
 
         {/* Category Filter (only in agent view mode) */}
@@ -478,6 +491,11 @@ export default function AgentDashboard({
       {/* Analytics View Mode */}
       {viewMode === "analytics" && (
         <AgentAnalytics />
+      )}
+
+      {/* Performance View Mode */}
+      {viewMode === "performance" && (
+        <AgentPerformance />
       )}
     </div>
   );
