@@ -12,6 +12,12 @@ vi.mock("@/hooks/useOKRSSE", () => ({
   })),
 }));
 
+// Mock ToastContext so components don't need ToastProvider in tests
+vi.mock("@/contexts/ToastContext", () => ({
+  useToastContext: () => ({ addToast: vi.fn() }),
+  ToastProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 const makeObjective = (overrides: Partial<Objective> = {}): Objective => ({
   id: "obj-1",
   title: "Grow user base",

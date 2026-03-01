@@ -59,6 +59,30 @@ export async function verifyToken(token: string): Promise<User | null> {
   }
 }
 
+export async function verifyMagicLinkToken(token: string): Promise<User | null> {
+  try {
+    const { payload } = await jwtVerify(token, getJwtSecret());
+
+    // Must have type: "magic-link" claim
+    if (payload.type !== "magic-link") {
+      return null;
+    }
+
+    // Runtime validation: ensure required fields exist
+    if (typeof payload.email !== "string" || !payload.email) {
+      return null;
+    }
+
+    return {
+      email: payload.email as string,
+      iat: payload.iat ?? 0,
+      exp: payload.exp ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function isEmailAllowed(email: string): boolean {
   if (ALLOWED_EMAILS.length === 0) return true; // No restriction if not configured
   return ALLOWED_EMAILS.includes(email.toLowerCase());

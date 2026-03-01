@@ -43,11 +43,13 @@ import {
   cleanupStaleLiveOutput,
   startAutoCleanup,
   stopAutoCleanup,
+  clearAllInMemoryState,
 } from "../relay";
 
 describe("relay in-memory queue size limits", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearAllInMemoryState();
     // Force DB down for all tests
     mockQueryOne.mockRejectedValue(createECONNREFUSED());
     mockQuery.mockRejectedValue(createECONNREFUSED());
@@ -471,8 +473,8 @@ describe("relay in-memory queue size limits", () => {
           payload: { fresh: true },
         });
 
-        // Stats should show only 1 command, not 6
-        const stats = await getQueueStats();
+        // Trigger purge via getQueueStats
+        await getQueueStats();
         // totalCommands counts ALL gateways so just check retrieval
         const retrieved = await getAndClearCommands(gatewayId);
         expect(retrieved).toHaveLength(1);

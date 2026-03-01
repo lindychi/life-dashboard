@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useOKRSSE } from "@/hooks/useOKRSSE";
+import { useToastContext } from "@/contexts/ToastContext";
 
 // ===== Objective Creation Modal =====
 
@@ -12,6 +13,7 @@ interface ObjectiveModalProps {
 }
 
 function ObjectiveModal({ isOpen, onClose, onCreated }: ObjectiveModalProps) {
+  const { addToast } = useToastContext();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [form, setForm] = useState({
     title: "",
@@ -70,7 +72,7 @@ function ObjectiveModal({ isOpen, onClose, onCreated }: ObjectiveModalProps) {
         owner: "",
       });
     } catch (err) {
-      alert(`목표 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`);
+      addToast(`목표 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`, "error");
     } finally {
       setIsSubmitting(false);
     }
@@ -235,6 +237,7 @@ interface KeyResultModalProps {
 }
 
 function KeyResultModal({ isOpen, objectiveId, onClose, onCreated }: KeyResultModalProps) {
+  const { addToast } = useToastContext();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [form, setForm] = useState({
     title: "",
@@ -271,7 +274,7 @@ function KeyResultModal({ isOpen, objectiveId, onClose, onCreated }: KeyResultMo
       onClose();
       setForm({ title: "", description: "", metric_type: "number", target_value: "", current_value: "0", unit: "" });
     } catch (err) {
-      alert(`핵심결과 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`);
+      addToast(`핵심결과 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`, "error");
     } finally {
       setIsSubmitting(false);
     }
@@ -719,14 +722,13 @@ function ObjectiveCard({
   objective,
   isExpanded,
   onToggle,
-  onClick: _onClick,
   onKeyResultUpdate,
   onKeyResultAdded,
 }: {
   objective: Objective;
   isExpanded: boolean;
   onToggle: () => void;
-  onClick: () => void;
+  onClick?: () => void;
   onKeyResultUpdate?: (objectiveId: string, keyResultId: string, newValue: number) => void;
   onKeyResultAdded?: () => void;
 }) {
@@ -751,7 +753,7 @@ function ObjectiveCard({
       {/* Header */}
       <button
         onClick={onToggle}
-        className="w-full px-5 py-4 lg:px-4 lg:py-3 text-left hover:bg-gray-750 transition-colors duration-150"
+        className="w-full px-5 py-4 lg:px-4 lg:py-3 text-left hover:bg-gray-700 transition-colors duration-150"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
@@ -845,7 +847,7 @@ function ObjectiveCard({
 
       {/* Key Results (Expanded) */}
       {isExpanded && (
-        <div className="border-t border-gray-700 bg-gray-850">
+        <div className="border-t border-gray-700 bg-gray-800/80">
           <KeyResultModal
             isOpen={showKRModal}
             objectiveId={objective.id}

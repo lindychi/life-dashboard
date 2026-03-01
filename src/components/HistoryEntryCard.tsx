@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useState, memo, useMemo } from "react";
+import { useToastContext } from "@/contexts/ToastContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { copyToClipboard } from "@/lib/clipboard";
 import { relativeTime } from "@/lib/format-utils";
 import { HISTORY_TYPE_LABELS } from "@/lib/ui-constants";
 
@@ -118,8 +118,6 @@ function ToolCallItem({ tc, index }: { tc: ToolCallData; index: number }) {
 function ToolCallsPanel({ toolCalls }: { toolCalls: ToolCallData[] }) {
   const [showAll, setShowAll] = useState(false);
 
-  if (toolCalls.length === 0) return null;
-
   // Count by tool name
   const toolCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -137,6 +135,8 @@ function ToolCallsPanel({ toolCalls }: { toolCalls: ToolCallData[] }) {
       return { name: display.shortName, emoji: display.emoji, color: display.color, count };
     });
   }, [toolCounts]);
+
+  if (toolCalls.length === 0) return null;
 
   return (
     <div className="mt-1.5 sm:mt-2 lg:mt-1 border border-gray-700/50 rounded-lg bg-gray-800/30 overflow-hidden">
@@ -197,6 +197,7 @@ function parseFileReferences(content: string): FileReference[] {
 }
 
 function AttachmentBadge({ refKey }: { refKey: string }) {
+  const { addToast } = useToastContext();
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async (e: React.MouseEvent) => {
@@ -209,7 +210,7 @@ function AttachmentBadge({ refKey }: { refKey: string }) {
       // Look up attachment metadata to get the ID
       const res = await fetch(`/api/attachments/by-ref/${refKey}`);
       if (!res.ok) {
-        alert("\uCCA8\uBD80\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4");
+        addToast("첨부파일을 찾을 수 없습니다", "error");
         return;
       }
       const data = await res.json();
@@ -218,7 +219,7 @@ function AttachmentBadge({ refKey }: { refKey: string }) {
         window.open(`/api/attachments/${data.attachment.id}`, "_blank");
       }
     } catch {
-      alert("\uCCA8\uBD80\uD30C\uC77C \uB2E4\uC6B4\uB85C\uB4DC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4");
+      addToast("첨부파일 다운로드에 실패했습니다", "error");
     } finally {
       setDownloading(false);
     }

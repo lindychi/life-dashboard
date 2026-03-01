@@ -15,6 +15,12 @@ vi.mock("@/lib/format-utils", () => ({
   relativeTime: vi.fn(() => "just now"),
 }));
 
+// Mock ToastContext so components don't need ToastProvider in tests
+vi.mock("@/contexts/ToastContext", () => ({
+  useToastContext: () => ({ addToast: vi.fn() }),
+  ToastProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 const makeCronJob = (overrides = {}) => ({
   id: "job-1",
   name: "Daily Report",

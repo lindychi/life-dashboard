@@ -99,7 +99,8 @@ export default function AgentPerformance() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20 text-gray-400">
+      <div className="flex items-center justify-center gap-3 py-20 text-gray-400">
+        <div className="w-5 h-5 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin" />
         에이전트 성능 데이터 로딩 중...
       </div>
     );

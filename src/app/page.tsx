@@ -22,6 +22,7 @@ import {
   useProjects,
 } from "@/hooks/useDashboardData";
 import { usePermissionApprovals } from "@/hooks/usePermissionApprovals";
+import { ToastProvider, useToastContext } from "@/contexts/ToastContext";
 
 // ===== Components =====
 function TabButton({
@@ -51,6 +52,15 @@ function TabButton({
 
 // ===== Main =====
 export default function Home() {
+  return (
+    <ToastProvider>
+      <HomeContent />
+    </ToastProvider>
+  );
+}
+
+function HomeContent() {
+  const { addToast } = useToastContext();
   const [activeTab, setActiveTab] = useState<
     "agents" | "projects" | "finance" | "messages" | "sessions" | "cronjobs"
   >("agents");
@@ -223,7 +233,7 @@ export default function Home() {
         )
       );
 
-      alert(`Failed to start task: ${error instanceof Error ? error.message : "Unknown error"}`);
+      addToast(`작업 시작 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`, "error");
     }
   };
 
@@ -249,7 +259,7 @@ export default function Home() {
           setUploadProgress(null);
           setOrchestrateInput(task);
           setAttachedFiles(filesToUpload);
-          alert(`파일 업로드 실패: ${uploadError instanceof Error ? uploadError.message : "알 수 없는 오류"}`);
+          addToast(`파일 업로드 실패: ${uploadError instanceof Error ? uploadError.message : "알 수 없는 오류"}`, "error");
           return;
         }
         setUploadProgress(null);
@@ -289,7 +299,7 @@ export default function Home() {
       console.error("Orchestrate failed:", error);
       setOrchestrateInput(task);
       setAttachedFiles(filesToUpload);
-      alert(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+      addToast(`오케스트레이션 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`, "error");
     }
   };
 
@@ -472,7 +482,7 @@ export default function Home() {
                 });
               } catch (error) {
                 console.error("Failed to send reply:", error);
-                alert(`Failed to send reply: ${error instanceof Error ? error.message : "Unknown error"}`);
+                addToast(`답신 전송 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`, "error");
               }
             }}
           />

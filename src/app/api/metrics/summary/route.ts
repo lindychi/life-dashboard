@@ -16,7 +16,7 @@ import { query } from "@/lib/db";
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const days = parseInt(searchParams.get("days") || "7", 10);
+    const days = Math.max(1, Math.min(365, parseInt(searchParams.get("days") || "7", 10)));
 
     // Overall metrics
     const overallResult = await query(`
@@ -106,7 +106,7 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error("[Metrics Summary API] Error:", error);
     return NextResponse.json(
-      { success: false, error: String(error) },
+      { success: false, error: "Server error" },
       { status: 500 }
     );
   }

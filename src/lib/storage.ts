@@ -38,10 +38,26 @@ export interface StorageDriver {
   getUrl(key: string): string;
 }
 
+// ===== Path Traversal Prevention =====
+
+function validateStorageKey(key: string): void {
+  // Resolve the full path and ensure it stays within UPLOAD_DIR
+  const fullPath = path.resolve(UPLOAD_DIR, key);
+  if (!fullPath.startsWith(UPLOAD_DIR + path.sep) && fullPath !== UPLOAD_DIR) {
+    throw new Error("Invalid storage key: path traversal detected");
+  }
+  // Also reject any explicit ".." segments
+  const segments = key.split(/[\\/]/);
+  if (segments.some((s) => s === "..")) {
+    throw new Error("Invalid storage key: path traversal detected");
+  }
+}
+
 // ===== Local Filesystem Driver =====
 
 class LocalStorageDriver implements StorageDriver {
   async save(key: string, buffer: Buffer): Promise<void> {
+    validateStorageKey(key);
     const fullPath = path.join(UPLOAD_DIR, key);
     const dir = path.dirname(fullPath);
     await fs.mkdir(dir, { recursive: true });
@@ -49,11 +65,13 @@ class LocalStorageDriver implements StorageDriver {
   }
 
   async read(key: string): Promise<Buffer> {
+    validateStorageKey(key);
     const fullPath = path.join(UPLOAD_DIR, key);
     return fs.readFile(fullPath);
   }
 
   async delete(key: string): Promise<void> {
+    validateStorageKey(key);
     const fullPath = path.join(UPLOAD_DIR, key);
     try {
       await fs.unlink(fullPath);
@@ -66,6 +84,7 @@ class LocalStorageDriver implements StorageDriver {
   }
 
   async exists(key: string): Promise<boolean> {
+    validateStorageKey(key);
     const fullPath = path.join(UPLOAD_DIR, key);
     try {
       await fs.access(fullPath);

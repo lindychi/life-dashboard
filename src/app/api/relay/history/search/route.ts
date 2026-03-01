@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateRelayKey } from "@/lib/relay";
 import { query, isDbConnectionError } from "@/lib/db";
+import { escapeIlike } from "@/lib/sql-utils";
 import type { HistoryEntry } from "@/lib/history";
 
 /**
@@ -33,9 +34,10 @@ export async function GET(request: NextRequest) {
 
     // Build SQL query
     const agentFilter = agentId ? "AND agent_id = $2" : "";
+    const escapedQuery = escapeIlike(searchQuery);
     const params = agentId
-      ? [`%${searchQuery}%`, agentId, limit]
-      : [`%${searchQuery}%`, limit];
+      ? [`%${escapedQuery}%`, agentId, limit]
+      : [`%${escapedQuery}%`, limit];
 
     const paramIndex = agentId ? 3 : 2;
 

@@ -11,6 +11,7 @@ import AgentPerformance from "@/components/AgentPerformance";
 import type { AttachedFile } from "@/components/FileAttachment";
 import type { TaskStack, AgentConfig, AgentRuntime, HistoryEntry } from "@/lib/frontend-types";
 import { sendAgentReply } from "@/lib/agent-actions";
+import { useToastContext } from "@/contexts/ToastContext";
 
 interface AgentDashboardProps {
   agents: AgentRuntime[];
@@ -78,6 +79,7 @@ export default function AgentDashboard({
   onStartTask,
   onPendingReply,
 }: AgentDashboardProps) {
+  const { addToast } = useToastContext();
   const [viewMode, setViewMode] = useState<"agents" | "timeline" | "analytics" | "performance">("agents");
   const [categoryFilter, setCategoryFilter] = useState<
     "all" | "dev" | "business" | "ops"
@@ -93,7 +95,7 @@ export default function AgentDashboard({
       await sendAgentReply(entry.agentId, entry.content, replyText, displayName);
     } catch (error) {
       console.error("Failed to send reply:", error);
-      alert(`답신 전송 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+      addToast(`답신 전송 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`, "error");
     }
   };
 

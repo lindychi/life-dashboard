@@ -9,6 +9,8 @@
 
 import { sseMetricsCollector } from "./sse-metrics";
 
+export const MAX_SSE_CONNECTIONS = 50;
+
 export type SSEEventType =
   | "project:created"
   | "project:updated"
@@ -60,9 +62,22 @@ class SSEBroadcaster {
   }
 
   /**
-   * Add a new SSE client connection
+   * Add a new SSE client connection.
+   * Returns false if the connection limit has been reached.
    */
-  addClient(client: SSEClient): void {
+  addClient(client: SSEClient): boolean {
+    if (this.clients.size >= MAX_SSE_CONNECTIONS) {
+      console.warn(
+        `[SSE] Connection limit reached (${MAX_SSE_CONNECTIONS}). Rejecting client ${client.id}`
+      );
+      try {
+        client.controller.close();
+      } catch {
+        // Ignore close errors
+      }
+      return false;
+    }
+
     this.clients.set(client.id, client);
     console.log(`[SSE] Client ${client.id} connected (total: ${this.clients.size})`);
 
@@ -75,6 +90,8 @@ class SSEBroadcaster {
       data: { status: "connected" },
       timestamp: new Date().toISOString(),
     });
+
+    return true;
   }
 
   /**

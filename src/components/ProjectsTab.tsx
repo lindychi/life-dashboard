@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import type { Project } from "@/hooks/useDashboardData";
 import ProjectModal, { type ProjectFormData } from "./ProjectModal";
 import KPIDashboard from "./KPIDashboard";
 import OKRView from "./OKRView";
 import { useProjectSSE } from "@/hooks/useProjectSSE";
+import { useToastContext } from "@/contexts/ToastContext";
+import { useClickOutside } from "@/hooks/useClickOutside";
 
 interface ProjectsTabProps {
   projects: Project[];
@@ -20,6 +22,7 @@ export default function ProjectsTab({
   isLoading,
   onRefresh,
 }: ProjectsTabProps) {
+  const { addToast } = useToastContext();
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
@@ -94,12 +97,13 @@ export default function ProjectsTab({
         onRefresh();
       } catch (error) {
         console.error("Failed to delete project:", error);
-        alert(
-          `프로젝트 삭제 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`
+        addToast(
+          `프로젝트 삭제 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`,
+          "error"
         );
       }
     },
-    [onRefresh]
+    [onRefresh, addToast]
   );
 
   const openCreateModal = () => {
@@ -254,6 +258,8 @@ function ProjectCard({
   onClick: () => void;
 }) {
   const [showMenu, setShowMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useClickOutside(menuRef, () => setShowMenu(false));
 
   const statusColors = {
     active: "bg-green-500/10 border-green-500/20 text-green-500",
@@ -270,9 +276,9 @@ function ProjectCard({
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl p-5 lg:p-3.5 border border-gray-700 hover:bg-gray-750 hover:border-gray-600 transition-all duration-150 relative group">
+    <div className="bg-gray-800 rounded-xl p-5 lg:p-3.5 border border-gray-700 hover:bg-gray-700 hover:border-gray-600 transition-all duration-150 relative group">
       {/* Menu Button */}
-      <div className="absolute top-4 right-4 lg:top-3 lg:right-3">
+      <div ref={menuRef} className="absolute top-4 right-4 lg:top-3 lg:right-3">
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -300,7 +306,7 @@ function ProjectCard({
 
         {/* Dropdown Menu */}
         {showMenu && (
-          <div className="absolute top-full right-0 mt-1 w-36 bg-gray-850 border border-gray-700 rounded-lg shadow-xl z-10">
+          <div className="absolute top-full right-0 mt-1 w-36 bg-gray-800/80 border border-gray-700 rounded-lg shadow-xl z-10">
             <button
               onClick={(e) => {
                 e.stopPropagation();

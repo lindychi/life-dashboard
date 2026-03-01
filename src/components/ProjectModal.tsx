@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import type { Project } from "@/hooks/useDashboardData";
+import { useToastContext } from "@/contexts/ToastContext";
 
 interface ProjectModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export default function ProjectModal({
   project,
 }: ProjectModalProps) {
   const isEdit = !!project;
+  const { addToast } = useToastContext();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState<ProjectFormData>({
     name: "",
@@ -69,8 +71,9 @@ export default function ProjectModal({
       onClose();
     } catch (error) {
       console.error("Failed to submit:", error);
-      alert(
-        `프로젝트 ${isEdit ? "수정" : "생성"} 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`
+      addToast(
+        `프로젝트 ${isEdit ? "수정" : "생성"} 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`,
+        "error"
       );
     } finally {
       setIsSubmitting(false);
@@ -123,7 +126,7 @@ export default function ProjectModal({
       <div
         className="
           relative z-50
-          bg-gray-850
+          bg-gray-800/80
           rounded-2xl
           border border-gray-700
           shadow-2xl
@@ -489,7 +492,7 @@ export default function ProjectModal({
               disabled={isSubmitting}
               className="
                 px-4 py-2.5 lg:px-3 lg:py-2
-                bg-gray-800 hover:bg-gray-700 active:bg-gray-750
+                bg-gray-800 hover:bg-gray-700 active:bg-gray-700
                 text-white font-medium text-sm
                 border border-gray-700
                 rounded-lg

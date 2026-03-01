@@ -2,6 +2,7 @@
 
 import { query, queryOne } from "./db";
 import { generateRequestTitle } from "./request-group";
+import { escapeIlike } from "./sql-utils";
 
 export interface HistoryEntry {
   id: string;
@@ -392,7 +393,7 @@ export async function getFilteredHistory(
 
   if (filters.search) {
     conditions.push(`content ILIKE $${paramIndex++}`);
-    params.push(`%${filters.search}%`);
+    params.push(`%${escapeIlike(filters.search)}%`);
   }
 
   if (filters.requestGroupId) {

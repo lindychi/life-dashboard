@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useToastContext } from "@/contexts/ToastContext";
 import { relativeTime } from "@/lib/format-utils";
 
 // ===== Types =====
@@ -420,6 +421,7 @@ interface CreateJobModalProps {
 }
 
 function CreateJobModal({ isOpen, onClose, onCreated }: CreateJobModalProps) {
+  const { addToast } = useToastContext();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [form, setForm] = useState({
     name: "",
@@ -476,7 +478,7 @@ function CreateJobModal({ isOpen, onClose, onCreated }: CreateJobModalProps) {
       onClose();
       setForm({ name: "", description: "", handlerType: "", schedule: "0 9 * * *", configJson: "{}", enabled: true });
     } catch (err) {
-      alert(`작업 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`);
+      addToast(`작업 생성 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`, "error");
     } finally {
       setIsSubmitting(false);
     }
@@ -654,6 +656,7 @@ function CreateJobModal({ isOpen, onClose, onCreated }: CreateJobModalProps) {
 
 // ===== Main Component =====
 export default function CronJobsPanel() {
+  const { addToast } = useToastContext();
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -768,8 +771,9 @@ export default function CronJobsPanel() {
         await Promise.all([fetchJobs(), fetchRuns(jobId)]);
       } catch (err) {
         console.error("Failed to run job:", err);
-        alert(
-          `작업 실행 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`
+        addToast(
+          `작업 실행 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
+          "error"
         );
       } finally {
         setRunningJobs((prev) => {
@@ -779,7 +783,7 @@ export default function CronJobsPanel() {
         });
       }
     },
-    [fetchJobs, fetchRuns]
+    [fetchJobs, fetchRuns, addToast]
   );
 
   // Toggle expanded job row

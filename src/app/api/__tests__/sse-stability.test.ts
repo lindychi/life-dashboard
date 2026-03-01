@@ -312,7 +312,7 @@ describe("SSE Stability Tests", () => {
       sseBroadcaster.addClient = vi.fn((client) => {
         // Replace controller with mock
         client.controller = mockController as any;
-        originalAddClient.call(sseBroadcaster, client);
+        return originalAddClient.call(sseBroadcaster, client);
       });
 
       const request = new NextRequest("http://localhost/api/sse");

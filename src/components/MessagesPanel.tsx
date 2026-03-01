@@ -806,7 +806,7 @@ export default function MessagesPanel({
   return (
     <div className="flex flex-col md:flex-row gap-0 min-h-[560px] bg-gray-900 rounded-2xl border border-gray-700/50 overflow-hidden shadow-lg">
       {/* ===== Left Sidebar: Agent List ===== */}
-      <div className="md:w-72 flex-shrink-0 border-r border-gray-700/50 bg-gray-850 flex flex-col">
+      <div className="md:w-72 flex-shrink-0 border-r border-gray-700/50 bg-gray-800/80 flex flex-col">
         {/* Sidebar header */}
         <div className="p-3 border-b border-gray-700/50 space-y-2.5">
           <div className="flex items-center justify-between">

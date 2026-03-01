@@ -7,6 +7,7 @@ import {
   useMemo,
   type FormEvent,
 } from "react";
+import { useToastContext } from "@/contexts/ToastContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { relativeTime } from "@/lib/format-utils";
@@ -27,9 +28,9 @@ interface SessionsPanelProps {
 
 function StatusBadge({ status }: { status: ConversationStatus }) {
   const config = {
-    active: { bg: "bg-green-500/10", text: "text-green-400", label: "Active" },
-    completed: { bg: "bg-blue-500/10", text: "text-blue-400", label: "Completed" },
-    archived: { bg: "bg-gray-500/10", text: "text-gray-500", label: "Archived" },
+    active: { bg: "bg-green-500/10", text: "text-green-400", label: "활성" },
+    completed: { bg: "bg-blue-500/10", text: "text-blue-400", label: "완료" },
+    archived: { bg: "bg-gray-500/10", text: "text-gray-500", label: "보관" },
   };
 
   const { bg, text, label } = config[status];
@@ -83,9 +84,9 @@ function EmptyState() {
         <div className="w-20 h-20 mx-auto mb-4 rounded-3xl bg-gradient-to-br from-violet-500/10 to-blue-500/10 flex items-center justify-center border border-gray-700/50">
           <span className="text-4xl">💬</span>
         </div>
-        <h3 className="text-lg font-semibold text-gray-300 mb-2">No conversations yet</h3>
+        <h3 className="text-lg font-semibold text-gray-300 mb-2">대화가 없습니다</h3>
         <p className="text-sm text-gray-500">
-          Create a new conversation session to start collaborating with agents
+          새 대화 세션을 생성하여 에이전트와 협업을 시작하세요
         </p>
       </div>
     </div>
@@ -152,6 +153,7 @@ function MessageBubble({
 // ===== Main Component =====
 
 export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
+  const { addToast } = useToastContext();
   const [conversations, setConversations] = useState<ConversationStats[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
     null
@@ -251,7 +253,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
       try {
         contextObj = JSON.parse(createContext);
       } catch {
-        alert("Invalid JSON in context field");
+        addToast("컨텍스트 필드의 JSON이 유효하지 않습니다", "error");
         return;
       }
 
@@ -268,7 +270,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
 
       if (!res.ok) {
         const error = await res.json();
-        throw new Error(error.error || "Failed to create conversation");
+        throw new Error(error.error || "대화 생성 실패");
       }
 
       setShowCreateModal(false);
@@ -278,7 +280,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
       fetchConversations();
     } catch (err) {
       console.error("Failed to create conversation:", err);
-      alert(err instanceof Error ? err.message : "Failed to create conversation");
+      addToast(err instanceof Error ? err.message : "대화 생성 실패", "error");
     }
   };
 
@@ -303,13 +305,13 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
       );
 
       if (!res.ok) {
-        throw new Error("Failed to send message");
+        throw new Error("메시지 전송 실패");
       }
 
       setMessageInput("");
     } catch (err) {
       console.error("Failed to send message:", err);
-      alert("Failed to send message");
+      addToast("메시지 전송 실패", "error");
     } finally {
       setSending(false);
     }
@@ -328,7 +330,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
       });
 
       if (!res.ok) {
-        throw new Error("Failed to update status");
+        throw new Error("상태 변경 실패");
       }
 
       fetchConversations();
@@ -353,44 +355,50 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
   return (
     <div className="flex flex-col md:flex-row gap-0 min-h-[560px] bg-gray-900 rounded-2xl border border-gray-700/50 overflow-hidden shadow-lg">
       {/* Left Sidebar: Conversation List — hidden on mobile when a conversation is selected */}
-      <div className={`md:w-80 flex-shrink-0 border-r border-gray-700/50 bg-gray-850 flex flex-col ${selectedConversationId ? "hidden md:flex" : "flex"}`}>
+      <div className={`md:w-80 flex-shrink-0 border-r border-gray-700/50 bg-gray-800/80 flex flex-col ${selectedConversationId ? "hidden md:flex" : "flex"}`}>
         {/* Header */}
         <div className="p-3 border-b border-gray-700/50 space-y-2.5">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-300">Conversations</h3>
+            <h3 className="text-sm font-semibold text-gray-300">대화 목록</h3>
             <button
               onClick={() => setShowCreateModal(true)}
               className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-lg transition-colors"
             >
-              + New
+              + 새 대화
             </button>
           </div>
 
           {/* Status filter */}
           <div className="flex gap-1">
-            {(["all", "active", "completed", "archived"] as const).map((status) => (
-              <button
-                key={status}
-                onClick={() => setStatusFilter(status)}
-                className={`text-xs px-2 py-1 rounded-md transition-colors ${
-                  statusFilter === status
-                    ? "bg-gray-600/60 text-gray-200 border border-gray-500/30"
-                    : "bg-gray-800/50 text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                {status.charAt(0).toUpperCase() + status.slice(1)}
-              </button>
-            ))}
+            {(["all", "active", "completed", "archived"] as const).map((status) => {
+              const labels: Record<string, string> = { all: "전체", active: "활성", completed: "완료", archived: "보관" };
+              return (
+                <button
+                  key={status}
+                  onClick={() => setStatusFilter(status)}
+                  className={`text-xs px-2 py-1 rounded-md transition-colors ${
+                    statusFilter === status
+                      ? "bg-gray-600/60 text-gray-200 border border-gray-500/30"
+                      : "bg-gray-800/50 text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  {labels[status]}
+                </button>
+              );
+            })}
           </div>
         </div>
 
         {/* Conversation list */}
         <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-700">
           {loading ? (
-            <div className="p-4 text-center text-gray-500 text-sm">Loading...</div>
+            <div className="flex items-center justify-center gap-2 p-4 text-gray-500 text-sm">
+              <div className="w-4 h-4 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin" />
+              불러오는 중...
+            </div>
           ) : filteredConversations.length === 0 ? (
             <div className="p-4 text-center text-gray-500 text-sm">
-              No conversations
+              대화가 없습니다
             </div>
           ) : (
             filteredConversations.map((conv) => {
@@ -439,7 +447,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
 
                   {conv.messageCount > 0 && (
                     <span className="text-[11px] text-gray-500">
-                      {conv.messageCount} message{conv.messageCount !== 1 ? "s" : ""}
+                      {conv.messageCount}개 메시지
                     </span>
                   )}
                 </button>
@@ -479,8 +487,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
                     max={5}
                   />
                   <span className="text-xs text-gray-500">
-                    {selectedConversation.participants.length} participant
-                    {selectedConversation.participants.length !== 1 ? "s" : ""}
+                    {selectedConversation.participants.length}명 참여
                   </span>
                 </div>
               </div>
@@ -496,9 +503,9 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
                 }
                 className="bg-gray-700 border border-gray-600 text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-500"
               >
-                <option value="active">Active</option>
-                <option value="completed">Completed</option>
-                <option value="archived">Archived</option>
+                <option value="active">활성</option>
+                <option value="completed">완료</option>
+                <option value="archived">보관</option>
               </select>
             </div>
 
@@ -506,7 +513,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
             <div className="flex-1 overflow-y-auto px-4 py-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-700">
               {messages.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
-                  <p className="text-gray-500 text-sm">No messages yet</p>
+                  <p className="text-gray-500 text-sm">메시지가 없습니다</p>
                 </div>
               ) : (
                 messages.map((msg) => (
@@ -522,7 +529,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
                   type="text"
                   value={messageInput}
                   onChange={(e) => setMessageInput(e.target.value)}
-                  placeholder="Type a message..."
+                  placeholder="메시지를 입력하세요..."
                   disabled={sending || selectedConversation.status !== "active"}
                   className="flex-1 bg-gray-700/50 border border-gray-600/50 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50"
                 />
@@ -535,12 +542,12 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
                   }
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {sending ? "Sending..." : "Send"}
+                  {sending ? "전송 중..." : "전송"}
                 </button>
               </form>
               {selectedConversation.status !== "active" && (
                 <p className="text-xs text-amber-500 mt-2">
-                  This conversation is {selectedConversation.status}. Set status to &quot;active&quot; to send messages.
+                  이 대화는 {selectedConversation.status === "completed" ? "완료" : "보관"} 상태입니다. 메시지를 보내려면 &quot;활성&quot; 상태로 변경하세요.
                 </p>
               )}
             </div>
@@ -552,11 +559,11 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 max-w-md w-full">
-            <h2 className="text-lg font-bold text-white mb-4">New Conversation</h2>
+            <h2 className="text-lg font-bold text-white mb-4">새 대화 생성</h2>
 
             <form onSubmit={handleCreateConversation} className="space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Title</label>
+                <label className="block text-sm text-gray-400 mb-1">제목</label>
                 <input
                   type="text"
                   value={createTitle}
@@ -568,7 +575,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
 
               <div>
                 <label className="block text-sm text-gray-400 mb-1">
-                  Participants (comma-separated)
+                  참여자 (쉼표로 구분)
                 </label>
                 <input
                   type="text"
@@ -585,7 +592,7 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
 
               <div>
                 <label className="block text-sm text-gray-400 mb-1">
-                  Context (JSON)
+                  컨텍스트 (JSON)
                 </label>
                 <textarea
                   value={createContext}
@@ -601,13 +608,13 @@ export default function SessionsPanel({ agentMap }: SessionsPanelProps) {
                   onClick={() => setShowCreateModal(false)}
                   className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
                 >
-                  Cancel
+                  취소
                 </button>
                 <button
                   type="submit"
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors"
                 >
-                  Create
+                  생성
                 </button>
               </div>
             </form>

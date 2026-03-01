@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, memo, useEffect } from "react";
+import { useToastContext } from "@/contexts/ToastContext";
 import HistoryEntryCard from "@/components/HistoryEntryCard";
 import LiveOutputRenderer from "@/components/LiveOutputRenderer";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -36,6 +37,7 @@ const AgentSection = memo(function AgentSection({
   onReplyToEntry,
   defaultExpanded = false,
 }: AgentSectionProps) {
+  const { addToast } = useToastContext();
   const [isExpanded, setIsExpanded] = useState(true);
   const [showHistory, setShowHistory] = useState(defaultExpanded);
   const [showAllHistory, setShowAllHistory] = useState(false);
@@ -141,7 +143,7 @@ const AgentSection = memo(function AgentSection({
       }
     } catch (error) {
       console.error("Failed to reset agent:", error);
-      alert(`리셋 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+      addToast(`리셋 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`, "error");
     } finally {
       setIsResetting(false);
     }

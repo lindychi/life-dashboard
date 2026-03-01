@@ -21,8 +21,8 @@ export async function GET(req: NextRequest) {
     const agentId = searchParams.get("agent_id");
     const modelTier = searchParams.get("model_tier");
     const status = searchParams.get("status");
-    const days = parseInt(searchParams.get("days") || "7", 10);
-    const limit = parseInt(searchParams.get("limit") || "100", 10);
+    const days = Math.max(1, Math.min(365, parseInt(searchParams.get("days") || "7", 10)));
+    const limit = Math.max(1, Math.min(1000, parseInt(searchParams.get("limit") || "100", 10)));
 
     let sql = "";
     const params: unknown[] = [];
@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error("[Metrics API] Error:", error);
     return NextResponse.json(
-      { success: false, error: String(error) },
+      { success: false, error: "Server error" },
       { status: 500 }
     );
   }
