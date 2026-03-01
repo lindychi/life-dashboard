@@ -600,11 +600,14 @@ export function executeClaudeTask(
               modelUsed: model,
             });
           } else {
-            const rateLimited = isRateLimitError(stdout);
+            const outputText = stdout.trim();
+            const rateLimited = isRateLimitError(outputText);
+            const baseError = outputText || `Process exited with code ${code}`;
+            const errorMessage = rateLimited ? `Claude rate limit exceeded: ${baseError}` : baseError;
             safeResolve({
               success: false,
-              output: stdout.trim(),
-              error: `Process exited with code ${code}`,
+              output: outputText,
+              error: errorMessage,
               exitCode: code ?? -1,
               elapsedMs: Date.now() - startTime,
               provider: "claude",
@@ -1444,15 +1447,38 @@ export async function executeLlmTaskWithRetry(
   const maxRetries = options.maxRetries ?? 2;
   const retryDelay = options.retryDelayMs ?? 3000;
   let currentStaleTimeout = options.staleTimeout;
+  let currentModel = options.model;
+
+  const getModelTier = (model?: string): "haiku" | "sonnet" | "opus" | null => {
+    if (!model) return null;
+    const m = model.toLowerCase();
+    if (m.includes("haiku")) return "haiku";
+    if (m.includes("sonnet")) return "sonnet";
+    if (m.includes("opus")) return "opus";
+    return null;
+  };
+
+  const getEscalatedModel = (model?: string): string | null => {
+    const tier = getModelTier(model);
+    if (tier === "haiku") return "sonnet";
+    if (tier === "sonnet") return "opus";
+    return null;
+  };
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const result = await executeLlmTask({
       ...options,
       staleTimeout: currentStaleTimeout,
+      model: currentModel,
     });
 
     // Success or non-retryable failure → return immediately
-    const isRetryable = result.exitCode === -2 || result.rateLimited;
+    const escalatedModel = getEscalatedModel(currentModel);
+    const modelEscalationRetryable =
+      result.exitCode === 1 &&
+      !result.rateLimited &&
+      escalatedModel !== null;
+    const isRetryable = result.exitCode === -2 || result.rateLimited || modelEscalationRetryable;
     if (result.success || !isRetryable || attempt === maxRetries) {
       if (attempt > 0 && result.success) {
         console.log(`✅ Retry succeeded on attempt ${attempt + 1} for ${options.agentId}`);
@@ -1465,13 +1491,24 @@ export async function executeLlmTaskWithRetry(
     }
 
     // Retryable failure
-    const reason = result.exitCode === -2 ? "hung" : "rate_limited";
+    const reason =
+      result.exitCode === -2
+        ? "hung"
+        : modelEscalationRetryable
+          ? `exit_code_1_model_escalation(${currentModel}->${escalatedModel})`
+          : "rate_limited";
     console.log(`🔄 Retry ${attempt + 1}/${maxRetries} for ${options.agentId}: ${reason}`);
     options.onOutput?.(`[retry] Attempt ${attempt + 2} starting after ${reason}...\n`);
 
     // Increase stale timeout by 100% for hung retries (5min→10min matches complex task level)
     if (result.exitCode === -2 && currentStaleTimeout) {
       currentStaleTimeout = Math.round(currentStaleTimeout * 2.0);
+    }
+
+    // Escalate model tier on non-rate-limit exit code 1 failures (haiku→sonnet→opus)
+    if (modelEscalationRetryable && escalatedModel) {
+      currentModel = escalatedModel;
+      options.onOutput?.(`[warning] Retrying with escalated model tier: ${currentModel}\n`);
     }
 
     // Wait before retry

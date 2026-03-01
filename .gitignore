@@ -49,3 +49,6 @@ next-env.d.ts
 .omx/
 .serena/
 .vscode/
+
+# MCP server config (contains secrets)
+.mcp.json
