@@ -468,9 +468,9 @@ export function executeClaudeTask(
       args.push("--print");
       args.push("--tools", "");
     } else {
-      // Tool-using tasks: use --stream-json for structured event output
-      // --stream-all includes thinking/inference events for better progress visibility
-      args.push("--print", "--stream-json", "--stream-all");
+      // Tool-using tasks: use --output-format stream-json for structured event output
+      // --verbose is required when using --output-format=stream-json with --print
+      args.push("--print", "--output-format", "stream-json", "--verbose");
       args.push("--allowed-tools", allowedTools);
 
       // Add MCP config if provided
@@ -626,9 +626,14 @@ export function executeClaudeTask(
       child = spawn("sleep", ["infinity"], { stdio: "ignore" });
     } else {
       // Standard mode: direct spawn with pipe capture
+      // Remove CLAUDECODE env var to prevent "nested session" error
+      // when gateway-connector itself runs inside a Claude Code session
+      const cleanEnv = { ...process.env };
+      delete cleanEnv.CLAUDECODE;
       child = spawn("claude", args, {
         cwd: workDir || process.cwd(),
         stdio: ["ignore", "pipe", "pipe"],
+        env: cleanEnv,
       });
 
       child.stdout?.on("data", (data: Buffer) => {
