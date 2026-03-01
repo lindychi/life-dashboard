@@ -57,11 +57,11 @@ export async function getAgentHistory(
             request_group_id as "requestGroupId", request_title as "requestTitle"
      FROM agent_history
      WHERE agent_id = $1
-     ORDER BY created_at ASC
+     ORDER BY created_at DESC
      LIMIT $2`,
     [agentId, safeLimit]
   );
-  return rows; // Already in chronological order (oldest to newest)
+  return rows.reverse(); // Return in chronological order (oldest to newest)
 }
 
 /**
@@ -413,7 +413,6 @@ export async function getFilteredHistory(
   // Save count query params before adding cursor condition
   const countConditions = [...conditions];
   const countParams = [...params];
-  let countParamIndex = paramIndex;
 
   // Add cursor condition (excluded from count query)
   const cursorData = parseCursor(filters.cursor);
