@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyMagicLinkToken, createToken, setAuthCookie } from "@/lib/auth";
+import { verifyMagicLinkToken, createToken } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get("token");
@@ -17,9 +17,16 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Create session token
+  // Create session token and set cookie directly on response
   const sessionToken = await createToken(payload.email);
-  await setAuthCookie(sessionToken);
+  const response = NextResponse.json({ success: true });
+  response.cookies.set("auth-token", sessionToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 60 * 60 * 24 * 7, // 7 days
+    path: "/",
+  });
 
-  return NextResponse.json({ success: true });
+  return response;
 }
