@@ -29,6 +29,23 @@ export type SSEEventType =
   | "permission:approval:responded"
   | "relay:status"
   | "agent:stats:updated"
+  | "feedback:submitted"
+  | "improvement:proposed"
+  | "improvement:applied"
+  | "preferences:updated"
+  | "youtube:channel:added"
+  | "youtube:monitoring:completed"
+  | "youtube:monitoring:cycle_complete"
+  | "youtube:video:discovered"
+  | "youtube:video:analyzed"
+  | "youtube:analysis:started"
+  | "youtube:video:analysis_failed"
+  | "suggestion:created"
+  | "suggestion:approved"
+  | "suggestion:rejected"
+  | "suggestion:completed"
+  | "agent-call:requested"
+  | "agent-call:completed"
   | "heartbeat";
 
 export interface SSEEvent {

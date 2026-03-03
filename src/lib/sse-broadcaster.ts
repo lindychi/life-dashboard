@@ -41,6 +41,12 @@ export type SSEEventType =
   | "improvement:proposed"
   | "improvement:applied"
   | "preferences:updated"
+  | "suggestion:created"
+  | "suggestion:approved"
+  | "suggestion:rejected"
+  | "suggestion:completed"
+  | "agent-call:requested"
+  | "agent-call:completed"
   | "heartbeat";
 
 export interface SSEEvent {

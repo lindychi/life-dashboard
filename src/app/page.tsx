@@ -11,6 +11,8 @@ import PermissionApprovalBanner from "@/components/PermissionApprovalBanner";
 import ProjectsTab from "@/components/ProjectsTab";
 import FinanceTab from "@/components/FinanceTab";
 import ImprovementTracker from "@/components/ImprovementTracker";
+import SuggestionPanel from "@/components/SuggestionPanel";
+import AgentCallLog from "@/components/AgentCallLog";
 import { uploadFiles } from "@/components/FileAttachment";
 import type { AttachedFile, UploadedAttachment } from "@/components/FileAttachment";
 import {
@@ -63,7 +65,7 @@ export default function Home() {
 function HomeContent() {
   const { addToast } = useToastContext();
   const [activeTab, setActiveTab] = useState<
-    "agents" | "projects" | "finance" | "messages" | "sessions" | "improvements" | "cronjobs"
+    "agents" | "projects" | "finance" | "messages" | "sessions" | "suggestions" | "improvements" | "cronjobs"
   >("agents");
   const [orchestrateInput, setOrchestrateInput] = useState("");
   const [queuedNotification, setQueuedNotification] = useState<string | null>(null);
@@ -411,6 +413,9 @@ function HomeContent() {
             <TabButton active={activeTab === "sessions"} onClick={() => setActiveTab("sessions")}>
               💭 세션
             </TabButton>
+            <TabButton active={activeTab === "suggestions"} onClick={() => setActiveTab("suggestions")}>
+              💡 제안
+            </TabButton>
             <TabButton active={activeTab === "improvements"} onClick={() => setActiveTab("improvements")}>
               📈 개선
             </TabButton>
@@ -512,6 +517,13 @@ function HomeContent() {
         )}
 
         {activeTab === "sessions" && <SessionsPanel agentMap={agentMap} />}
+
+        {activeTab === "suggestions" && (
+          <div className="space-y-6">
+            <SuggestionPanel />
+            <AgentCallLog />
+          </div>
+        )}
 
         {activeTab === "improvements" && <ImprovementTracker />}
 
