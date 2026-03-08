@@ -41,7 +41,11 @@ export async function GET(request: NextRequest) {
         connectedAt: new Date(),
       };
 
-      sseBroadcaster.addClient(client);
+      const accepted = sseBroadcaster.addClient(client);
+      if (!accepted) {
+        // Connection limit reached — controller already closed by addClient
+        return;
+      }
 
       // Send initial connection message
       const welcomeMessage = new TextEncoder().encode(

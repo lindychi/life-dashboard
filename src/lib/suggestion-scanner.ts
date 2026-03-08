@@ -381,6 +381,545 @@ export async function scanDeadLetterQueue(): Promise<ScanResult[]> {
   }));
 }
 
+// ─── Scan: Conversation Health ────────────────────────────────────────────────
+
+/**
+ * Find active conversations with no messages in 7+ days, or high unread counts.
+ */
+export async function scanConversationHealth(): Promise<ScanResult[]> {
+  interface ConvoRow {
+    id: string;
+    title: string;
+    status: string;
+    participant_count: number;
+    last_message_at: string | null;
+    days_since_message: number | null;
+    total_messages: number;
+  }
+
+  let rows: ConvoRow[];
+  try {
+    rows = await query<ConvoRow>(`
+      SELECT
+        c.id,
+        c.title,
+        c.status,
+        array_length(c.participants, 1) AS participant_count,
+        MAX(cm.created_at) AS last_message_at,
+        EXTRACT(DAY FROM (NOW() - MAX(cm.created_at)))::integer AS days_since_message,
+        COUNT(cm.id)::integer AS total_messages
+      FROM conversations c
+      LEFT JOIN conversation_messages cm ON cm.conversation_id = c.id
+      WHERE c.status = 'active'
+      GROUP BY c.id, c.title, c.status
+      HAVING MAX(cm.created_at) IS NULL
+          OR MAX(cm.created_at) < NOW() - INTERVAL '7 days'
+      ORDER BY MAX(cm.created_at) ASC NULLS FIRST
+    `);
+  } catch {
+    return [];
+  }
+
+  return rows.map((row) => {
+    const daysSince = row.days_since_message ?? null;
+    const noMessages = row.last_message_at === null;
+
+    let urgency: ScanResult["urgency"] = "low";
+    let priorityScore = 30;
+
+    if (noMessages && row.total_messages === 0) {
+      urgency = "low";
+      priorityScore = 25;
+    } else if (daysSince !== null && daysSince > 30) {
+      urgency = "normal";
+      priorityScore = 50;
+    } else if (daysSince !== null && daysSince > 14) {
+      urgency = "low";
+      priorityScore = 35;
+    }
+
+    const activityDesc = noMessages
+      ? "no messages recorded"
+      : `no activity for ${daysSince} days`;
+
+    return {
+      title: `Stale Conversation: ${row.title}`,
+      description: `Conversation "${row.title}" is active but has ${activityDesc} (${row.total_messages} total messages, ${row.participant_count} participants).`,
+      rationale: `Active conversations without recent messages may be abandoned. Review and either continue or archive to reduce noise.`,
+      category: "maintenance" as const,
+      priorityScore,
+      urgency,
+      sourceAgentId: "suggestion-scanner",
+      targetAgentId: "planner",
+      executionPlan: {
+        commandType: "review",
+        task: `Review stale conversation "${row.title}" (id: ${row.id}). It has ${row.total_messages} messages with ${activityDesc}. Determine if it should be continued, completed, or archived.`,
+        estimatedDurationMinutes: 10,
+        requiresAgents: ["planner"],
+      },
+      triggerType: "threshold" as const,
+      triggerData: {
+        conversationId: row.id,
+        totalMessages: row.total_messages,
+        lastMessageAt: row.last_message_at,
+        daysSinceMessage: daysSince,
+        participantCount: row.participant_count,
+      },
+      dedupKey: `stale-conversation:${row.id}`,
+    };
+  });
+}
+
+// ─── Scan: Gateway Health ─────────────────────────────────────────────────────
+
+/**
+ * Find gateways that haven't sent a heartbeat in 10+ minutes.
+ */
+export async function scanGatewayHealth(): Promise<ScanResult[]> {
+  interface GatewayRow {
+    gateway_id: string;
+    hostname: string;
+    last_heartbeat: string;
+    minutes_since_heartbeat: number;
+    connected_at: string;
+  }
+
+  let rows: GatewayRow[];
+  try {
+    rows = await query<GatewayRow>(`
+      SELECT
+        gateway_id,
+        hostname,
+        last_heartbeat,
+        EXTRACT(EPOCH FROM (NOW() - last_heartbeat))::integer / 60 AS minutes_since_heartbeat,
+        connected_at
+      FROM gateway_connections
+      WHERE disconnected_at IS NULL
+        AND last_heartbeat < NOW() - INTERVAL '10 minutes'
+      ORDER BY last_heartbeat ASC
+    `);
+  } catch {
+    return [];
+  }
+
+  return rows.map((row) => {
+    const minutes = row.minutes_since_heartbeat;
+
+    let urgency: ScanResult["urgency"] = "normal";
+    let priorityScore = 60;
+
+    if (minutes >= 60) {
+      urgency = "critical";
+      priorityScore = 90;
+    } else if (minutes >= 30) {
+      urgency = "high";
+      priorityScore = 75;
+    }
+
+    return {
+      title: `Gateway Unresponsive: ${row.hostname}`,
+      description: `Gateway "${row.gateway_id}" (${row.hostname}) has not sent a heartbeat for ${minutes} minutes.`,
+      rationale: `An unresponsive gateway cannot execute commands. It may have crashed without disconnecting. Investigation and potential restart are needed.`,
+      category: "health" as const,
+      priorityScore,
+      urgency,
+      sourceAgentId: "suggestion-scanner",
+      targetAgentId: "devops",
+      executionPlan: {
+        commandType: "investigate",
+        task: `Investigate unresponsive gateway "${row.gateway_id}" on host "${row.hostname}". Last heartbeat was ${minutes} minutes ago. Check if the gateway-connector process is running, review logs, and restart if necessary.`,
+        estimatedDurationMinutes: 15,
+        requiresAgents: ["debugger"],
+      },
+      triggerType: "threshold" as const,
+      triggerData: {
+        gatewayId: row.gateway_id,
+        hostname: row.hostname,
+        lastHeartbeat: row.last_heartbeat,
+        minutesSinceHeartbeat: minutes,
+        connectedAt: row.connected_at,
+      },
+      dedupKey: `gateway-health:${row.gateway_id}`,
+    };
+  });
+}
+
+// ─── Scan: Token Usage Spikes ─────────────────────────────────────────────────
+
+/**
+ * Find agents whose daily token usage exceeds 2x their 7-day average.
+ */
+export async function scanTokenUsageSpikes(): Promise<ScanResult[]> {
+  interface TokenRow {
+    agent_id: string;
+    today_tokens: number;
+    avg_daily_tokens: number;
+    spike_ratio: number;
+  }
+
+  let rows: TokenRow[];
+  try {
+    rows = await query<TokenRow>(`
+      WITH daily_totals AS (
+        SELECT
+          agent_id,
+          DATE(created_at) AS day,
+          SUM(total_tokens) AS day_tokens
+        FROM token_usage
+        WHERE created_at >= NOW() - INTERVAL '8 days'
+        GROUP BY agent_id, DATE(created_at)
+      ),
+      averages AS (
+        SELECT
+          agent_id,
+          AVG(day_tokens) FILTER (WHERE day < CURRENT_DATE) AS avg_daily_tokens,
+          SUM(day_tokens) FILTER (WHERE day = CURRENT_DATE) AS today_tokens
+        FROM daily_totals
+        GROUP BY agent_id
+        HAVING SUM(day_tokens) FILTER (WHERE day = CURRENT_DATE) IS NOT NULL
+           AND AVG(day_tokens) FILTER (WHERE day < CURRENT_DATE) > 0
+      )
+      SELECT
+        agent_id,
+        today_tokens::integer,
+        avg_daily_tokens::integer,
+        (today_tokens / avg_daily_tokens)::numeric(6,2) AS spike_ratio
+      FROM averages
+      WHERE today_tokens > avg_daily_tokens * 2
+      ORDER BY spike_ratio DESC
+    `);
+  } catch {
+    return [];
+  }
+
+  return rows.map((row) => {
+    const ratio = Number(row.spike_ratio);
+    const priorityScore = Math.min(90, Math.round(ratio * 20));
+
+    let urgency: ScanResult["urgency"] = "normal";
+    if (ratio >= 5) urgency = "critical";
+    else if (ratio >= 3) urgency = "high";
+
+    return {
+      title: `Token Spike: Agent ${row.agent_id}`,
+      description: `Agent "${row.agent_id}" used ${row.today_tokens.toLocaleString()} tokens today — ${ratio}x the 7-day average of ${Number(row.avg_daily_tokens).toLocaleString()}.`,
+      rationale: `Sudden token usage spikes may indicate runaway loops, repeated retries, or unintended model escalation. Cost optimization requires investigation.`,
+      category: "optimization" as const,
+      priorityScore,
+      urgency,
+      sourceAgentId: "suggestion-scanner",
+      targetAgentId: "analyst",
+      executionPlan: {
+        commandType: "analyze",
+        task: `Analyze token usage spike for agent "${row.agent_id}". Today's usage (${row.today_tokens} tokens) is ${ratio}x above the 7-day average. Check token_usage for model breakdown, identify which tasks consumed the most, and recommend cost optimization.`,
+        estimatedDurationMinutes: 20,
+        requiresAgents: ["analyst"],
+      },
+      triggerType: "threshold" as const,
+      triggerData: {
+        agentId: row.agent_id,
+        todayTokens: row.today_tokens,
+        avgDailyTokens: Number(row.avg_daily_tokens),
+        spikeRatio: ratio,
+      },
+      dedupKey: `token-spike:${row.agent_id}:${new Date().toISOString().slice(0, 10)}`,
+    };
+  });
+}
+
+// ─── Scan: Queue Backlog ──────────────────────────────────────────────────────
+
+/**
+ * Find concurrency groups with > 10 pending tasks, or tasks waiting > 30 min.
+ */
+export async function scanQueueBacklog(): Promise<ScanResult[]> {
+  interface BacklogRow {
+    concurrency_group: string;
+    pending_count: number;
+    oldest_pending_minutes: number;
+  }
+
+  let rows: BacklogRow[];
+  try {
+    rows = await query<BacklogRow>(`
+      SELECT
+        COALESCE(concurrency_group, 'default') AS concurrency_group,
+        COUNT(*)::integer AS pending_count,
+        EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::integer / 60 AS oldest_pending_minutes
+      FROM task_queue
+      WHERE status = 'pending'
+      GROUP BY COALESCE(concurrency_group, 'default')
+      HAVING COUNT(*) > 10
+          OR EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) > 1800
+      ORDER BY COUNT(*) DESC
+    `);
+  } catch {
+    return [];
+  }
+
+  return rows.map((row) => {
+    const count = row.pending_count;
+    const minutes = row.oldest_pending_minutes;
+    const priorityScore = Math.min(85, count * 5 + Math.floor(minutes / 10));
+
+    let urgency: ScanResult["urgency"] = "normal";
+    if (count > 50 || minutes > 120) urgency = "critical";
+    else if (count > 20 || minutes > 60) urgency = "high";
+
+    return {
+      title: `Queue Backlog: ${row.concurrency_group}`,
+      description: `Concurrency group "${row.concurrency_group}" has ${count} pending tasks. Oldest has been waiting ${minutes} minutes.`,
+      rationale: `A growing queue backlog indicates insufficient processing capacity or a stuck consumer. Tasks may time out if not addressed.`,
+      category: "health" as const,
+      priorityScore,
+      urgency,
+      sourceAgentId: "suggestion-scanner",
+      targetAgentId: "devops",
+      executionPlan: {
+        commandType: "investigate",
+        task: `Investigate queue backlog in concurrency group "${row.concurrency_group}". ${count} tasks pending, oldest waiting ${minutes} min. Check if the orchestrator is running, review concurrency limits, and consider scaling or prioritizing.`,
+        estimatedDurationMinutes: 15,
+        requiresAgents: ["debugger"],
+      },
+      triggerType: "threshold" as const,
+      triggerData: {
+        concurrencyGroup: row.concurrency_group,
+        pendingCount: count,
+        oldestPendingMinutes: minutes,
+      },
+      dedupKey: `queue-backlog:${row.concurrency_group}`,
+    };
+  });
+}
+
+// ─── Scan: Relay Command Failures ─────────────────────────────────────────────
+
+/**
+ * Find relay commands stuck in 'processing' for > 30 min or high failure rates.
+ */
+export async function scanRelayCommandFailures(): Promise<ScanResult[]> {
+  interface RelayRow {
+    gateway_id: string;
+    stuck_count: number;
+    failed_count: number;
+    oldest_stuck_minutes: number;
+  }
+
+  let rows: RelayRow[];
+  try {
+    rows = await query<RelayRow>(`
+      SELECT
+        gateway_id,
+        COUNT(*) FILTER (WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '30 minutes')::integer AS stuck_count,
+        COUNT(*) FILTER (WHERE status = 'failed' AND updated_at >= NOW() - INTERVAL '24 hours')::integer AS failed_count,
+        COALESCE(
+          EXTRACT(EPOCH FROM (NOW() - MIN(updated_at) FILTER (WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '30 minutes')))::integer / 60,
+          0
+        ) AS oldest_stuck_minutes
+      FROM relay_commands
+      WHERE (status = 'processing' AND updated_at < NOW() - INTERVAL '30 minutes')
+         OR (status = 'failed' AND updated_at >= NOW() - INTERVAL '24 hours')
+      GROUP BY gateway_id
+      HAVING COUNT(*) FILTER (WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '30 minutes') > 0
+          OR COUNT(*) FILTER (WHERE status = 'failed' AND updated_at >= NOW() - INTERVAL '24 hours') > 3
+      ORDER BY COUNT(*) DESC
+    `);
+  } catch {
+    return [];
+  }
+
+  return rows.map((row) => {
+    const stuck = row.stuck_count;
+    const failed = row.failed_count;
+    const priorityScore = Math.min(90, stuck * 20 + failed * 10);
+
+    let urgency: ScanResult["urgency"] = "normal";
+    if (stuck > 5 || failed > 10) urgency = "critical";
+    else if (stuck > 2 || failed > 5) urgency = "high";
+
+    const issues: string[] = [];
+    if (stuck > 0) issues.push(`${stuck} stuck (>${row.oldest_stuck_minutes}min)`);
+    if (failed > 0) issues.push(`${failed} failed in 24h`);
+
+    return {
+      title: `Relay Issues: Gateway ${row.gateway_id}`,
+      description: `Gateway "${row.gateway_id}" has relay command issues: ${issues.join(", ")}.`,
+      rationale: `Stuck or failing relay commands indicate gateway-connector problems. Commands will not execute until resolved.`,
+      category: "health" as const,
+      priorityScore,
+      urgency,
+      sourceAgentId: "suggestion-scanner",
+      targetAgentId: "devops",
+      executionPlan: {
+        commandType: "investigate",
+        task: `Investigate relay command issues for gateway "${row.gateway_id}". ${issues.join("; ")}. Check gateway-connector logs, review stuck commands, and consider restarting the gateway.`,
+        estimatedDurationMinutes: 20,
+        requiresAgents: ["debugger"],
+      },
+      triggerType: "threshold" as const,
+      triggerData: {
+        gatewayId: row.gateway_id,
+        stuckCount: stuck,
+        failedCount: failed,
+        oldestStuckMinutes: row.oldest_stuck_minutes,
+      },
+      dedupKey: `relay-failures:${row.gateway_id}`,
+    };
+  });
+}
+
+// ─── Scan: Permission Backlog ─────────────────────────────────────────────────
+
+/**
+ * Find pending permission approval requests older than 1 hour.
+ */
+export async function scanPermissionBacklog(): Promise<ScanResult[]> {
+  interface PermRow {
+    id: string;
+    agent_id: string;
+    tool_name: string;
+    minutes_waiting: number;
+    created_at: string;
+  }
+
+  let rows: PermRow[];
+  try {
+    rows = await query<PermRow>(`
+      SELECT
+        id,
+        agent_id,
+        tool_name,
+        EXTRACT(EPOCH FROM (NOW() - created_at))::integer / 60 AS minutes_waiting,
+        created_at::text
+      FROM permission_approvals
+      WHERE status = 'pending'
+        AND created_at < NOW() - INTERVAL '1 hour'
+      ORDER BY created_at ASC
+      LIMIT 20
+    `);
+  } catch {
+    return [];
+  }
+
+  if (rows.length === 0) return [];
+
+  const priorityScore = Math.min(80, rows.length * 15);
+
+  let urgency: ScanResult["urgency"] = "normal";
+  if (rows.length > 10) urgency = "high";
+  if (rows.some((r) => r.minutes_waiting > 360)) urgency = "critical";
+
+  return [{
+    title: `${rows.length} Permission Requests Awaiting Approval`,
+    description: `${rows.length} permission approval requests have been pending for over 1 hour. Oldest: agent "${rows[0].agent_id}" requesting "${rows[0].tool_name}" (${rows[0].minutes_waiting} min).`,
+    rationale: `Pending permission requests block agent execution. Auto-approval rules or manual intervention needed to unblock workflows.`,
+    category: "maintenance" as const,
+    priorityScore,
+    urgency,
+    sourceAgentId: "suggestion-scanner",
+    targetAgentId: "planner",
+    executionPlan: {
+      commandType: "review",
+      task: `Review ${rows.length} pending permission approval requests. Consider creating auto-approval rules for frequently requested permissions. Agents: ${[...new Set(rows.map((r) => r.agent_id))].join(", ")}. Tools: ${[...new Set(rows.map((r) => r.tool_name))].join(", ")}.`,
+      estimatedDurationMinutes: 15,
+      requiresAgents: ["planner"],
+    },
+    triggerType: "threshold" as const,
+    triggerData: {
+      pendingCount: rows.length,
+      oldestMinutes: rows[0].minutes_waiting,
+      agents: [...new Set(rows.map((r) => r.agent_id))],
+      tools: [...new Set(rows.map((r) => r.tool_name))],
+    },
+    dedupKey: `permission-backlog:${new Date().toISOString().slice(0, 13)}`,
+  }];
+}
+
+// ─── Scan: Metrics Regression ─────────────────────────────────────────────────
+
+/**
+ * Find projects where key metrics dropped significantly (> 20%) vs prior snapshot.
+ */
+export async function scanMetricsRegression(): Promise<ScanResult[]> {
+  interface RegressionRow {
+    project_id: string;
+    project_name: string;
+    metric_name: string;
+    current_value: number;
+    previous_value: number;
+    drop_percent: number;
+  }
+
+  let rows: RegressionRow[];
+  try {
+    rows = await query<RegressionRow>(`
+      WITH ranked AS (
+        SELECT
+          pm.project_id,
+          p.name AS project_name,
+          'success_rate' AS metric_name,
+          pm.success_rate AS current_value,
+          LAG(pm.success_rate) OVER (PARTITION BY pm.project_id ORDER BY pm.created_at) AS previous_value,
+          pm.created_at
+        FROM project_metrics pm
+        JOIN projects p ON p.id = pm.project_id
+        WHERE p.status = 'active'
+          AND pm.created_at >= NOW() - INTERVAL '7 days'
+          AND pm.success_rate IS NOT NULL
+      )
+      SELECT
+        project_id,
+        project_name,
+        metric_name,
+        current_value::numeric(6,2)::float,
+        previous_value::numeric(6,2)::float,
+        ((previous_value - current_value) / NULLIF(previous_value, 0) * 100)::numeric(6,2)::float AS drop_percent
+      FROM ranked
+      WHERE previous_value > 0
+        AND current_value < previous_value * 0.8
+      ORDER BY drop_percent DESC
+      LIMIT 10
+    `);
+  } catch {
+    return [];
+  }
+
+  return rows.map((row) => {
+    const drop = Number(row.drop_percent);
+    const priorityScore = Math.min(85, Math.round(drop));
+
+    let urgency: ScanResult["urgency"] = "normal";
+    if (drop >= 50) urgency = "critical";
+    else if (drop >= 35) urgency = "high";
+
+    return {
+      title: `Metrics Drop: ${row.project_name}`,
+      description: `Project "${row.project_name}" ${row.metric_name} dropped ${drop.toFixed(1)}% (${Number(row.previous_value).toFixed(1)}% → ${Number(row.current_value).toFixed(1)}%).`,
+      rationale: `A significant metrics regression indicates quality or reliability issues that need investigation before they compound.`,
+      category: "risk" as const,
+      priorityScore,
+      urgency,
+      sourceAgentId: "suggestion-scanner",
+      targetAgentId: "analyst",
+      executionPlan: {
+        commandType: "analyze",
+        task: `Analyze metrics regression for project "${row.project_name}" (id: ${row.project_id}). ${row.metric_name} dropped ${drop.toFixed(1)}%. Review recent task executions, identify what changed, and recommend corrective actions.`,
+        estimatedDurationMinutes: 25,
+        requiresAgents: ["analyst", "debugger"],
+      },
+      triggerType: "threshold" as const,
+      triggerData: {
+        projectId: row.project_id,
+        metricName: row.metric_name,
+        currentValue: row.current_value,
+        previousValue: row.previous_value,
+        dropPercent: drop,
+      },
+      dedupKey: `metrics-regression:${row.project_id}:${row.metric_name}`,
+    };
+  });
+}
+
 // ─── Run All Scans ────────────────────────────────────────────────────────────
 
 /**
@@ -394,6 +933,13 @@ export async function runAllScans(): Promise<ScanResult[]> {
     { name: "scanTaskFailures", fn: scanTaskFailures },
     { name: "scanFeedbackPatterns", fn: scanFeedbackPatterns },
     { name: "scanDeadLetterQueue", fn: scanDeadLetterQueue },
+    { name: "scanConversationHealth", fn: scanConversationHealth },
+    { name: "scanGatewayHealth", fn: scanGatewayHealth },
+    { name: "scanTokenUsageSpikes", fn: scanTokenUsageSpikes },
+    { name: "scanQueueBacklog", fn: scanQueueBacklog },
+    { name: "scanRelayCommandFailures", fn: scanRelayCommandFailures },
+    { name: "scanPermissionBacklog", fn: scanPermissionBacklog },
+    { name: "scanMetricsRegression", fn: scanMetricsRegression },
   ];
 
   const results = await Promise.allSettled(

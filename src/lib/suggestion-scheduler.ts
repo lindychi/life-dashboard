@@ -7,7 +7,7 @@
  */
 
 import { query, queryOne, isDbConnectionError, pool } from "@/lib/db";
-import { runAllScans, scanOKRProgress, scanProjectStale, scanTaskFailures, scanFeedbackPatterns, scanDeadLetterQueue } from "@/lib/suggestion-scanner";
+import { runAllScans, scanOKRProgress, scanProjectStale, scanTaskFailures, scanFeedbackPatterns, scanDeadLetterQueue, scanConversationHealth, scanGatewayHealth, scanTokenUsageSpikes, scanQueueBacklog, scanRelayCommandFailures, scanPermissionBacklog, scanMetricsRegression } from "@/lib/suggestion-scanner";
 import type { ScanResult } from "@/lib/suggestion-scanner";
 import { broadcastSSE } from "@/lib/sse-broadcaster";
 import type { PoolClient } from "pg";
@@ -24,6 +24,13 @@ const SCAN_FUNCTION_MAP: Record<string, () => Promise<ScanResult[]>> = {
   task_failures: scanTaskFailures,
   feedback_patterns: scanFeedbackPatterns,
   dead_letter_queue: scanDeadLetterQueue,
+  conversation_health: scanConversationHealth,
+  gateway_health: scanGatewayHealth,
+  token_usage_spikes: scanTokenUsageSpikes,
+  queue_backlog: scanQueueBacklog,
+  relay_command_failures: scanRelayCommandFailures,
+  permission_backlog: scanPermissionBacklog,
+  metrics_regression: scanMetricsRegression,
   all: runAllScans,
 };
 

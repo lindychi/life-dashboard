@@ -9,7 +9,7 @@
 
 import { sseMetricsCollector } from "./sse-metrics";
 
-export const MAX_SSE_CONNECTIONS = 50;
+export const MAX_SSE_CONNECTIONS = 200;
 
 export type SSEEventType =
   | "project:created"
